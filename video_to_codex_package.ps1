@@ -1,12 +1,13 @@
 param(
     [string]$InputPath,
-    [string]$InputFolder = "C:\TEMP\MEDIA\INCOMING",
+    [string]$InputFolder = "C:\TEMP\INPUT",
     [string]$OutputFolder = "C:\DATA\TEMP",
     [string]$FFmpegPath = "C:\APPS\ffmpeg\bin\ffmpeg.exe",
     [string]$PythonExe = "py",
     [string]$WhisperModel = "base.en",
     [string]$Language = "en",
     [double]$FrameIntervalSeconds = [double]::NaN,
+    [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawVideo,
     [switch]$NoPrompt,
     [switch]$SkipEstimate
@@ -41,7 +42,7 @@ function Ensure-Directory {
 function Write-Log {
     param(
         [string]$Message,
-        [ValidateSet("INFO","WARN","ERROR")]
+        [ValidateSet("INFO","WARN","ERROR","PASS","FAIL")]
         [string]$Level = "INFO"
     )
 
@@ -50,6 +51,8 @@ function Write-Log {
 
     switch ($Level) {
         "ERROR" { Write-Host $line -ForegroundColor Red }
+        "FAIL"  { Write-Host $line -ForegroundColor Red }
+        "PASS"  { Write-Host $line -ForegroundColor Green }
         "WARN"  { Write-Host $line -ForegroundColor Yellow }
         default { Write-Host $line }
     }
@@ -79,6 +82,44 @@ function Write-Phase {
     }
 
     Write-Log $message
+}
+
+function Write-PhaseResult {
+    param(
+        [string]$Name,
+        [ValidateSet("PASS","FAIL")]
+        [string]$Status,
+        [string]$Detail
+    )
+
+    $message = if ([string]::IsNullOrWhiteSpace($Detail)) {
+        "$Name complete"
+    }
+    else {
+        "$Name complete - $Detail"
+    }
+
+    Write-Log $message $Status
+}
+
+function Invoke-PhaseAction {
+    param(
+        [string]$Name,
+        [string]$Detail,
+        [scriptblock]$Action
+    )
+
+    Write-Phase -Name $Name -Detail $Detail
+
+    try {
+        $result = & $Action
+        Write-PhaseResult -Name $Name -Status "PASS" -Detail $Detail
+        return $result
+    }
+    catch {
+        Write-PhaseResult -Name $Name -Status "FAIL" -Detail $_.Exception.Message
+        throw
+    }
 }
 
 function Resolve-ExecutablePath {
@@ -144,6 +185,8 @@ function Invoke-ExternalCapture {
         [string]$FilePath,
         [string[]]$Arguments,
         [string]$StepName = "External command",
+        [int]$HeartbeatSeconds = 0,
+        [int]$TimeoutSeconds = 1800,
         [switch]$IgnoreExitCode
     )
 
@@ -167,6 +210,27 @@ function Invoke-ExternalCapture {
     [void]$proc.Start()
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
     $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+    $start = Get-Date
+    $nextHeartbeat = if ($HeartbeatSeconds -gt 0) { $start.AddSeconds($HeartbeatSeconds) } else { $null }
+
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 500
+
+        $now = Get-Date
+        $elapsed = ($now - $start).TotalSeconds
+
+        if ($nextHeartbeat -and $now -ge $nextHeartbeat) {
+            Write-Log ("{0} still working... elapsed {1:n0}s" -f $StepName, $elapsed)
+            $nextHeartbeat = $now.AddSeconds($HeartbeatSeconds)
+        }
+
+        if ($TimeoutSeconds -gt 0 -and $elapsed -ge $TimeoutSeconds) {
+            try { $proc.Kill() } catch { }
+            throw "$StepName timed out after $TimeoutSeconds seconds."
+        }
+    }
+
     $proc.WaitForExit()
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
@@ -237,7 +301,7 @@ function Invoke-ExternalStreaming {
             $silence = $elapsed
 
             if ($now -ge $nextHeartbeat) {
-                Write-Log ("{0} still running... elapsed {1:n0}s, silence {2:n0}s" -f $StepName, $elapsed, $silence)
+                Write-Log ("{0} still working... elapsed {1:n0}s, silence {2:n0}s" -f $StepName, $elapsed, $silence)
                 $nextHeartbeat = $now.AddSeconds($HeartbeatSeconds)
             }
 
@@ -709,7 +773,8 @@ function Invoke-PythonWhisperTranscript {
         [string]$ModelName,
         [string]$LanguageCode,
         [string]$FFmpegExe,
-        [bool]$PreferGpu
+        [bool]$PreferGpu,
+        [int]$HeartbeatSeconds = 10
     )
 
     Ensure-Directory $TranscriptFolder
@@ -864,7 +929,7 @@ finally:
             ) `
             -StepName "Python Whisper transcription" `
             -IgnoreExitCode `
-            -HeartbeatSeconds 30 `
+            -HeartbeatSeconds $HeartbeatSeconds `
             -TimeoutSeconds 1800
 
         if ($result.ExitCode -ne 0) {
@@ -908,7 +973,8 @@ function New-ProxyVideo {
         [string]$InputVideo,
         [string]$OutputVideo,
         [bool]$HasAudio,
-        [bool]$UseGpu
+        [bool]$UseGpu,
+        [int]$HeartbeatSeconds = 10
     )
 
     if (Test-Path $OutputVideo) {
@@ -931,7 +997,7 @@ function New-ProxyVideo {
     if ($UseGpu) {
         Write-Log "Creating proxy video with NVIDIA NVENC..."
 
-        $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Proxy generation (GPU)" -IgnoreExitCode
+        $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Proxy generation (GPU)" -HeartbeatSeconds $HeartbeatSeconds -IgnoreExitCode
         if ($gpuResult.ExitCode -eq 0 -and (Test-Path $OutputVideo)) {
             return "GPU_NVENC"
         }
@@ -943,7 +1009,7 @@ function New-ProxyVideo {
     }
 
     Write-Log "Creating proxy video with CPU libx264..."
-    $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Proxy generation (CPU)"
+    $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Proxy generation (CPU)" -HeartbeatSeconds $HeartbeatSeconds
     if ($cpuResult.ExitCode -ne 0 -or -not (Test-Path $OutputVideo)) {
         throw "Proxy video generation failed."
     }
@@ -957,7 +1023,8 @@ function Extract-FramesAtInterval {
         [string]$InputVideo,
         [string]$FramesFolder,
         [bool]$UseGpu,
-        [double]$FrameIntervalSeconds
+        [double]$FrameIntervalSeconds,
+        [int]$HeartbeatSeconds = 10
     )
 
     $existingFrames = @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue)
@@ -976,7 +1043,7 @@ function Extract-FramesAtInterval {
     if ($UseGpu) {
         Write-Log "Extracting frames every $FrameIntervalSeconds seconds with CUDA decode attempt..."
 
-        $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Frame extraction (GPU)" -IgnoreExitCode
+        $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Frame extraction (GPU)" -HeartbeatSeconds $HeartbeatSeconds -IgnoreExitCode
         if ($gpuResult.ExitCode -eq 0 -and @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -gt 0) {
             return "GPU_DECODE_ATTEMPT"
         }
@@ -986,7 +1053,7 @@ function Extract-FramesAtInterval {
     }
 
     Write-Log "Extracting frames every $FrameIntervalSeconds seconds with CPU path..."
-    $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Frame extraction (CPU)"
+    $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Frame extraction (CPU)" -HeartbeatSeconds $HeartbeatSeconds
     if ($cpuResult.ExitCode -ne 0 -or @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -eq 0) {
         throw "Frame extraction failed."
     }
@@ -998,7 +1065,8 @@ function Export-AudioMp3 {
     param(
         [string]$FFmpegExe,
         [string]$InputVideo,
-        [string]$AudioFile
+        [string]$AudioFile,
+        [int]$HeartbeatSeconds = 10
     )
 
     if (Test-Path $AudioFile) {
@@ -1009,7 +1077,8 @@ function Export-AudioMp3 {
     $result = Invoke-ExternalCapture `
         -FilePath $FFmpegExe `
         -Arguments @("-y", "-i", $InputVideo, "-map", "0:a:0", "-vn", "-c:a", "libmp3lame", "-b:a", "192k", $AudioFile) `
-        -StepName "Audio extraction"
+        -StepName "Audio extraction" `
+        -HeartbeatSeconds $HeartbeatSeconds
 
     if ($result.ExitCode -ne 0 -or -not (Test-Path $AudioFile)) {
         throw "Audio extraction failed."
@@ -1259,6 +1328,44 @@ function Get-BestEffortEstimate {
     }
 }
 
+function Build-FrameIndex {
+    param(
+        [string]$FramesFolder,
+        [string]$FrameIndexCsv,
+        [double]$FrameIntervalSeconds,
+        [string]$FramesFolderName,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    Write-Log "Building frame index..."
+    "frame_number,seconds,timestamp,filename,relative_path" | Set-Content -Path $FrameIndexCsv -Encoding UTF8
+
+    $frames = @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" | Sort-Object Name)
+    $nextHeartbeat = if ($HeartbeatSeconds -gt 0) { (Get-Date).AddSeconds($HeartbeatSeconds) } else { $null }
+
+    for ($i = 0; $i -lt $frames.Count; $i++) {
+        $frame = $frames[$i]
+        if ($frame.BaseName -match '^frame_(\d+)$') {
+            $frameNumber = [int]$matches[1]
+            $seconds = [math]::Round(($frameNumber - 1) * $FrameIntervalSeconds, 3)
+            $timestamp = [TimeSpan]::FromSeconds($seconds).ToString("hh\:mm\:ss\.fff")
+            $relativePath = "$FramesFolderName/$($frame.Name)"
+            "$frameNumber,$seconds,$timestamp,$($frame.Name),$relativePath" | Add-Content -Path $FrameIndexCsv -Encoding UTF8
+        }
+
+        $processed = $i + 1
+        $now = Get-Date
+        if (($nextHeartbeat -and $now -ge $nextHeartbeat) -or ($processed % 250 -eq 0 -and $processed -lt $frames.Count)) {
+            Write-Log ("Frame indexing still working... {0}/{1} frames indexed" -f $processed, $frames.Count)
+            if ($HeartbeatSeconds -gt 0) {
+                $nextHeartbeat = $now.AddSeconds($HeartbeatSeconds)
+            }
+        }
+    }
+
+    return $frames.Count
+}
+
 function Process-Video {
     param(
         [string]$VideoPath,
@@ -1272,7 +1379,8 @@ function Process-Video {
         [string]$SummaryCsv,
         [bool]$CanUseFfmpegGpu,
         [bool]$CanUseWhisperGpu,
-        [double]$FrameIntervalSeconds
+        [double]$FrameIntervalSeconds,
+        [int]$HeartbeatSeconds = 10
     )
 
     if (-not (Test-Path $VideoPath)) {
@@ -1321,88 +1429,105 @@ function Process-Video {
     Write-Log "Output folder: $videoOutputRoot"
     Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
 
-    Write-Phase -Name "Preflight" -Detail $videoItem.Name
-    $hasAudio = Test-VideoHasAudio -FFprobeExe $FFprobeExe -VideoPath $videoItem.FullName
-    $audioPresentText = if ($hasAudio) { "Yes" } else { "No" }
-    Write-Log "Source audio present: $audioPresentText"
+    $preflightResult = Invoke-PhaseAction -Name "Preflight" -Detail $videoItem.Name -Action {
+        $phaseHasAudio = Test-VideoHasAudio -FFprobeExe $FFprobeExe -VideoPath $videoItem.FullName
+        $phaseAudioPresentText = if ($phaseHasAudio) { "Yes" } else { "No" }
+        Write-Log "Source audio present: $phaseAudioPresentText"
 
-    if ($DoCopyRaw) {
-        Write-Phase -Name "Raw" -Detail $videoItem.Name
-        if (-not (Test-Path $rawVideoPath)) {
-            Write-Log "Copying raw video..."
-            Copy-Item -Path $videoItem.FullName -Destination $rawVideoPath -Force
-        }
-        else {
-            Write-Log "Raw video already copied. Skipping."
+        return [PSCustomObject]@{
+            HasAudio         = $phaseHasAudio
+            AudioPresentText = $phaseAudioPresentText
         }
     }
+    $hasAudio = [bool]$preflightResult.HasAudio
+    $audioPresentText = [string]$preflightResult.AudioPresentText
 
-    Write-Phase -Name "Proxy" -Detail $videoItem.Name
-    $proxyMode = New-ProxyVideo `
-        -FFmpegExe $FFmpegExe `
-        -InputVideo $videoItem.FullName `
-        -OutputVideo $proxyVideo `
-        -HasAudio $hasAudio `
-        -UseGpu $CanUseFfmpegGpu
+    if ($DoCopyRaw) {
+        Invoke-PhaseAction -Name "Raw" -Detail $videoItem.Name -Action {
+            if (-not (Test-Path $rawVideoPath)) {
+                Write-Log "Copying raw video..."
+                Copy-Item -Path $videoItem.FullName -Destination $rawVideoPath -Force
+            }
+            else {
+                Write-Log "Raw video already copied. Skipping."
+            }
+        } | Out-Null
+    }
 
-    Write-Phase -Name "Frames" -Detail ("{0} at {1:0.0}s" -f $videoItem.Name, $FrameIntervalSeconds)
-    $frameMode = Extract-FramesAtInterval `
-        -FFmpegExe $FFmpegExe `
-        -InputVideo $videoItem.FullName `
-        -FramesFolder $framesFolder `
-        -UseGpu $CanUseFfmpegGpu `
-        -FrameIntervalSeconds $FrameIntervalSeconds
+    $proxyMode = Invoke-PhaseAction -Name "Proxy" -Detail $videoItem.Name -Action {
+        New-ProxyVideo `
+            -FFmpegExe $FFmpegExe `
+            -InputVideo $videoItem.FullName `
+            -OutputVideo $proxyVideo `
+            -HasAudio $hasAudio `
+            -UseGpu $CanUseFfmpegGpu `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
+
+    $frameMode = Invoke-PhaseAction -Name "Frames" -Detail ("{0} at {1:0.0}s" -f $videoItem.Name, $FrameIntervalSeconds) -Action {
+        Extract-FramesAtInterval `
+            -FFmpegExe $FFmpegExe `
+            -InputVideo $videoItem.FullName `
+            -FramesFolder $framesFolder `
+            -UseGpu $CanUseFfmpegGpu `
+            -FrameIntervalSeconds $FrameIntervalSeconds `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
 
     $whisperMode = "SKIPPED_NO_AUDIO"
 
     if ($hasAudio) {
-        Write-Phase -Name "Audio" -Detail $videoItem.Name
-        $null = Export-AudioMp3 -FFmpegExe $FFmpegExe -InputVideo $videoItem.FullName -AudioFile $audioFile
+        Invoke-PhaseAction -Name "Audio" -Detail $videoItem.Name -Action {
+            $null = Export-AudioMp3 -FFmpegExe $FFmpegExe -InputVideo $videoItem.FullName -AudioFile $audioFile -HeartbeatSeconds $HeartbeatSeconds
+        } | Out-Null
 
-        Write-Phase -Name "Transcript" -Detail $videoItem.Name
-        if ((Test-Path $transcriptSrt) -and (Test-Path $transcriptJson)) {
-            Write-Log "Transcript files already exist. Skipping Whisper transcription."
-            $whisperMode = "SKIPPED_EXISTING"
-        }
-        else {
-            if ($CanUseWhisperGpu) {
-                Write-Log "Generating transcript with Whisper on GPU if available..."
-                $whisperMode = "GPU_CUDA"
+        $whisperMode = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
+            if ((Test-Path $transcriptSrt) -and (Test-Path $transcriptJson)) {
+                Write-Log "Transcript files already exist. Skipping Whisper transcription."
+                return "SKIPPED_EXISTING"
             }
             else {
-                Write-Log "Generating transcript with Whisper on CPU..."
-                $whisperMode = "CPU"
-            }
+                $phaseWhisperMode = "CPU"
+                if ($CanUseWhisperGpu) {
+                    Write-Log "Generating transcript with Whisper on GPU if available..."
+                    $phaseWhisperMode = "GPU_CUDA"
+                }
+                else {
+                    Write-Log "Generating transcript with Whisper on CPU..."
+                }
 
-            $transcriptResult = Invoke-PythonWhisperTranscript `
-                -PythonCommand $PythonCommand `
-                -AudioPath $audioFile `
-                -TranscriptFolder $transcriptFolder `
-                -ModelName $ModelName `
-                -LanguageCode $LanguageCode `
-                -FFmpegExe $FFmpegExe `
-                -PreferGpu $CanUseWhisperGpu
+                $transcriptResult = Invoke-PythonWhisperTranscript `
+                    -PythonCommand $PythonCommand `
+                    -AudioPath $audioFile `
+                    -TranscriptFolder $transcriptFolder `
+                    -ModelName $ModelName `
+                    -LanguageCode $LanguageCode `
+                    -FFmpegExe $FFmpegExe `
+                    -PreferGpu $CanUseWhisperGpu `
+                    -HeartbeatSeconds $HeartbeatSeconds
 
-            if (-not (Test-Path $transcriptSrt)) {
-                throw "Expected SRT not found: $transcriptSrt"
-            }
+                if (-not (Test-Path $transcriptSrt)) {
+                    throw "Expected SRT not found: $transcriptSrt"
+                }
 
-            if (-not (Test-Path $transcriptJson)) {
-                throw "Expected JSON not found: $transcriptJson"
-            }
+                if (-not (Test-Path $transcriptJson)) {
+                    throw "Expected JSON not found: $transcriptJson"
+                }
 
-            if ($transcriptResult.Device -eq "cuda") {
-                $whisperMode = "GPU_CUDA"
-            }
-            else {
-                $whisperMode = "CPU"
-            }
+                if ($transcriptResult.Device -eq "cuda") {
+                    $phaseWhisperMode = "GPU_CUDA"
+                }
+                else {
+                    $phaseWhisperMode = "CPU"
+                }
 
-            if ($transcriptResult.GpuError) {
-                Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
-            }
+                if ($transcriptResult.GpuError) {
+                    Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
+                }
 
-            Write-Log "Whisper transcript completed using device: $($transcriptResult.Device)"
+                Write-Log "Whisper transcript completed using device: $($transcriptResult.Device)"
+                return $phaseWhisperMode
+            }
         }
     }
     else {
@@ -1411,35 +1536,32 @@ function Process-Video {
         $audioFile = ""
         $transcriptSrt = ""
         $transcriptJson = ""
+        Write-PhaseResult -Name "Audio" -Status "PASS" -Detail "Skipped because source has no audio"
+        Write-PhaseResult -Name "Transcript" -Status "PASS" -Detail "Skipped because source has no audio"
     }
 
-    Write-Phase -Name "Index" -Detail $videoItem.Name
-    Write-Log "Building frame index..."
-    "frame_number,seconds,timestamp,filename,relative_path" | Set-Content -Path $frameIndexCsv -Encoding UTF8
-
-    Get-ChildItem $framesFolder -Filter "frame_*.jpg" | Sort-Object Name | ForEach-Object {
-        if ($_.BaseName -match '^frame_(\d+)$') {
-            $frameNumber = [int]$matches[1]
-            $seconds = [math]::Round(($frameNumber - 1) * $FrameIntervalSeconds, 3)
-            $timestamp = [TimeSpan]::FromSeconds($seconds).ToString("hh\:mm\:ss\.fff")
-            $relativePath = "$framesFolderName/$($_.Name)"
-            "$frameNumber,$seconds,$timestamp,$($_.Name),$relativePath" | Add-Content -Path $frameIndexCsv -Encoding UTF8
-        }
+    $frameCount = Invoke-PhaseAction -Name "Index" -Detail $videoItem.Name -Action {
+        Build-FrameIndex `
+            -FramesFolder $framesFolder `
+            -FrameIndexCsv $frameIndexCsv `
+            -FrameIntervalSeconds $FrameIntervalSeconds `
+            -FramesFolderName $framesFolderName `
+            -HeartbeatSeconds $HeartbeatSeconds
     }
 
-    $frameCount = @(Get-ChildItem $framesFolder -Filter "frame_*.jpg").Count
     if ($frameCount -le 0) {
         throw "No frames were extracted to $framesFolder"
     }
     $rawPresent = if ($DoCopyRaw) { "Yes" } else { "No" }
 
-    Write-Phase -Name "README" -Detail $videoItem.Name
-    New-CodexReadme `
-        -ReadmePath $readmeFile `
-        -VideoFileName $videoItem.Name `
-        -RawPresent $rawPresent `
-        -AudioPresent $audioPresentText `
-        -FrameIntervalSeconds $FrameIntervalSeconds
+    Invoke-PhaseAction -Name "README" -Detail $videoItem.Name -Action {
+        New-CodexReadme `
+            -ReadmePath $readmeFile `
+            -VideoFileName $videoItem.Name `
+            -RawPresent $rawPresent `
+            -AudioPresent $audioPresentText `
+            -FrameIntervalSeconds $FrameIntervalSeconds
+    } | Out-Null
 
     Add-SummaryRow `
         -SummaryCsv $SummaryCsv `
@@ -1487,6 +1609,19 @@ $PythonExe = Resolve-ExecutablePath `
 
 Ensure-Directory $InputFolder
 Ensure-Directory $OutputFolder
+
+$requestedInputPath = $InputPath
+if (-not $PSBoundParameters.ContainsKey("InputPath") -and -not $NoPrompt) {
+    Write-Host ""
+    Write-Host "Default input source:"
+    Write-Host $InputFolder
+    $customInput = Read-Host "Press Enter to use that folder, or type a different full video file or folder path"
+    if (-not [string]::IsNullOrWhiteSpace($customInput)) {
+        $requestedInputPath = $customInput.Trim()
+    }
+}
+
+$InputPath = $requestedInputPath
 
 $requestedOutputFolder = $OutputFolder
 if (-not $PSBoundParameters.ContainsKey("OutputFolder") -and -not $NoPrompt) {
@@ -1616,6 +1751,8 @@ Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { 
 Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
 Write-Host ("Whisper path selected:           {0}" -f $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
 Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
+Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
+Write-Host ("Input source:                    {0}" -f $(if ($InputPath) { $InputPath } else { $InputFolder }))
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
 Write-Host ""
 Write-Host "Videos to process:"
@@ -1681,7 +1818,8 @@ foreach ($video in $videos) {
             -SummaryCsv $summaryCsv `
             -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
-            -FrameIntervalSeconds $FrameIntervalSeconds
+            -FrameIntervalSeconds $FrameIntervalSeconds `
+            -HeartbeatSeconds $HeartbeatSeconds
 
         $processedItems += $result
     }

@@ -46,6 +46,18 @@ function Assert-File {
     }
 }
 
+function Test-VideoHasAudio {
+    param([string]$VideoPath)
+
+    $ffprobeExe = "C:\APPS\ffmpeg\bin\ffprobe.exe"
+    if (-not (Test-Path -LiteralPath $ffprobeExe)) {
+        return $true
+    }
+
+    $output = & $ffprobeExe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 $VideoPath
+    return ($output -match 'audio')
+}
+
 if (-not (Test-Path -LiteralPath $OutputRoot)) {
     throw "Output root not found: $OutputRoot"
 }
@@ -72,14 +84,18 @@ $frameIndexCsv = Join-Path $packageRoot "frame_index.csv"
 $readmePath = Join-Path $packageRoot "README_FOR_CODEX.txt"
 $logPath = Join-Path $packageRoot "script_run.log"
 $framesFolder = Join-Path $packageRoot $framesFolderName
+$hasAudio = Test-VideoHasAudio -VideoPath $videoItem.FullName
 
 Assert-File -Path $proxyPath -Label "proxy video"
-Assert-File -Path $audioPath -Label "audio mp3"
-Assert-File -Path $transcriptSrt -Label "transcript srt"
-Assert-File -Path $transcriptJson -Label "transcript json"
 Assert-File -Path $frameIndexCsv -Label "frame index csv"
 Assert-File -Path $readmePath -Label "readme"
 Assert-File -Path $logPath -Label "script log"
+
+if ($hasAudio) {
+    Assert-File -Path $audioPath -Label "audio mp3"
+    Assert-File -Path $transcriptSrt -Label "transcript srt"
+    Assert-File -Path $transcriptJson -Label "transcript json"
+}
 
 if (-not (Test-Path -LiteralPath $framesFolder)) {
     throw "Frames folder not found: $framesFolder"
