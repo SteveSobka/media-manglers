@@ -50,7 +50,12 @@ PS D:\repo> powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex
 
 Default local input source:
 D:\DATA\TEMP\_VIDEO_INPUT
-Do you want to download from YouTube or another supported video URL? (y/N): y
+Choose an input method:
+  1. Paste YouTube video or playlist URLs
+  2. Use this folder: D:\DATA\TEMP\_VIDEO_INPUT
+  3. Paste a full local video file path or folder path
+Press Enter for 3, or type Q to quit.
+Enter 1, 2, 3, or Q: 1
 Paste text containing one or more video or playlist URLs.
 Type DONE on its own line when the paste is complete.
 Paste line 1: https://www.youtube.com/watch?v=1aA1WGON49E
@@ -62,7 +67,12 @@ Pasted notes plus multiple URLs:
 ```text
 Default local input source:
 D:\DATA\TEMP\_VIDEO_INPUT
-Do you want to download from YouTube or another supported video URL? (y/N): y
+Choose an input method:
+  1. Paste YouTube video or playlist URLs
+  2. Use this folder: D:\DATA\TEMP\_VIDEO_INPUT
+  3. Paste a full local video file path or folder path
+Press Enter for 3, or type Q to quit.
+Enter 1, 2, 3, or Q: 1
 Paste text containing one or more video or playlist URLs.
 Type DONE on its own line when the paste is complete.
 Paste line 1: SimHub Tutorial Video and PlayLists to capture:
@@ -80,8 +90,27 @@ Local file walkthrough:
 ```text
 Default local input source:
 D:\DATA\TEMP\_VIDEO_INPUT
-Do you want to download from YouTube or another supported video URL? (y/N): n
-Press Enter to use the default folder, or type a full video file or folder path: D:\capture\clip.mp4
+Choose an input method:
+  1. Paste YouTube video or playlist URLs
+  2. Use this folder: D:\DATA\TEMP\_VIDEO_INPUT
+  3. Paste a full local video file path or folder path
+Press Enter for 3, or type Q to quit.
+Enter 1, 2, 3, or Q:
+Paste a full local video file path or folder path: D:\capture\clip.mp4
+```
+
+Local folder walkthrough:
+
+```text
+Default local input source:
+D:\DATA\TEMP\_VIDEO_INPUT
+Choose an input method:
+  1. Paste YouTube video or playlist URLs
+  2. Use this folder: D:\DATA\TEMP\_VIDEO_INPUT
+  3. Paste a full local video file path or folder path
+Press Enter for 3, or type Q to quit.
+Enter 1, 2, 3, or Q:
+Paste a full local video file path or folder path: D:\capture\session-clips
 ```
 
 Notes:
@@ -104,6 +133,7 @@ Notes:
 - Playlist URLs download every available video before packaging.
 - Public playlist downloads continue past unavailable, hidden, or private entries when other playlist items are downloadable.
 - Downloaded remote videos are stored under the selected input folder.
+- In local-path mode, pasted file and folder paths may be wrapped in single or double quotes.
 - `-SkipEstimate` disables the best-effort estimate phase.
 - Interactive mode now also asks:
   - whether to create a ChatGPT-ready zip package per video

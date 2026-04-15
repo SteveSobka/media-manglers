@@ -315,6 +315,25 @@ function Resolve-CommandOrPath {
     throw "$ToolName not found. Checked command/path: $Value"
 }
 
+function Normalize-UserPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    $normalized = $Path.Trim()
+
+    if ($normalized.Length -ge 2) {
+        if (($normalized.StartsWith('"') -and $normalized.EndsWith('"')) -or
+            ($normalized.StartsWith("'") -and $normalized.EndsWith("'"))) {
+            $normalized = $normalized.Substring(1, $normalized.Length - 2).Trim()
+        }
+    }
+
+    return $normalized
+}
+
 function Resolve-YtDlpInvoker {
     param(
         [string]$PreferredCommand,
@@ -754,9 +773,24 @@ function Get-InteractiveInputSource {
         Write-Host ""
         Write-Host "Default local input source:" -ForegroundColor Cyan
         Write-Host $DefaultInputFolder -ForegroundColor Cyan
-        $downloadChoice = Read-Host "Do you want to download from YouTube or another supported video URL? (y/N)"
+        Write-Host "Choose an input method:" -ForegroundColor Cyan
+        Write-Host "  1. Paste YouTube video or playlist URLs" -ForegroundColor Cyan
+        Write-Host ("  2. Use this folder: {0}" -f $DefaultInputFolder) -ForegroundColor Cyan
+        Write-Host "  3. Paste a full local video file path or folder path" -ForegroundColor Cyan
+        Write-Host "Press Enter for 3, or type Q to quit." -ForegroundColor Cyan
+        $inputChoice = Read-Host "Enter 1, 2, 3, or Q"
 
-        if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
+        if ([string]::IsNullOrWhiteSpace($inputChoice)) {
+            $inputChoice = "3"
+        }
+
+        $inputChoice = $inputChoice.Trim()
+
+        if ($inputChoice -match '^(q|quit)$') {
+            throw "User canceled at input selection."
+        }
+
+        if ($inputChoice -eq "1") {
             Write-Host "Paste text containing one or more video or playlist URLs." -ForegroundColor Cyan
             Write-Host "Type DONE on its own line when the paste is complete." -ForegroundColor Cyan
 
@@ -825,12 +859,21 @@ function Get-InteractiveInputSource {
             return @($remoteInputs)
         }
 
-        $customInput = Read-Host "Press Enter to use the default folder, or type a full video file or folder path"
-        if ([string]::IsNullOrWhiteSpace($customInput)) {
+        if ($inputChoice -eq "2") {
             return $DefaultInputFolder
         }
 
-        return $customInput.Trim()
+        if ($inputChoice -eq "3") {
+            $customInput = Read-Host "Paste a full local video file path or folder path"
+            if ([string]::IsNullOrWhiteSpace($customInput)) {
+                Write-Host "A local video file path or folder path is required for option 3." -ForegroundColor Yellow
+                continue
+            }
+
+            return (Normalize-UserPath -Path $customInput)
+        }
+
+        Write-Host "Invalid choice. Enter 1, 2, 3, or Q." -ForegroundColor Yellow
     }
 }
 
@@ -854,6 +897,7 @@ function Get-VideoFilesFromPath {
     param([string]$Path)
 
     $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
+    $Path = Normalize-UserPath -Path $Path
 
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Path not found: $Path"
