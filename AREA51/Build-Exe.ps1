@@ -30,12 +30,6 @@ if ([string]::IsNullOrWhiteSpace($appVersion)) {
     throw "Version file is empty: $versionFile"
 }
 
-$legacyPaths = @(
-    (Join-Path $distFolder "video_to_codex_package.exe"),
-    (Join-Path $releaseRoot ("media-manglers-v{0}" -f $appVersion)),
-    (Join-Path $releaseRoot ("media-manglers-v{0}.zip" -f $appVersion))
-)
-
 $releaseName = "Video-Mangler-v{0}" -f $appVersion
 $releaseFolder = Join-Path $releaseRoot $releaseName
 $releaseZip = Join-Path $releaseRoot ("{0}.zip" -f $releaseName)
@@ -53,9 +47,15 @@ $releaseFiles = @(
 New-Item -ItemType Directory -Path $distFolder -Force | Out-Null
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
-foreach ($legacyPath in $legacyPaths) {
-    if (Test-Path -LiteralPath $legacyPath) {
-        Remove-Item -LiteralPath $legacyPath -Recurse -Force
+foreach ($extraExe in @(Get-ChildItem -LiteralPath $distFolder -Filter "*.exe" -File -ErrorAction SilentlyContinue)) {
+    if ($extraExe.FullName -ne $outputFile) {
+        Remove-Item -LiteralPath $extraExe.FullName -Force
+    }
+}
+
+foreach ($extraReleaseItem in @(Get-ChildItem -LiteralPath $releaseRoot -ErrorAction SilentlyContinue)) {
+    if ($extraReleaseItem.FullName -notin @($releaseFolder, $releaseZip)) {
+        Remove-Item -LiteralPath $extraReleaseItem.FullName -Recurse -Force
     }
 }
 

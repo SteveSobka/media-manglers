@@ -1,0 +1,19 @@
+Video Mangler helper deployment notes
+====================================
+
+Developer box helper copy:
+
+  D:\DATA\CODE\HELPERS\Video Mangler.ps1
+  D:\DATA\CODE\HELPERS\Video Mangler.cmd
+
+Run from the helper folder:
+
+  .\Video Mangler.cmd
+
+Or directly:
+
+  powershell -ExecutionPolicy Bypass -File "D:\DATA\CODE\HELPERS\Video Mangler.ps1"
+
+Show the helper version:
+
+  powershell -ExecutionPolicy Bypass -File "D:\DATA\CODE\HELPERS\Video Mangler.ps1" -Version
