@@ -69,8 +69,7 @@ function Get-HttpUrlsFromText {
     return @(
         ([regex]::Matches($Value, 'https?://\S+')) |
             ForEach-Object { $_.Value.Trim().Trim(',', ';') } |
-            Where-Object { Test-IsHttpUrl -Value $_ } |
-            Select-Object -Unique
+            Where-Object { Test-IsHttpUrl -Value $_ }
     )
 }
 
@@ -763,6 +762,7 @@ function Get-InteractiveInputSource {
 
             $remoteInputs = New-Object System.Collections.Generic.List[string]
             $capturedLines = New-Object System.Collections.Generic.List[string]
+            $duplicateInputs = New-Object System.Collections.Generic.List[string]
             $lineNumber = 1
 
             while ($true) {
@@ -784,10 +784,23 @@ function Get-InteractiveInputSource {
             }
 
             foreach ($parsedUrl in $parsedUrls) {
-                if (-not $remoteInputs.Contains($parsedUrl)) {
-                    [void]$remoteInputs.Add($parsedUrl)
+                if ($remoteInputs.Contains($parsedUrl)) {
+                    if (-not $duplicateInputs.Contains($parsedUrl)) {
+                        [void]$duplicateInputs.Add($parsedUrl)
+                    }
+                    continue
+                }
+
+                [void]$remoteInputs.Add($parsedUrl)
+            }
+
+            if ($duplicateInputs.Count -gt 0) {
+                foreach ($duplicateUrl in $duplicateInputs) {
+                    Write-Log "Ignoring duplicate remote URL: $duplicateUrl" "WARN"
                 }
             }
+
+            Write-Host ("Captured {0} unique remote URL(s)." -f $remoteInputs.Count) -ForegroundColor Cyan
 
             try {
                 $null = Resolve-YtDlpInvoker -PreferredCommand $YtDlpCommand -PythonCommand $PythonCommand
