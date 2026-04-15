@@ -47,19 +47,19 @@ Notes:
 Single file:
 
 ```text
-C:\Users\Steve\Videos\clip.mp4
+C:\Videos\clip.mp4
 ```
 
 Folder of videos:
 
 ```text
-C:\Users\Steve\Videos\session-exports
+C:\Videos\session-exports
 ```
 
 Quoted path:
 
 ```text
-"C:\Users\Steve\Dropbox\RACING\PROJECT PACEBOARD\MEDIA\RAW_VIDEO\F3_Nord_2026-03-31_20-14-01.mkv"
+"C:\Video Input\raw footage\session_01.mkv"
 ```
 
 ## Typical remote examples
@@ -68,6 +68,12 @@ Single public remote video:
 
 ```text
 https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+```
+
+Open-source YouTube video:
+
+```text
+https://www.youtube.com/watch?v=R6MlUcmOul8
 ```
 
 Multiple public URLs in one paste:
@@ -147,11 +153,17 @@ Smoke test:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
 ```
 
+If `test_media` is missing or empty, the smoke test falls back to this public Blender sample:
+
+```text
+https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+```
+
 Validation only:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 `
   -OutputRoot .\test-output\smoke-YYYYMMDD-HHMMSS `
-  -VideoPath .\test_media\ToS-4k-1920.mov `
+  -VideoPath C:\Videos\clip.mp4 `
   -FrameIntervalSeconds 0.5
 ```

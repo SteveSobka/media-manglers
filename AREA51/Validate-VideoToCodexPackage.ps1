@@ -2,8 +2,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputRoot,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$VideoPath,
+
+    [string]$PackageFolderName,
 
     [double]$FrameIntervalSeconds = 0.5,
     [int]$MinimumFrameCount = 3
@@ -62,13 +64,24 @@ if (-not (Test-Path -LiteralPath $OutputRoot)) {
     throw "Output root not found: $OutputRoot"
 }
 
-if (-not (Test-Path -LiteralPath $VideoPath)) {
-    throw "Video path not found: $VideoPath"
+if ([string]::IsNullOrWhiteSpace($VideoPath) -and [string]::IsNullOrWhiteSpace($PackageFolderName)) {
+    throw "Either VideoPath or PackageFolderName is required."
 }
 
-$videoItem = Get-Item -LiteralPath $VideoPath
-$baseName = [System.IO.Path]::GetFileNameWithoutExtension($videoItem.Name)
-$packageFolderName = Get-SafeFolderName -Name $baseName
+$videoItem = $null
+if (-not [string]::IsNullOrWhiteSpace($VideoPath)) {
+    if (-not (Test-Path -LiteralPath $VideoPath)) {
+        throw "Video path not found: $VideoPath"
+    }
+
+    $videoItem = Get-Item -LiteralPath $VideoPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($videoItem.Name)
+    $packageFolderName = Get-SafeFolderName -Name $baseName
+}
+else {
+    $packageFolderName = Get-SafeFolderName -Name $PackageFolderName
+}
+
 $framesFolderName = "frames_{0}s" -f (Get-FrameIntervalLabel -Value $FrameIntervalSeconds)
 $packageRoot = Join-Path $OutputRoot $packageFolderName
 
@@ -84,7 +97,7 @@ $frameIndexCsv = Join-Path $packageRoot "frame_index.csv"
 $readmePath = Join-Path $packageRoot "README_FOR_CODEX.txt"
 $logPath = Join-Path $packageRoot "script_run.log"
 $framesFolder = Join-Path $packageRoot $framesFolderName
-$hasAudio = Test-VideoHasAudio -VideoPath $videoItem.FullName
+$hasAudio = if ($videoItem) { Test-VideoHasAudio -VideoPath $videoItem.FullName } else { $true }
 
 Assert-File -Path $proxyPath -Label "proxy video"
 Assert-File -Path $frameIndexCsv -Label "frame index csv"
