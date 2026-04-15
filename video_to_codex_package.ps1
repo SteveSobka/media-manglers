@@ -1,9 +1,11 @@
 param(
+    [Alias("InputUrl")]
     [string]$InputPath,
     [string]$InputFolder = "C:\TEMP\INPUT",
     [string]$OutputFolder = "C:\DATA\TEMP",
     [string]$FFmpegPath = "C:\APPS\ffmpeg\bin\ffmpeg.exe",
     [string]$PythonExe = "py",
+    [string]$YtDlpPath = "yt-dlp",
     [string]$WhisperModel = "base.en",
     [string]$Language = "en",
     [double]$FrameIntervalSeconds = [double]::NaN,
@@ -33,10 +35,46 @@ function Ensure-Directory {
     param([string]$Path)
 
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
-        if (-not (Test-Path $Path)) {
+        if (-not (Test-Path -LiteralPath $Path)) {
             New-Item -ItemType Directory -Path $Path -Force | Out-Null
         }
     }
+}
+
+function Test-IsHttpUrl {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Value, [System.UriKind]::Absolute, [ref]$uri)) {
+        return $false
+    }
+
+    return $uri.Scheme -in @([System.Uri]::UriSchemeHttp, [System.Uri]::UriSchemeHttps)
+}
+
+function Get-YtDlpInstallCommands {
+    param([string]$PythonCommand)
+
+    return @(
+        "winget install yt-dlp.yt-dlp",
+        "$PythonCommand -m pip install -U yt-dlp"
+    )
+}
+
+function Write-YtDlpInstallGuidance {
+    param([string]$PythonCommand)
+
+    Write-Host ""
+    Write-Host "yt-dlp is required to download from YouTube or another supported video URL." -ForegroundColor Yellow
+    Write-Host "Install it with one of these commands:" -ForegroundColor Yellow
+    foreach ($command in (Get-YtDlpInstallCommands -PythonCommand $PythonCommand)) {
+        Write-Host ("  {0}" -f $command) -ForegroundColor Yellow
+    }
+    Write-Host ""
 }
 
 function Write-Log {
@@ -165,6 +203,82 @@ function Get-FFprobePath {
         -FallbackCommands @("ffprobe") `
         -FallbackPaths @("C:\APPS\ffmpeg\bin\ffprobe.exe") `
         -ToolName "ffprobe"
+}
+
+function Resolve-CommandOrPath {
+    param(
+        [string]$Value,
+        [string]$ToolName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$ToolName not specified."
+    }
+
+    if (Test-Path -LiteralPath $Value) {
+        return (Resolve-Path -LiteralPath $Value).ProviderPath
+    }
+
+    $command = Get-Command $Value -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) {
+        return $command.Source
+    }
+
+    throw "$ToolName not found. Checked command/path: $Value"
+}
+
+function Resolve-YtDlpInvoker {
+    param(
+        [string]$PreferredCommand,
+        [string]$PythonCommand
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($PreferredCommand)) {
+        try {
+            $resolved = Resolve-CommandOrPath -Value $PreferredCommand -ToolName "yt-dlp"
+            return [PSCustomObject]@{
+                FilePath    = $resolved
+                Arguments   = @()
+                DisplayName = $resolved
+            }
+        }
+        catch {
+            Write-Log "yt-dlp command candidate '$PreferredCommand' unavailable: $($_.Exception.Message)" "WARN"
+        }
+    }
+
+    $moduleCheck = Invoke-ExternalCapture `
+        -FilePath $PythonCommand `
+        -Arguments @("-m", "yt_dlp", "--version") `
+        -StepName "yt-dlp Python module check" `
+        -TimeoutSeconds 60 `
+        -IgnoreExitCode
+
+    if ($moduleCheck.ExitCode -eq 0) {
+        return [PSCustomObject]@{
+            FilePath    = $PythonCommand
+            Arguments   = @("-m", "yt_dlp")
+            DisplayName = "$PythonCommand -m yt_dlp"
+        }
+    }
+
+    throw "Remote video URLs require yt-dlp. Install it with 'winget install yt-dlp.yt-dlp' or 'py -m pip install -U yt-dlp'."
+}
+
+function Get-RemoteSourceKind {
+    param([string]$SourceUrl)
+
+    $normalized = $SourceUrl.ToLowerInvariant()
+    $isYoutube = $normalized -match '^https?://([a-z0-9-]+\.)?(youtube\.com|youtu\.be)/'
+
+    if ($isYoutube -and (
+            $normalized -match 'youtube\.com/playlist\?' -or
+            ($normalized -match '[?&]list=' -and $normalized -notmatch '[?&]v=' -and $normalized -notmatch 'youtu\.be/')
+        )) {
+        return "playlist"
+    }
+
+    return "video"
 }
 
 function Quote-Argument {
@@ -357,6 +471,77 @@ function Invoke-ExternalStreaming {
     }
 }
 
+function Invoke-RemoteVideoDownload {
+    param(
+        [string]$SourceUrl,
+        [string]$DownloadFolder,
+        [psobject]$YtDlpInvoker,
+        [int]$HeartbeatSeconds = 30
+    )
+
+    Ensure-Directory $DownloadFolder
+
+    $sourceKind = Get-RemoteSourceKind -SourceUrl $SourceUrl
+    $sessionFolderName = "download-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
+    $sessionFolder = Join-Path $DownloadFolder $sessionFolderName
+    Ensure-Directory $sessionFolder
+
+    $outputTemplate = if ($sourceKind -eq "playlist") {
+        "%(playlist_index)05d - %(title).120B [%(id)s].%(ext)s"
+    }
+    else {
+        "%(title).120B [%(id)s].%(ext)s"
+    }
+
+    $playlistArguments = if ($sourceKind -eq "playlist") { @("--yes-playlist") } else { @("--no-playlist") }
+    $result = Invoke-ExternalStreaming `
+        -FilePath $YtDlpInvoker.FilePath `
+        -Arguments ($YtDlpInvoker.Arguments + @(
+            "--newline",
+            "--restrict-filenames",
+            "--print", "after_move:filepath",
+            "-P", $sessionFolder,
+            "-o", $outputTemplate
+        ) + $playlistArguments + @($SourceUrl)) `
+        -StepName ("yt-dlp download ({0})" -f $sourceKind) `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 7200
+
+    $supportedExtensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
+    $downloadedPaths = @()
+
+    foreach ($line in ($result.StdOut -split "`r?`n")) {
+        $candidate = $line.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            $item = Get-Item -LiteralPath $candidate
+            if (-not $item.PSIsContainer -and $supportedExtensions -contains $item.Extension.ToLowerInvariant()) {
+                $downloadedPaths += $item.FullName
+            }
+        }
+    }
+
+    if ($downloadedPaths.Count -eq 0) {
+        $downloadedPaths = @(
+            Get-ChildItem -LiteralPath $sessionFolder -File |
+                Where-Object { $supportedExtensions -contains $_.Extension.ToLowerInvariant() } |
+                Sort-Object Name |
+                ForEach-Object { $_.FullName }
+        )
+    }
+
+    if ($downloadedPaths.Count -eq 0) {
+        throw "yt-dlp finished without producing a supported local video file in $sessionFolder"
+    }
+
+    Write-Log ("Remote {0} downloaded. Items: {1}. Cache folder: {2}" -f $sourceKind, $downloadedPaths.Count, $sessionFolder)
+
+    return [PSCustomObject]@{
+        SourceKind    = $sourceKind
+        DownloadRoot  = $sessionFolder
+        DownloadedPaths = $downloadedPaths
+    }
+}
+
 function Test-FrameIntervalValue {
     param([double]$Value)
 
@@ -407,6 +592,62 @@ function Get-InteractiveFrameInterval {
     }
 }
 
+function Get-InteractiveInputSource {
+    param(
+        [string]$DefaultInputFolder,
+        [string]$YtDlpCommand,
+        [string]$PythonCommand
+    )
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Default local input source:" -ForegroundColor Cyan
+        Write-Host $DefaultInputFolder -ForegroundColor Cyan
+        $downloadChoice = Read-Host "Do you want to download from YouTube or another supported video URL? (y/N)"
+
+        if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
+            $remoteInput = Read-Host "Paste a video or playlist URL"
+            if ([string]::IsNullOrWhiteSpace($remoteInput)) {
+                Write-Host "Please enter a video or playlist URL." -ForegroundColor Yellow
+                continue
+            }
+
+            $remoteInput = $remoteInput.Trim()
+            if (-not (Test-IsHttpUrl -Value $remoteInput)) {
+                Write-Host "Please enter a full http/https URL." -ForegroundColor Yellow
+                continue
+            }
+
+            try {
+                $null = Resolve-YtDlpInvoker -PreferredCommand $YtDlpCommand -PythonCommand $PythonCommand
+            }
+            catch {
+                Write-Host $_.Exception.Message -ForegroundColor Yellow
+                Write-YtDlpInstallGuidance -PythonCommand $PythonCommand
+                $fallbackChoice = Read-Host "Press Enter to choose a local file or folder instead, or type Q to stop"
+                if (-not [string]::IsNullOrWhiteSpace($fallbackChoice) -and $fallbackChoice.Trim() -match '^(q|quit)$') {
+                    throw
+                }
+                continue
+            }
+
+            $sourceKind = Get-RemoteSourceKind -SourceUrl $remoteInput
+            if ($sourceKind -eq "playlist") {
+                Write-Host "Playlist detected. The script will download each video in the playlist before packaging." -ForegroundColor Cyan
+            }
+
+            return $remoteInput
+        }
+
+        $customInput = Read-Host "Press Enter to use the default folder, or type a full video file or folder path"
+        if ([string]::IsNullOrWhiteSpace($customInput)) {
+            return $DefaultInputFolder
+        }
+
+        return $customInput.Trim()
+    }
+}
+
 function Format-DurationHuman {
     param([double]$Seconds)
 
@@ -426,19 +667,19 @@ function Format-DurationHuman {
 function Get-VideoFilesFromPath {
     param([string]$Path)
 
-    $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v")
+    $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
 
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         throw "Path not found: $Path"
     }
 
-    $item = Get-Item $Path
+    $item = Get-Item -LiteralPath $Path
 
     if ($item.PSIsContainer) {
-        return @(Get-ChildItem $Path -File | Where-Object { $extensions -contains $_.Extension.ToLower() })
+        return @(Get-ChildItem -LiteralPath $Path -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Sort-Object Name)
     }
 
-    if ($extensions -notcontains $item.Extension.ToLower()) {
+    if ($extensions -notcontains $item.Extension.ToLowerInvariant()) {
         throw "Unsupported video file type: $($item.FullName)"
     }
 
@@ -1612,16 +1853,14 @@ Ensure-Directory $OutputFolder
 
 $requestedInputPath = $InputPath
 if (-not $PSBoundParameters.ContainsKey("InputPath") -and -not $NoPrompt) {
-    Write-Host ""
-    Write-Host "Default input source:"
-    Write-Host $InputFolder
-    $customInput = Read-Host "Press Enter to use that folder, or type a different full video file or folder path"
-    if (-not [string]::IsNullOrWhiteSpace($customInput)) {
-        $requestedInputPath = $customInput.Trim()
-    }
+    $requestedInputPath = Get-InteractiveInputSource `
+        -DefaultInputFolder $InputFolder `
+        -YtDlpCommand $YtDlpPath `
+        -PythonCommand $PythonExe
 }
 
 $InputPath = $requestedInputPath
+$inputSourceDisplay = if ($InputPath) { $InputPath } else { $InputFolder }
 
 $requestedOutputFolder = $OutputFolder
 if (-not $PSBoundParameters.ContainsKey("OutputFolder") -and -not $NoPrompt) {
@@ -1667,6 +1906,29 @@ Write-Log "Output folder root: $OutputFolder"
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
 $summaryCsv = Join-Path $OutputFolder "PROCESSING_SUMMARY.csv"
+$downloadedInputPath = $null
+$downloadedInputCount = 0
+$downloadedInputKind = $null
+
+if ($InputPath -and (Test-IsHttpUrl -Value $InputPath)) {
+    $downloadCacheFolder = Join-Path $OutputFolder "_download_cache"
+
+    $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $InputPath -Action {
+        $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+        Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+
+        Invoke-RemoteVideoDownload `
+            -SourceUrl $InputPath `
+            -DownloadFolder $downloadCacheFolder `
+            -YtDlpInvoker $ytDlpInvoker `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
+
+    $downloadedInputPath = $downloadResult.DownloadRoot
+    $downloadedInputCount = @($downloadResult.DownloadedPaths).Count
+    $downloadedInputKind = $downloadResult.SourceKind
+    $InputPath = $downloadResult.DownloadRoot
+}
 
 $videos = @()
 
@@ -1677,11 +1939,35 @@ else {
     $videos = Get-VideoFilesFromPath -Path $InputFolder
 
     if ((-not $videos -or $videos.Count -eq 0) -and -not $NoPrompt) {
-        Write-Host "No video files found in default input folder:"
-        Write-Host $InputFolder
-        Write-Host ""
-        $manual = Read-Host "Enter a full path to a video file or folder"
-        $videos = Get-VideoFilesFromPath -Path $manual
+        Write-Host "No supported video files found in the selected local input source." -ForegroundColor Yellow
+        $manual = Get-InteractiveInputSource `
+            -DefaultInputFolder $InputFolder `
+            -YtDlpCommand $YtDlpPath `
+            -PythonCommand $PythonExe
+
+        if (Test-IsHttpUrl -Value $manual) {
+            $downloadCacheFolder = Join-Path $OutputFolder "_download_cache"
+            $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $manual -Action {
+                $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+                Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+
+                Invoke-RemoteVideoDownload `
+                    -SourceUrl $manual `
+                    -DownloadFolder $downloadCacheFolder `
+                    -YtDlpInvoker $ytDlpInvoker `
+                    -HeartbeatSeconds $HeartbeatSeconds
+            }
+
+            $inputSourceDisplay = $manual
+            $downloadedInputPath = $downloadResult.DownloadRoot
+            $downloadedInputCount = @($downloadResult.DownloadedPaths).Count
+            $downloadedInputKind = $downloadResult.SourceKind
+            $videos = Get-VideoFilesFromPath -Path $downloadResult.DownloadRoot
+        }
+        else {
+            $inputSourceDisplay = $manual
+            $videos = Get-VideoFilesFromPath -Path $manual
+        }
     }
 }
 
@@ -1752,7 +2038,12 @@ Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { 
 Write-Host ("Whisper path selected:           {0}" -f $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
 Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
 Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
-Write-Host ("Input source:                    {0}" -f $(if ($InputPath) { $InputPath } else { $InputFolder }))
+Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
+if ($downloadedInputPath) {
+    Write-Host ("Downloaded input cache:          {0}" -f $downloadedInputPath)
+    Write-Host ("Downloaded source type:          {0}" -f $downloadedInputKind)
+    Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
+}
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
 Write-Host ""
 Write-Host "Videos to process:"

@@ -1,6 +1,6 @@
 # media-manglers
 
-Windows-first PowerShell tooling to turn one or more local video files into a Codex review package.
+Windows-first PowerShell tooling to turn one or more local or remote video sources into a Codex review package.
 
 ## Main script
 
@@ -14,16 +14,43 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -NoPrompt
 ```
 
+Use the dedicated remote-input alias for a single YouTube video:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
+  -InputUrl "https://www.youtube.com/watch?v=VIDEO_ID" `
+  -OutputFolder .\test-output\youtube `
+  -FrameIntervalSeconds 0.5 `
+  -NoPrompt
+```
+
+Process every video in a YouTube playlist:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
+  -InputUrl "https://www.youtube.com/playlist?list=PL5QT34daNj2BPI0Rsjdg3WpJXgK8_UPrP" `
+  -OutputFolder .\test-output\playlist `
+  -FrameIntervalSeconds 0.5 `
+  -NoPrompt
+```
+
 Notes:
 
 - Default input folder: `C:\TEMP\INPUT`
 - Default output folder: `C:\DATA\TEMP`
+- `-InputPath` accepts a local video file, a folder of videos, or an `http/https` video URL.
+- `-InputUrl` is a dedicated alias for remote video or playlist URLs and is the clearer option when you are downloading first.
 - `-FrameIntervalSeconds` accepts `0.1` second increments such as `0.3`, `0.5`, `1.0`, `1.1`.
 - `-HeartbeatSeconds` controls periodic keep-alive logging during long-running phases. The default is `10`.
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
-- If you omit `-InputPath` interactively, the script offers `C:\TEMP\INPUT` first and lets you type a different file or folder.
+- If you run the script interactively without `-InputPath` or `-InputUrl`, it asks whether you want to download from YouTube or another supported video URL first.
+- In interactive mode, you can paste either a single-video URL or a playlist URL. Playlist URLs download every video before packaging.
 - `-SkipEstimate` disables the best-effort estimate phase.
 - GPU acceleration is used when available, with CPU fallback if the GPU path fails.
+- Remote URL downloads require `yt-dlp`. On Windows, install it with `winget install yt-dlp.yt-dlp` or `py -m pip install -U yt-dlp`.
+- If you choose a remote URL interactively and `yt-dlp` is missing, the script tells you how to install it before continuing.
+- Downloaded media is cached under `<OutputFolder>\_download_cache`.
+- Use remote download only for video sources you have permission to download.
 - Long-running phases emit timestamped `still working...` lines without using fragile PowerShell background event handlers.
 
 ## One-shot smoke test

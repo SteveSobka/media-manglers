@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 function Get-SmokeTestMediaFiles {
     param([string]$FolderPath)
 
-    $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v")
+    $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
     return @(Get-ChildItem -LiteralPath $FolderPath -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Sort-Object Name)
 }
 
