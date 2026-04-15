@@ -759,29 +759,20 @@ function Get-InteractiveInputSource {
 
         if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
             Write-Host "Paste text containing one or more video or playlist URLs." -ForegroundColor Cyan
-            Write-Host "Press Enter on two blank lines in a row when the paste is complete." -ForegroundColor Cyan
+            Write-Host "Type DONE on its own line when the paste is complete." -ForegroundColor Cyan
 
             $remoteInputs = New-Object System.Collections.Generic.List[string]
             $capturedLines = New-Object System.Collections.Generic.List[string]
-            $blankLineCount = 0
             $lineNumber = 1
 
             while ($true) {
                 $prompt = if ($lineNumber -eq 1) { "Paste line 1" } else { "Next line" }
                 $remoteInput = Read-Host $prompt
 
-                if ([string]::IsNullOrWhiteSpace($remoteInput)) {
-                    $blankLineCount += 1
-
-                    if ($blankLineCount -ge 2) {
-                        break
-                    }
-
-                    [void]$capturedLines.Add("")
-                    continue
+                if (-not [string]::IsNullOrWhiteSpace($remoteInput) -and $remoteInput.Trim().ToUpperInvariant() -eq "DONE") {
+                    break
                 }
 
-                $blankLineCount = 0
                 [void]$capturedLines.Add($remoteInput)
                 $lineNumber += 1
             }
