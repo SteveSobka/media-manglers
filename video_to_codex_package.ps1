@@ -1,8 +1,8 @@
 param(
     [Alias("InputUrl")]
     [string]$InputPath,
-    [string]$InputFolder = "C:\TEMP\INPUT",
-    [string]$OutputFolder = "C:\DATA\TEMP",
+    [string]$InputFolder = "C:\DATA\TEMP\_VIDEO_INPUT",
+    [string]$OutputFolder = "C:\DATA\TEMP\_VIDEO_OUTPUT",
     [string]$FFmpegPath = "C:\APPS\ffmpeg\bin\ffmpeg.exe",
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
@@ -11,8 +11,11 @@ param(
     [double]$FrameIntervalSeconds = [double]::NaN,
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawVideo,
+    [switch]$CreateChatGptZip,
+    [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
-    [switch]$SkipEstimate
+    [switch]$SkipEstimate,
+    [int]$ChatGptZipMaxMb = 500
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +57,77 @@ function Test-IsHttpUrl {
     }
 
     return $uri.Scheme -in @([System.Uri]::UriSchemeHttp, [System.Uri]::UriSchemeHttps)
+}
+
+function Resolve-DefaultInputOutputFolders {
+    param(
+        [string]$CurrentInputFolder,
+        [string]$CurrentOutputFolder,
+        [switch]$InputProvided,
+        [switch]$OutputProvided,
+        [switch]$NoPrompt
+    )
+
+    $cInputDefault = "C:\DATA\TEMP\_VIDEO_INPUT"
+    $cOutputDefault = "C:\DATA\TEMP\_VIDEO_OUTPUT"
+    $dInputDefault = "D:\DATA\TEMP\_VIDEO_INPUT"
+    $dOutputDefault = "D:\DATA\TEMP\_VIDEO_OUTPUT"
+
+    if (-not $InputProvided -and -not $OutputProvided) {
+        if ((Test-Path -LiteralPath $cInputDefault) -or (Test-Path -LiteralPath $cOutputDefault)) {
+            return [PSCustomObject]@{ InputFolder = $cInputDefault; OutputFolder = $cOutputDefault }
+        }
+
+        if ((Test-Path -LiteralPath $dInputDefault) -or (Test-Path -LiteralPath $dOutputDefault)) {
+            return [PSCustomObject]@{ InputFolder = $dInputDefault; OutputFolder = $dOutputDefault }
+        }
+
+        if ($NoPrompt) {
+            return [PSCustomObject]@{ InputFolder = $cInputDefault; OutputFolder = $cOutputDefault }
+        }
+
+        Write-Host ""
+        Write-Host "No default input/output folders were found on C: or D:." -ForegroundColor Yellow
+        Write-Host ("Recommended input folder:  {0}" -f $cInputDefault) -ForegroundColor Cyan
+        Write-Host ("Recommended output folder: {0}" -f $cOutputDefault) -ForegroundColor Cyan
+        $baseChoice = Read-Host "Press Enter to use C:\DATA\TEMP, or type another base folder"
+
+        if ([string]::IsNullOrWhiteSpace($baseChoice)) {
+            return [PSCustomObject]@{ InputFolder = $cInputDefault; OutputFolder = $cOutputDefault }
+        }
+
+        $basePath = $baseChoice.Trim()
+        return [PSCustomObject]@{
+            InputFolder  = Join-Path $basePath "_VIDEO_INPUT"
+            OutputFolder = Join-Path $basePath "_VIDEO_OUTPUT"
+        }
+    }
+
+    $resolvedInput = $CurrentInputFolder
+    $resolvedOutput = $CurrentOutputFolder
+
+    if (-not $InputProvided) {
+        if ($OutputProvided -and -not [string]::IsNullOrWhiteSpace($CurrentOutputFolder)) {
+            $outputParent = Split-Path $CurrentOutputFolder -Parent
+            if (-not [string]::IsNullOrWhiteSpace($outputParent)) {
+                $resolvedInput = Join-Path $outputParent "_VIDEO_INPUT"
+            }
+        }
+    }
+
+    if (-not $OutputProvided) {
+        if ($InputProvided -and -not [string]::IsNullOrWhiteSpace($CurrentInputFolder)) {
+            $inputParent = Split-Path $CurrentInputFolder -Parent
+            if (-not [string]::IsNullOrWhiteSpace($inputParent)) {
+                $resolvedOutput = Join-Path $inputParent "_VIDEO_OUTPUT"
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        InputFolder  = $resolvedInput
+        OutputFolder = $resolvedOutput
+    }
 }
 
 function Get-YtDlpInstallCommands {
@@ -233,9 +307,37 @@ function Resolve-YtDlpInvoker {
         [string]$PythonCommand
     )
 
+    $executableCandidates = New-Object System.Collections.Generic.List[string]
+
     if (-not [string]::IsNullOrWhiteSpace($PreferredCommand)) {
+        $executableCandidates.Add($PreferredCommand)
+    }
+
+    foreach ($commandName in @("yt-dlp", "yt-dlp.exe")) {
+        if (-not [string]::IsNullOrWhiteSpace($commandName)) {
+            $executableCandidates.Add($commandName)
+        }
+    }
+
+    $userProfile = [Environment]::GetFolderPath("UserProfile")
+    $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+    $roamingAppData = [Environment]::GetFolderPath("ApplicationData")
+    $fallbackGlobs = @(
+        (Join-Path $userProfile "AppData\Roaming\Python\Python*\Scripts\yt-dlp.exe"),
+        (Join-Path $localAppData "Programs\Python\Python*\Scripts\yt-dlp.exe"),
+        (Join-Path $roamingAppData "Python\Python*\Scripts\yt-dlp.exe")
+    )
+
+    foreach ($glob in $fallbackGlobs) {
+        $matches = @(Get-ChildItem -Path $glob -File -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)
+        foreach ($match in $matches) {
+            $executableCandidates.Add($match.FullName)
+        }
+    }
+
+    foreach ($candidate in ($executableCandidates | Select-Object -Unique)) {
         try {
-            $resolved = Resolve-CommandOrPath -Value $PreferredCommand -ToolName "yt-dlp"
+            $resolved = Resolve-CommandOrPath -Value $candidate -ToolName "yt-dlp"
             return [PSCustomObject]@{
                 FilePath    = $resolved
                 Arguments   = @()
@@ -243,22 +345,31 @@ function Resolve-YtDlpInvoker {
             }
         }
         catch {
-            Write-Log "yt-dlp command candidate '$PreferredCommand' unavailable: $($_.Exception.Message)" "WARN"
+            Write-Log "yt-dlp command candidate '$candidate' unavailable: $($_.Exception.Message)" "WARN"
         }
     }
 
-    $moduleCheck = Invoke-ExternalCapture `
-        -FilePath $PythonCommand `
-        -Arguments @("-m", "yt_dlp", "--version") `
-        -StepName "yt-dlp Python module check" `
-        -TimeoutSeconds 60 `
-        -IgnoreExitCode
+    $pythonCandidates = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @($PythonCommand, "py", "python", "python3")) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $pythonCandidates.Add($candidate)
+        }
+    }
 
-    if ($moduleCheck.ExitCode -eq 0) {
-        return [PSCustomObject]@{
-            FilePath    = $PythonCommand
-            Arguments   = @("-m", "yt_dlp")
-            DisplayName = "$PythonCommand -m yt_dlp"
+    foreach ($pythonCandidate in ($pythonCandidates | Select-Object -Unique)) {
+        $moduleCheck = Invoke-ExternalCapture `
+            -FilePath $pythonCandidate `
+            -Arguments @("-m", "yt_dlp", "--version") `
+            -StepName "yt-dlp Python module check ($pythonCandidate)" `
+            -TimeoutSeconds 60 `
+            -IgnoreExitCode
+
+        if ($moduleCheck.ExitCode -eq 0) {
+            return [PSCustomObject]@{
+                FilePath    = $pythonCandidate
+                Arguments   = @("-m", "yt_dlp")
+                DisplayName = "$pythonCandidate -m yt_dlp"
+            }
         }
     }
 
@@ -522,7 +633,7 @@ function Invoke-RemoteVideoDownload {
 
     if ($downloadedPaths.Count -eq 0) {
         $downloadedPaths = @(
-            Get-ChildItem -LiteralPath $sessionFolder -File |
+            Get-ChildItem -LiteralPath $sessionFolder -File -Recurse |
                 Where-Object { $supportedExtensions -contains $_.Extension.ToLowerInvariant() } |
                 Sort-Object Name |
                 ForEach-Object { $_.FullName }
@@ -920,6 +1031,135 @@ Notes:
 - Raw video present: $RawPresent
 - Audio present in source: $AudioPresent
 "@ | Set-Content -Path $ReadmePath -Encoding UTF8
+}
+
+function New-ChatGptReadme {
+    param(
+        [string]$ReadmePath,
+        [string]$SourceVideoName,
+        [string]$FramesFolderName,
+        [bool]$ProxyIncluded
+    )
+
+@"
+CHATGPT_REVIEW_PACKAGE
+
+Source video:
+$SourceVideoName
+
+Package contents:
+- audio\audio.mp3
+- $FramesFolderName\frame_*.jpg
+- transcript\transcript.srt
+- transcript\transcript.json
+- frame_index.csv
+$(if ($ProxyIncluded) { "- proxy\review_proxy_1280.mp4" } else { "- proxy video omitted to stay under upload size limits" })
+
+How to use this in ChatGPT:
+1) Upload this zip file.
+2) Ask ChatGPT to summarize the transcript first.
+3) Ask ChatGPT to review visual events using frame_index.csv + the extracted frame images.
+4) If proxy video is included, ask ChatGPT to cross-check key moments against the proxy.
+5) Ask for:
+   - timeline of major events
+   - notable quotes
+   - action items
+   - risks/issues found in the video
+   - concise executive summary
+"@ | Set-Content -Path $ReadmePath -Encoding UTF8
+}
+
+function New-ChatGptZipPackage {
+    param(
+        [psobject]$ProcessedItem,
+        [int]$MaxSizeMb = 500
+    )
+
+    $maxBytes = [int64]$MaxSizeMb * 1MB
+    $framesFolder = Join-Path $ProcessedItem.OutputPath $ProcessedItem.FramesFolderName
+    $audioFolder = Join-Path $ProcessedItem.OutputPath "audio"
+    $transcriptFolder = Join-Path $ProcessedItem.OutputPath "transcript"
+    $frameIndexCsv = Join-Path $ProcessedItem.OutputPath "frame_index.csv"
+    $proxyVideo = Join-Path $ProcessedItem.OutputPath "proxy\review_proxy_1280.mp4"
+    $zipPath = Join-Path $ProcessedItem.OutputPath "chatgpt_review_package.zip"
+
+    $required = @($framesFolder, $audioFolder, $transcriptFolder, $frameIndexCsv)
+    foreach ($path in $required) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            throw "Cannot build ChatGPT zip because required item is missing: $path"
+        }
+    }
+
+    $baseSize = [int64]0
+    foreach ($path in $required) {
+        if (Test-Path -LiteralPath $path -PathType Container) {
+            $measured = (Get-ChildItem -LiteralPath $path -File -Recurse | Measure-Object -Property Length -Sum).Sum
+            if ($null -ne $measured) {
+                $baseSize += [int64]$measured
+            }
+        }
+        else {
+            $baseSize += [int64](Get-Item -LiteralPath $path).Length
+        }
+    }
+
+    $includeProxy = $false
+    if (Test-Path -LiteralPath $proxyVideo) {
+        $proxySize = (Get-Item -LiteralPath $proxyVideo).Length
+        if (($baseSize + $proxySize) -le $maxBytes) {
+            $includeProxy = $true
+        }
+    }
+
+    $tempRoot = Join-Path $ProcessedItem.OutputPath "_chatgpt_zip_temp"
+    if (Test-Path -LiteralPath $tempRoot) {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    }
+    Ensure-Directory $tempRoot
+
+    try {
+        $stagingRoot = Join-Path $tempRoot "chatgpt_review"
+        Ensure-Directory $stagingRoot
+
+        Copy-Item -LiteralPath $audioFolder -Destination (Join-Path $stagingRoot "audio") -Recurse -Force
+        Copy-Item -LiteralPath $framesFolder -Destination (Join-Path $stagingRoot $ProcessedItem.FramesFolderName) -Recurse -Force
+        Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
+        Copy-Item -LiteralPath $frameIndexCsv -Destination (Join-Path $stagingRoot "frame_index.csv") -Force
+
+        if ($includeProxy) {
+            Ensure-Directory (Join-Path $stagingRoot "proxy")
+            Copy-Item -LiteralPath $proxyVideo -Destination (Join-Path $stagingRoot "proxy\review_proxy_1280.mp4") -Force
+        }
+
+        $chatGptReadme = Join-Path $stagingRoot "README_FOR_CHATGPT.txt"
+        New-ChatGptReadme `
+            -ReadmePath $chatGptReadme `
+            -SourceVideoName $ProcessedItem.SourceVideoName `
+            -FramesFolderName $ProcessedItem.FramesFolderName `
+            -ProxyIncluded:$includeProxy
+
+        if (Test-Path -LiteralPath $zipPath) {
+            Remove-Item -LiteralPath $zipPath -Force
+        }
+
+        Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
+        $zipSize = (Get-Item -LiteralPath $zipPath).Length
+        if ($zipSize -gt $maxBytes) {
+            Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+            throw "ChatGPT zip exceeded $MaxSizeMb MB limit. Try a larger frame interval or skip the zip."
+        }
+
+        return [PSCustomObject]@{
+            ZipPath       = $zipPath
+            ZipSizeMb     = [math]::Round($zipSize / 1MB, 2)
+            ProxyIncluded = $includeProxy
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function New-MasterReadme {
@@ -1848,8 +2088,14 @@ $PythonExe = Resolve-ExecutablePath `
     -FallbackPaths @() `
     -ToolName "Python launcher"
 
-Ensure-Directory $InputFolder
-Ensure-Directory $OutputFolder
+$resolvedDefaults = Resolve-DefaultInputOutputFolders `
+    -CurrentInputFolder $InputFolder `
+    -CurrentOutputFolder $OutputFolder `
+    -InputProvided:$($PSBoundParameters.ContainsKey("InputFolder")) `
+    -OutputProvided:$($PSBoundParameters.ContainsKey("OutputFolder")) `
+    -NoPrompt:$NoPrompt
+$InputFolder = $resolvedDefaults.InputFolder
+$OutputFolder = $resolvedDefaults.OutputFolder
 
 $requestedInputPath = $InputPath
 if (-not $PSBoundParameters.ContainsKey("InputPath") -and -not $NoPrompt) {
@@ -1875,6 +2121,7 @@ if (-not $PSBoundParameters.ContainsKey("OutputFolder") -and -not $NoPrompt) {
 
 $OutputFolder = $requestedOutputFolder
 Ensure-Directory $OutputFolder
+Ensure-Directory $InputFolder
 
 $doCopyRaw = $CopyRawVideo.IsPresent
 if (-not $PSBoundParameters.ContainsKey("CopyRawVideo") -and -not $NoPrompt) {
@@ -1884,6 +2131,28 @@ if (-not $PSBoundParameters.ContainsKey("CopyRawVideo") -and -not $NoPrompt) {
     }
     else {
         $doCopyRaw = $value.Trim() -match '^(y|yes)$'
+    }
+}
+
+$doCreateChatGptZip = $CreateChatGptZip.IsPresent
+if (-not $PSBoundParameters.ContainsKey("CreateChatGptZip") -and -not $NoPrompt) {
+    $value = Read-Host "Create a ChatGPT upload zip package for each completed video? (Y/n)"
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $doCreateChatGptZip = $true
+    }
+    else {
+        $doCreateChatGptZip = $value.Trim() -match '^(y|yes)$'
+    }
+}
+
+$doOpenOutputInExplorer = $OpenOutputInExplorer.IsPresent
+if (-not $PSBoundParameters.ContainsKey("OpenOutputInExplorer") -and -not $NoPrompt) {
+    $value = Read-Host "Open Windows Explorer to the output folder when finished? (Y/n)"
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $doOpenOutputInExplorer = $true
+    }
+    else {
+        $doOpenOutputInExplorer = $value.Trim() -match '^(y|yes)$'
     }
 }
 
@@ -1911,7 +2180,7 @@ $downloadedInputCount = 0
 $downloadedInputKind = $null
 
 if ($InputPath -and (Test-IsHttpUrl -Value $InputPath)) {
-    $downloadCacheFolder = Join-Path $OutputFolder "_download_cache"
+    $downloadCacheFolder = $InputFolder
 
     $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $InputPath -Action {
         $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
@@ -1946,7 +2215,7 @@ else {
             -PythonCommand $PythonExe
 
         if (Test-IsHttpUrl -Value $manual) {
-            $downloadCacheFolder = Join-Path $OutputFolder "_download_cache"
+            $downloadCacheFolder = $InputFolder
             $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $manual -Action {
                 $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
                 Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
@@ -2094,6 +2363,7 @@ if ($estimate) {
 
 $processedItems = @()
 $failedItems = @()
+$chatGptPackages = @()
 
 foreach ($video in $videos) {
     try {
@@ -2113,6 +2383,18 @@ foreach ($video in $videos) {
             -HeartbeatSeconds $HeartbeatSeconds
 
         $processedItems += $result
+
+        if ($doCreateChatGptZip) {
+            $zipInfo = Invoke-PhaseAction -Name "ChatGPT zip" -Detail $result.SourceVideoName -Action {
+                New-ChatGptZipPackage -ProcessedItem $result -MaxSizeMb $ChatGptZipMaxMb
+            }
+            $chatGptPackages += [PSCustomObject]@{
+                SourceVideoName = $result.SourceVideoName
+                ZipPath         = $zipInfo.ZipPath
+                ZipSizeMb       = $zipInfo.ZipSizeMb
+                ProxyIncluded   = $zipInfo.ProxyIncluded
+            }
+        }
     }
     catch {
         $failedItems += [PSCustomObject]@{
@@ -2151,6 +2433,13 @@ foreach ($item in $processedItems) {
     Write-Host ("  Whisper: {0}" -f $item.WhisperMode)
 }
 
+foreach ($zip in $chatGptPackages) {
+    Write-Host ("ChatGPT ZIP {0}" -f $zip.SourceVideoName) -ForegroundColor Cyan
+    Write-Host ("  File:   {0}" -f $zip.ZipPath)
+    Write-Host ("  SizeMB: {0}" -f $zip.ZipSizeMb)
+    Write-Host ("  Proxy:  {0}" -f $(if ($zip.ProxyIncluded) { "included" } else { "omitted to stay under limit" }))
+}
+
 foreach ($item in $failedItems) {
     Write-Host ("FAIL {0}" -f $item.VideoPath) -ForegroundColor Red
     Write-Host ("  Error: {0}" -f $item.Message) -ForegroundColor Red
@@ -2162,3 +2451,13 @@ if ($failedItems.Count -gt 0 -or $processedItems.Count -eq 0) {
 }
 
 Write-Log ("PASS: All {0} video(s) processed successfully. Output root: {1}" -f $processedItems.Count, $OutputFolder)
+
+if ($doOpenOutputInExplorer) {
+    try {
+        Invoke-Item -LiteralPath $OutputFolder
+        Write-Log "Opened output folder in Windows Explorer."
+    }
+    catch {
+        Write-Log "Could not open output folder in Windows Explorer: $($_.Exception.Message)" "WARN"
+    }
+}
