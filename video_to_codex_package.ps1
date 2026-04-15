@@ -59,6 +59,21 @@ function Test-IsHttpUrl {
     return $uri.Scheme -in @([System.Uri]::UriSchemeHttp, [System.Uri]::UriSchemeHttps)
 }
 
+function Get-HttpUrlsFromText {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+
+    return @(
+        ([regex]::Matches($Value, 'https?://\S+')) |
+            ForEach-Object { $_.Value.Trim().Trim(',', ';') } |
+            Where-Object { Test-IsHttpUrl -Value $_ } |
+            Select-Object -Unique
+    )
+}
+
 function Resolve-DefaultInputOutputFolders {
     param(
         [string]$CurrentInputFolder,
@@ -743,15 +758,34 @@ function Get-InteractiveInputSource {
         $downloadChoice = Read-Host "Do you want to download from YouTube or another supported video URL? (y/N)"
 
         if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
-            $remoteInput = Read-Host "Paste a video or playlist URL"
-            if ([string]::IsNullOrWhiteSpace($remoteInput)) {
-                Write-Host "Please enter a video or playlist URL." -ForegroundColor Yellow
-                continue
+            Write-Host "Paste one or more video or playlist URLs. Press Enter on a blank line when finished." -ForegroundColor Cyan
+            $remoteInputs = New-Object System.Collections.Generic.List[string]
+            $lineNumber = 1
+            while ($true) {
+                $prompt = if ($lineNumber -eq 1) { "URL 1" } else { "URL $lineNumber (blank to finish)" }
+                $remoteInput = Read-Host $prompt
+
+                if ([string]::IsNullOrWhiteSpace($remoteInput)) {
+                    break
+                }
+
+                $parsedUrls = @(Get-HttpUrlsFromText -Value $remoteInput)
+                if ($parsedUrls.Count -eq 0) {
+                    Write-Host "Please enter a full http/https URL." -ForegroundColor Yellow
+                    continue
+                }
+
+                foreach ($parsedUrl in $parsedUrls) {
+                    if (-not $remoteInputs.Contains($parsedUrl)) {
+                        [void]$remoteInputs.Add($parsedUrl)
+                    }
+                }
+
+                $lineNumber += 1
             }
 
-            $remoteInput = $remoteInput.Trim()
-            if (-not (Test-IsHttpUrl -Value $remoteInput)) {
-                Write-Host "Please enter a full http/https URL." -ForegroundColor Yellow
+            if ($remoteInputs.Count -eq 0) {
+                Write-Host "Please enter at least one video or playlist URL." -ForegroundColor Yellow
                 continue
             }
 
@@ -768,12 +802,14 @@ function Get-InteractiveInputSource {
                 continue
             }
 
-            $sourceKind = Get-RemoteSourceKind -SourceUrl $remoteInput
-            if ($sourceKind -eq "playlist") {
-                Write-Host "Playlist detected. The script will download each video in the playlist before packaging." -ForegroundColor Cyan
+            foreach ($remoteUrl in $remoteInputs) {
+                $sourceKind = Get-RemoteSourceKind -SourceUrl $remoteUrl
+                if ($sourceKind -eq "playlist") {
+                    Write-Host "Playlist detected. The script will download each video in the playlist before packaging." -ForegroundColor Cyan
+                }
             }
 
-            return $remoteInput
+            return @($remoteInputs)
         }
 
         $customInput = Read-Host "Press Enter to use the default folder, or type a full video file or folder path"
@@ -2224,16 +2260,44 @@ $resolvedDefaults = Resolve-DefaultInputOutputFolders `
 $InputFolder = $resolvedDefaults.InputFolder
 $OutputFolder = $resolvedDefaults.OutputFolder
 
-$requestedInputPath = $InputPath
+$requestedInputValue = $InputPath
 if (-not $PSBoundParameters.ContainsKey("InputPath") -and -not $NoPrompt) {
-    $requestedInputPath = Get-InteractiveInputSource `
+    $requestedInputValue = Get-InteractiveInputSource `
         -DefaultInputFolder $InputFolder `
         -YtDlpCommand $YtDlpPath `
         -PythonCommand $PythonExe
 }
 
-$InputPath = $requestedInputPath
-$inputSourceDisplay = if ($InputPath) { $InputPath } else { $InputFolder }
+$remoteInputSources = @()
+$InputPath = $null
+
+if ($null -ne $requestedInputValue) {
+    if ($requestedInputValue -is [System.Array]) {
+        $remoteInputSources = @($requestedInputValue)
+    }
+    elseif (Test-IsHttpUrl -Value $requestedInputValue) {
+        $remoteInputSources = @([string]$requestedInputValue)
+    }
+    else {
+        $detectedRemoteUrls = @(Get-HttpUrlsFromText -Value ([string]$requestedInputValue))
+        if ($detectedRemoteUrls.Count -gt 1) {
+            $remoteInputSources = $detectedRemoteUrls
+        }
+        else {
+            $InputPath = [string]$requestedInputValue
+        }
+    }
+}
+
+$inputSourceDisplay = if ($remoteInputSources.Count -gt 0) {
+    $remoteInputSources -join "; "
+}
+elseif ($InputPath) {
+    $InputPath
+}
+else {
+    $InputFolder
+}
 
 $requestedOutputFolder = $OutputFolder
 if (-not $PSBoundParameters.ContainsKey("OutputFolder") -and -not $NoPrompt) {
@@ -2302,34 +2366,34 @@ Write-Log "Output folder root: $OutputFolder"
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
 $summaryCsv = Join-Path $OutputFolder "PROCESSING_SUMMARY.csv"
-$downloadedInputPath = $null
+$downloadedInputPaths = @()
 $downloadedInputCount = 0
-$downloadedInputKind = $null
-
-if ($InputPath -and (Test-IsHttpUrl -Value $InputPath)) {
-    $downloadCacheFolder = $InputFolder
-
-    $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $InputPath -Action {
-        $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
-        Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
-
-        Invoke-RemoteVideoDownload `
-            -SourceUrl $InputPath `
-            -DownloadFolder $downloadCacheFolder `
-            -YtDlpInvoker $ytDlpInvoker `
-            -FFmpegExe $FFmpegPath `
-            -HeartbeatSeconds $HeartbeatSeconds
-    }
-
-    $downloadedInputPath = $downloadResult.DownloadRoot
-    $downloadedInputCount = @($downloadResult.DownloadedPaths).Count
-    $downloadedInputKind = $downloadResult.SourceKind
-    $InputPath = $downloadResult.DownloadRoot
-}
+$downloadedInputKinds = @()
 
 $videos = @()
 
-if ($InputPath) {
+if ($remoteInputSources.Count -gt 0) {
+    $downloadCacheFolder = $InputFolder
+    $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+    Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+
+    foreach ($remoteSource in $remoteInputSources) {
+        $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $remoteSource -Action {
+            Invoke-RemoteVideoDownload `
+                -SourceUrl $remoteSource `
+                -DownloadFolder $downloadCacheFolder `
+                -YtDlpInvoker $ytDlpInvoker `
+                -FFmpegExe $FFmpegPath `
+                -HeartbeatSeconds $HeartbeatSeconds
+        }
+
+        $downloadedInputPaths += $downloadResult.DownloadRoot
+        $downloadedInputKinds += $downloadResult.SourceKind
+        $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
+        $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
+    }
+}
+elseif ($InputPath) {
     $videos = Get-VideoFilesFromPath -Path $InputPath
 }
 else {
@@ -2342,25 +2406,41 @@ else {
             -YtDlpCommand $YtDlpPath `
             -PythonCommand $PythonExe
 
-        if (Test-IsHttpUrl -Value $manual) {
-            $downloadCacheFolder = $InputFolder
-            $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $manual -Action {
-                $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
-                Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+        $manualRemoteSources = @()
+        if ($manual -is [System.Array]) {
+            $manualRemoteSources = @($manual)
+        }
+        elseif (Test-IsHttpUrl -Value $manual) {
+            $manualRemoteSources = @([string]$manual)
+        }
 
-                Invoke-RemoteVideoDownload `
-                    -SourceUrl $manual `
-                    -DownloadFolder $downloadCacheFolder `
-                    -YtDlpInvoker $ytDlpInvoker `
-                    -FFmpegExe $FFmpegPath `
-                    -HeartbeatSeconds $HeartbeatSeconds
+        if ($manualRemoteSources.Count -gt 0) {
+            $downloadCacheFolder = $InputFolder
+            $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+            Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+
+            $downloadedInputPaths = @()
+            $downloadedInputKinds = @()
+            $downloadedInputCount = 0
+            $videos = @()
+
+            foreach ($manualRemoteSource in $manualRemoteSources) {
+                $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $manualRemoteSource -Action {
+                    Invoke-RemoteVideoDownload `
+                        -SourceUrl $manualRemoteSource `
+                        -DownloadFolder $downloadCacheFolder `
+                        -YtDlpInvoker $ytDlpInvoker `
+                        -FFmpegExe $FFmpegPath `
+                        -HeartbeatSeconds $HeartbeatSeconds
+                }
+
+                $downloadedInputPaths += $downloadResult.DownloadRoot
+                $downloadedInputKinds += $downloadResult.SourceKind
+                $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
+                $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
             }
 
-            $inputSourceDisplay = $manual
-            $downloadedInputPath = $downloadResult.DownloadRoot
-            $downloadedInputCount = @($downloadResult.DownloadedPaths).Count
-            $downloadedInputKind = $downloadResult.SourceKind
-            $videos = Get-VideoFilesFromPath -Path $downloadResult.DownloadRoot
+            $inputSourceDisplay = $manualRemoteSources -join "; "
         }
         else {
             $inputSourceDisplay = $manual
@@ -2372,6 +2452,8 @@ else {
 if (-not $videos -or $videos.Count -eq 0) {
     throw "No supported video files found to process."
 }
+
+$videos = @($videos | Sort-Object FullName -Unique)
 
 if (Test-Path $summaryCsv) {
     Remove-Item $summaryCsv -Force
@@ -2437,9 +2519,9 @@ Write-Host ("Whisper path selected:           {0}" -f $(if ($canUseWhisperGpu) {
 Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
 Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
 Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
-if ($downloadedInputPath) {
-    Write-Host ("Downloaded input cache:          {0}" -f $downloadedInputPath)
-    Write-Host ("Downloaded source type:          {0}" -f $downloadedInputKind)
+if ($downloadedInputPaths.Count -gt 0) {
+    Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
+    Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
     Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
 }
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)

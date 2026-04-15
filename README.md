@@ -18,7 +18,7 @@ Use the dedicated remote-input alias for a single YouTube video:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
-  -InputUrl "https://www.youtube.com/watch?v=VIDEO_ID" `
+  -InputUrl "https://www.youtube.com/watch?v=1aA1WGON49E" `
   -OutputFolder .\test-output\youtube `
   -FrameIntervalSeconds 0.5 `
   -NoPrompt
@@ -48,7 +48,9 @@ Notes:
 - `-HeartbeatSeconds` controls periodic keep-alive logging during long-running phases. The default is `10`.
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
 - If you run the script interactively without `-InputPath` or `-InputUrl`, it asks whether you want to download from YouTube or another supported video URL first.
-- In interactive mode, you can paste either a single-video URL or a playlist URL. Playlist URLs download every video before packaging.
+- In interactive mode, you can paste either a single-video URL, multiple video URLs, or a playlist URL.
+- When pasting multiple remote URLs interactively, enter one URL per line and press Enter on a blank line to start downloading.
+- Playlist URLs download every available video before packaging.
 - Public playlist downloads continue past unavailable, hidden, or private entries when other playlist items are downloadable.
 - Downloaded remote videos are stored under the selected input folder.
 - `-SkipEstimate` disables the best-effort estimate phase.
