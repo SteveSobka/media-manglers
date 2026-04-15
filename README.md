@@ -49,6 +49,7 @@ Notes:
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
 - If you run the script interactively without `-InputPath` or `-InputUrl`, it asks whether you want to download from YouTube or another supported video URL first.
 - In interactive mode, you can paste either a single-video URL or a playlist URL. Playlist URLs download every video before packaging.
+- Public playlist downloads continue past unavailable, hidden, or private entries when other playlist items are downloadable.
 - Downloaded remote videos are stored under the selected input folder.
 - `-SkipEstimate` disables the best-effort estimate phase.
 - Interactive mode now also asks:
@@ -82,7 +83,9 @@ Size management:
 ## Remote download format notes
 
 - The script does not force YouTube downloads to `.webm`.
-- `yt-dlp` chooses the best available downloadable format for the source at run time, so the raw download may be `.mp4`, `.webm`, or another supported container.
+- The script explicitly asks `yt-dlp` for the best available video+audio combination and uses FFmpeg to merge to `.mp4` when possible.
+- When a playlist contains videos with different source formats or different remux/merge possibilities, the downloaded raw files may still end up with mixed containers across the playlist.
+- If a clean MP4 merge is not possible for the source, the raw download may still end up in another supported container such as `.webm`.
 - The raw copied source video preserves whatever container `yt-dlp` downloaded.
 - If `yt-dlp` is installed but not yet visible on `PATH` in the current shell, you can still run the script by passing `-YtDlpPath` with the full executable path.
 

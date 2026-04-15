@@ -587,6 +587,7 @@ function Invoke-RemoteVideoDownload {
         [string]$SourceUrl,
         [string]$DownloadFolder,
         [psobject]$YtDlpInvoker,
+        [string]$FFmpegExe,
         [int]$HeartbeatSeconds = 30
     )
 
@@ -604,7 +605,22 @@ function Invoke-RemoteVideoDownload {
         "%(title).120B [%(id)s].%(ext)s"
     }
 
-    $playlistArguments = if ($sourceKind -eq "playlist") { @("--yes-playlist") } else { @("--no-playlist") }
+    $ffmpegLocation = if ([string]::IsNullOrWhiteSpace($FFmpegExe)) { $null } else { Split-Path -Path $FFmpegExe -Parent }
+    $formatArguments = @(
+        "--format", "bv*+ba/b",
+        "--merge-output-format", "mp4",
+        "--format-sort", "res,fps,hdr,vcodec,acodec,ext"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ffmpegLocation)) {
+        $formatArguments += @("--ffmpeg-location", $ffmpegLocation)
+    }
+
+    $playlistArguments = if ($sourceKind -eq "playlist") {
+        @("--yes-playlist", "--ignore-errors")
+    }
+    else {
+        @("--no-playlist")
+    }
     $result = Invoke-ExternalStreaming `
         -FilePath $YtDlpInvoker.FilePath `
         -Arguments ($YtDlpInvoker.Arguments + @(
@@ -613,8 +629,9 @@ function Invoke-RemoteVideoDownload {
             "--print", "after_move:filepath",
             "-P", $sessionFolder,
             "-o", $outputTemplate
-        ) + $playlistArguments + @($SourceUrl)) `
+        ) + $formatArguments + $playlistArguments + @($SourceUrl)) `
         -StepName ("yt-dlp download ({0})" -f $sourceKind) `
+        -IgnoreExitCode:$($sourceKind -eq "playlist") `
         -HeartbeatSeconds $HeartbeatSeconds `
         -TimeoutSeconds 7200
 
@@ -642,6 +659,15 @@ function Invoke-RemoteVideoDownload {
 
     if ($downloadedPaths.Count -eq 0) {
         throw "yt-dlp finished without producing a supported local video file in $sessionFolder"
+    }
+
+    if ($result.ExitCode -ne 0) {
+        if ($sourceKind -eq "playlist") {
+            Write-Log ("yt-dlp reported some playlist entries as unavailable or inaccessible. Continuing with {0} downloaded video(s)." -f $downloadedPaths.Count) "WARN"
+        }
+        else {
+            throw ("yt-dlp download ({0}) failed with exit code {1}. See script_run.log." -f $sourceKind, $result.ExitCode)
+        }
     }
 
     Write-Log ("Remote {0} downloaded. Items: {1}. Cache folder: {2}" -f $sourceKind, $downloadedPaths.Count, $sessionFolder)
@@ -2291,6 +2317,7 @@ if ($InputPath -and (Test-IsHttpUrl -Value $InputPath)) {
             -SourceUrl $InputPath `
             -DownloadFolder $downloadCacheFolder `
             -YtDlpInvoker $ytDlpInvoker `
+            -FFmpegExe $FFmpegPath `
             -HeartbeatSeconds $HeartbeatSeconds
     }
 
@@ -2325,6 +2352,7 @@ else {
                     -SourceUrl $manual `
                     -DownloadFolder $downloadCacheFolder `
                     -YtDlpInvoker $ytDlpInvoker `
+                    -FFmpegExe $FFmpegPath `
                     -HeartbeatSeconds $HeartbeatSeconds
             }
 
