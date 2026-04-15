@@ -31,6 +31,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -NoPrompt
 ```
 
+Use the precompiled Windows executable:
+
+```powershell
+.\dist\video_to_codex_package.exe
+```
+
+The executable uses the same prompts and parameters as the PowerShell script. It is a packaged console app, not a point-and-click GUI.
+Rebuild it with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
+```
+
 Process a public YouTube playlist:
 
 ```powershell
@@ -176,12 +189,16 @@ Size management:
 - The raw copied source video preserves whatever container `yt-dlp` downloaded.
 - If `yt-dlp` is installed but not yet visible on `PATH` in the current shell, you can still run the script by passing `-YtDlpPath` with the full executable path.
 
+## AREA51
+
+`AREA51` contains the repo's smoke-test and validation scripts.
+
 ## One-shot smoke test
 
 Run the full packaging flow plus artifact validation in one command:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-SmokeTest.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
 ```
 
 By default this uses `.\test_media\ToS-4k-1920.mov` as the representative sample from `test_media` when present, creates a fresh timestamped folder under `test-output\`, runs `video_to_codex_package.ps1`, and validates:
@@ -197,7 +214,7 @@ By default this uses `.\test_media\ToS-4k-1920.mov` as the representative sample
 Run all supported files in `test_media`:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-SmokeTest.ps1 -AllMedia
+powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1 -AllMedia
 ```
 
 Representative-sample selection behavior:
@@ -218,7 +235,7 @@ Validated artifacts:
 ## Validation only
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Validate-VideoToCodexPackage.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 `
   -OutputRoot .\test-output\smoke-YYYYMMDD-HHMMSS `
   -VideoPath .\test_media\ToS-4k-1920.mov `
   -FrameIntervalSeconds 0.5
