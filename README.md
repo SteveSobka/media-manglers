@@ -202,7 +202,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-SmokeTest.ps1 -A
 
 Representative-sample selection behavior:
 
-- Prefer `ToS-4k-1920.mov`, then `bbb_sunflower_1080p_60fps_normal.mp4`, then `2026-03-17_18-59-11.mkv`.
+- Prefer `ToS-4k-1920.mov`, then `bbb_sunflower_1080p_60fps_normal.mp4`.
 - Otherwise use the largest supported file in `test_media`.
 
 Validated artifacts:

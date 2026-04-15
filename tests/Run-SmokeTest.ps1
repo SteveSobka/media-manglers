@@ -21,7 +21,7 @@ function Get-SmokeTestMediaFiles {
 function Get-RepresentativeSmokeTestMedia {
     param([System.IO.FileInfo[]]$Files)
 
-    foreach ($preferredName in @("ToS-4k-1920.mov", "bbb_sunflower_1080p_60fps_normal.mp4", "2026-03-17_18-59-11.mkv")) {
+    foreach ($preferredName in @("ToS-4k-1920.mov", "bbb_sunflower_1080p_60fps_normal.mp4")) {
         $preferred = $Files | Where-Object { $_.Name -eq $preferredName } | Select-Object -First 1
         if ($preferred) {
             return $preferred
