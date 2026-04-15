@@ -1,17 +1,25 @@
 # Media Manglers
 
-Media Manglers is a small Windows-focused media review toolkit with two standalone apps:
-
-- `Video Mangler` turns videos into review packages with a proxy file, extracted frames, audio, transcripts, optional translated transcripts, and an optional ChatGPT upload zip.
-- `Audio Mangler` does the same kind of packaging for audio-first work, with a cleaner transcript-centered flow and optional translated outputs.
-
-The project started as a practical script collection and has grown into a public toolset for people who need to inspect, summarize, translate, and hand off media without juggling five different utilities. Some of the development work was done collaboratively with AI, but the goal here is simple: useful tools that normal people can run.
+Media Manglers is a small Windows-focused media review toolkit built around a simple idea: if you want AI to review media well, you usually need to prepare that media first.
 
 ## Why This Project Exists
 
-Media Manglers started from a real sim-racing workflow problem. High-frame-rate video moves too quickly for ordinary AI review to catch enough detail on its own, so I needed a way to break media into review-friendly artifacts and then point AI at specific moments, frames, and spoken details. That is what led to `Video Mangler`.
+This project started with a real sim-racing workflow problem. I needed AI to help review driving footage and help me reason about what was happening on screen, but ordinary AI review kept missing important details in high-frame-rate video because key moments happen too quickly. Handing over a normal video file usually produced broad summaries when what I actually needed was a way to guide the review toward exact moments, frames, and spoken details.
 
-`Audio Mangler` grew from the same idea on the audio side: better transcript-first and translation-first workflows built from the original source instead of whatever a platform happened to provide. PowerShell was an intentional choice so the scripts stay easy to inspect and run directly without hiding the logic behind a compiled app, even though packaged executables are available. When the machine can help, the tools use available GPU or CPU acceleration to speed up processing. The optional YouTube comments export came from the same practical need too, because comments are awkward to search in the browser but much easier to review once they are exported to plain text or JSON.
+That is what led to `Video Mangler`. It breaks a video into review-friendly artifacts such as proxy media, extracted frames, transcripts, translated transcripts, comments exports, and ChatGPT-ready packages so the analysis can be directed instead of guessed.
+
+`Audio Mangler` grew from the same need on the spoken-content side: transcript-first and source-audio-first workflows that stay anchored to the original recording, with optional translation from the original spoken source instead of weak platform auto-translation.
+
+I chose PowerShell on purpose. The scripts stay easy to inspect and easy to run directly, so the logic is visible instead of hidden behind a compiled black box, even though packaged executables are available. When the machine supports it, the tools use available GPU and CPU acceleration paths to speed up processing.
+
+YouTube comments turned out to be part of the same workflow. They are often useful, but searching them in the browser is awkward and limited. Exporting them to text or JSON makes them much easier to review, search, and include in an AI workflow.
+
+The project started as a practical script collection and has grown into a public toolset for people who need to inspect, summarize, translate, and hand off media without juggling five different utilities. Some of the development work was done collaboratively with AI, but the goal here is simple: useful tools that normal people can run.
+
+Media Manglers has two standalone apps:
+
+- `Video Mangler` turns videos into review packages with a proxy file, extracted frames, audio, transcripts, optional translated transcripts, and an optional ChatGPT upload zip.
+- `Audio Mangler` does the same kind of packaging for audio-first work, with a cleaner transcript-centered flow and optional translated outputs.
 
 ## Which App Is Which?
 
