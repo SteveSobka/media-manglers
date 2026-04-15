@@ -49,6 +49,19 @@ function Resolve-OutputRootPath {
     return $Path
 }
 
+function Get-PackageDirectories {
+    param([string]$RootPath)
+
+    if (-not (Test-Path -LiteralPath $RootPath)) {
+        return @()
+    }
+
+    return @(Get-ChildItem -LiteralPath $RootPath -Directory | Where-Object {
+        (Test-Path -LiteralPath (Join-Path $_.FullName "README_FOR_CODEX.txt")) -or
+        (Test-Path -LiteralPath (Join-Path $_.FullName "frame_index.csv"))
+    } | Sort-Object Name)
+}
+
 function Get-FrameIntervalLabel {
     param([double]$Value)
 
@@ -102,11 +115,8 @@ if (-not (Test-Path -LiteralPath $OutputRoot)) {
     throw "Output root not found: $OutputRoot"
 }
 
-if ([string]::IsNullOrWhiteSpace($VideoPath) -and [string]::IsNullOrWhiteSpace($PackageFolderName)) {
-    throw "Either VideoPath or PackageFolderName is required."
-}
-
 $videoItem = $null
+$packageDirectories = Get-PackageDirectories -RootPath $OutputRoot
 if (-not [string]::IsNullOrWhiteSpace($VideoPath)) {
     if (-not (Test-Path -LiteralPath $VideoPath)) {
         throw "Video path not found: $VideoPath"
@@ -116,14 +126,28 @@ if (-not [string]::IsNullOrWhiteSpace($VideoPath)) {
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($videoItem.Name)
     $packageFolderName = Get-SafeFolderName -Name $baseName
 }
-else {
+elseif (-not [string]::IsNullOrWhiteSpace($PackageFolderName)) {
     $packageFolderName = Get-SafeFolderName -Name $PackageFolderName
+}
+elseif ($packageDirectories.Count -eq 1) {
+    $packageFolderName = $packageDirectories[0].Name
+}
+elseif ($packageDirectories.Count -gt 1) {
+    $choices = $packageDirectories | ForEach-Object { $_.Name }
+    throw ("Multiple package folders found under {0}. Re-run with -PackageFolderName. Choices: {1}" -f $OutputRoot, ($choices -join ", "))
+}
+else {
+    throw "No package folders found under: $OutputRoot"
 }
 
 $framesFolderName = "frames_{0}s" -f (Get-FrameIntervalLabel -Value $FrameIntervalSeconds)
 $packageRoot = Join-Path $OutputRoot $packageFolderName
 
 if (-not (Test-Path -LiteralPath $packageRoot)) {
+    $choices = $packageDirectories | ForEach-Object { $_.Name }
+    if ($choices.Count -gt 0) {
+        throw ("Package folder not found: {0}. Available package folders: {1}" -f $packageRoot, ($choices -join ", "))
+    }
     throw "Package folder not found: $packageRoot"
 }
 
