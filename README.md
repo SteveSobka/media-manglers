@@ -21,29 +21,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -NoPrompt
 ```
 
-Use the dedicated remote-input alias for a single YouTube video:
+Use the dedicated remote-input alias for a single public remote video URL:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
-  -InputUrl "https://www.youtube.com/watch?v=1aA1WGON49E" `
-  -OutputFolder .\test-output\youtube `
+  -InputUrl "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov" `
+  -OutputFolder .\test-output\remote-single `
   -FrameIntervalSeconds 0.5 `
   -NoPrompt
 ```
 
-Process every video in a YouTube playlist:
+Process a public YouTube playlist:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
-  -InputUrl "https://www.youtube.com/playlist?list=PL5QT34daNj2BPI0Rsjdg3WpJXgK8_UPrP" `
+  -InputUrl "<PUBLIC_YOUTUBE_PLAYLIST_URL>" `
   -OutputFolder .\test-output\playlist `
   -FrameIntervalSeconds 0.5 `
   -NoPrompt
 ```
 
+For multiple public remote videos in one interactive run, use the pasted-URL walkthrough below with the official Blender-hosted movie files.
+
 ## Interactive walkthroughs
 
-Single YouTube video:
+Single public remote video URL:
 
 ```text
 PS D:\repo> powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
@@ -58,11 +60,11 @@ Press Enter for 3, or type Q to quit.
 Enter 1, 2, 3, or Q: 1
 Paste text containing one or more video or playlist URLs.
 Type DONE on its own line when the paste is complete.
-Paste line 1: https://www.youtube.com/watch?v=1aA1WGON49E
+Paste line 1: https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
 Next line: DONE
 ```
 
-Pasted notes plus multiple URLs:
+Pasted notes plus multiple public URLs:
 
 ```text
 Default local input source:
@@ -75,13 +77,13 @@ Press Enter for 3, or type Q to quit.
 Enter 1, 2, 3, or Q: 1
 Paste text containing one or more video or playlist URLs.
 Type DONE on its own line when the paste is complete.
-Paste line 1: SimHub Tutorial Video and PlayLists to capture:
+Paste line 1: Blender open movie files to capture:
 Next line:
-Next line: 1 Minute Test Video:
-Next line: https://www.youtube.com/watch?v=8OANC2YBLdk
+Next line: Tears of Steel 720p:
+Next line: https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
 Next line:
-Next line: VIDEO:
-Next line: https://www.youtube.com/watch?v=1aA1WGON49E
+Next line: Sintel 720p:
+Next line: https://download.blender.org/demo/movies/Sintel.2010.720p.mkv
 Next line: DONE
 ```
 
@@ -123,6 +125,7 @@ Notes:
   - If neither exists, interactive mode asks once for a simple base location.
 - `-InputPath` accepts a local video file, a folder of videos, or an `http/https` video URL.
 - `-InputUrl` is a dedicated alias for remote video or playlist URLs and is the clearer option when you are downloading first.
+- The remote examples in this README use official Blender-hosted open movie files so they stay public and reusable.
 - `-FrameIntervalSeconds` accepts `0.1` second increments such as `0.3`, `0.5`, `1.0`, `1.1`.
 - `-HeartbeatSeconds` controls periodic keep-alive logging during long-running phases. The default is `10`.
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
@@ -132,6 +135,7 @@ Notes:
 - Finish the pasted block by typing `DONE` on its own line.
 - Playlist URLs download every available video before packaging.
 - Public playlist downloads continue past unavailable, hidden, or private entries when other playlist items are downloadable.
+- For playlist runs, replace `<PUBLIC_YOUTUBE_PLAYLIST_URL>` with a public playlist URL you have permission to download.
 - Downloaded remote videos are stored under the selected input folder.
 - In local-path mode, pasted file and folder paths may be wrapped in single or double quotes.
 - `-SkipEstimate` disables the best-effort estimate phase.
