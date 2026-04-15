@@ -24,6 +24,8 @@ For most people, use the Windows executable from the latest release:
 2. Run it.
 3. Follow the prompts.
 
+If you want the executable bundled with local docs, release notes, license text, and version info, download the release zip package instead.
+
 Check the app version:
 
 ```powershell
@@ -157,6 +159,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
 ```
 
 The current application version is stored in `VERSION`.
+The build also creates a structured release package zip under `dist\release\`.
 
 ## License
 
