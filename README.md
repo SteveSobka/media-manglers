@@ -143,6 +143,13 @@ Rebuild the Windows executable:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
 ```
 
+## License
+
+- Repository code: [MIT](LICENSE)
+- Blender sample media and any other third-party content: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+
+This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for Blender open-movie media referenced in the docs or test flow.
+
 ## AREA51
 
 `AREA51` contains the repo's smoke-test and validation scripts.
@@ -163,9 +170,8 @@ Validation only:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 `
-  -OutputRoot .\test-output\smoke-YYYYMMDD-HHMMSS `
   -FrameIntervalSeconds 0.5
 ```
 
-`smoke-YYYYMMDD-HHMMSS` is a placeholder pattern. The validator will resolve it to the latest `smoke-*` folder under `.\test-output`.
+By default the validator uses the latest `smoke-*` folder under `.\test-output`.
 If that smoke output contains exactly one package folder, the validator will pick it automatically.

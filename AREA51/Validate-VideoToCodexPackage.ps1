@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$OutputRoot,
 
     [Parameter(Mandatory = $false)]
@@ -13,37 +13,53 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Resolve-OutputRootPath {
-    param([string]$Path)
+function Get-LatestSmokeOutputFolder {
+    param([string[]]$SearchRoots)
 
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return $Path
+    foreach ($root in ($SearchRoots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+
+        $latestSmoke = Get-ChildItem -LiteralPath $root -Directory |
+            Where-Object { $_.Name -like 'smoke-*' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+        if ($latestSmoke) {
+            return $latestSmoke.FullName
+        }
     }
 
-    if (Test-Path -LiteralPath $Path) {
+    return $null
+}
+
+function Resolve-OutputRootPath {
+    param(
+        [string]$Path,
+        [string]$DefaultSmokeRoot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
         return (Resolve-Path -LiteralPath $Path).ProviderPath
     }
 
-    if ($Path -notmatch 'YYYYMMDD-HHMMSS') {
-        return $Path
+    $searchRoots = New-Object System.Collections.Generic.List[string]
+
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        $parent = Split-Path -Path $Path -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parent)) {
+            [void]$searchRoots.Add($parent)
+        }
     }
 
-    $parent = Split-Path -Path $Path -Parent
-    if ([string]::IsNullOrWhiteSpace($parent)) {
-        $parent = "."
+    if (-not [string]::IsNullOrWhiteSpace($DefaultSmokeRoot)) {
+        [void]$searchRoots.Add($DefaultSmokeRoot)
     }
 
-    if (-not (Test-Path -LiteralPath $parent)) {
-        return $Path
-    }
-
-    $latestSmoke = Get-ChildItem -LiteralPath $parent -Directory |
-        Where-Object { $_.Name -like 'smoke-*' } |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-
+    $latestSmoke = Get-LatestSmokeOutputFolder -SearchRoots @($searchRoots)
     if ($latestSmoke) {
-        return $latestSmoke.FullName
+        return $latestSmoke
     }
 
     return $Path
@@ -61,6 +77,9 @@ function Get-PackageDirectories {
         (Test-Path -LiteralPath (Join-Path $_.FullName "frame_index.csv"))
     } | Sort-Object Name)
 }
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$defaultSmokeRoot = Join-Path $repoRoot "test-output"
 
 function Get-FrameIntervalLabel {
     param([double]$Value)
@@ -109,10 +128,10 @@ function Test-VideoHasAudio {
     return ($output -match 'audio')
 }
 
-$OutputRoot = Resolve-OutputRootPath -Path $OutputRoot
+$OutputRoot = Resolve-OutputRootPath -Path $OutputRoot -DefaultSmokeRoot $defaultSmokeRoot
 
 if (-not (Test-Path -LiteralPath $OutputRoot)) {
-    throw "Output root not found: $OutputRoot"
+    throw "Output root not found: $OutputRoot. Run .\AREA51\Run-SmokeTest.ps1 first, or pass -OutputRoot to an existing package output folder."
 }
 
 $videoItem = $null

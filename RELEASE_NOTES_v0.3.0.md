@@ -1,0 +1,25 @@
+# Release Notes - v0.3.0
+
+## Highlights
+
+- Added a precompiled Windows executable: `video_to_codex_package.exe`
+- Renamed `tests` to `AREA51`
+- Improved interactive input selection with numbered choices
+- Defaulted `Enter` to local path mode and added `Q` to quit
+- Added support for quoted local file and folder paths
+- Improved duplicate URL handling in pasted remote input
+- Improved public playlist handling when some items are unavailable
+- Refreshed the README with cleaner examples and public sample media
+- Added a public remote fallback for smoke tests
+
+## Validation and tooling
+
+- Added `AREA51\Build-Exe.ps1` to rebuild the Windows executable
+- Improved smoke-test and validator behavior for latest `smoke-*` output detection
+- Simplified validation so common cases do not require remembering package folder names
+
+## Licensing
+
+- Repository code is now MIT licensed
+- Blender sample media references remain under their own upstream terms
+- See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for Blender attribution and media-license notes

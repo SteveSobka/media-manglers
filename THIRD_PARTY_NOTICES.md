@@ -1,0 +1,50 @@
+# Third-Party Notices
+
+This repository contains original script/tooling code plus documentation that references third-party sample media.
+
+## Repository code license
+
+The code in this repository is licensed under the MIT License. See [LICENSE](LICENSE).
+
+## Blender open movie sample media
+
+The README and test scripts reference public sample media from Blender open movie projects. Those media files are not redistributed inside this repository unless explicitly stated elsewhere.
+
+Referenced projects include:
+
+- Tears of Steel
+- Sintel
+- Big Buck Bunny
+
+Official licensing references:
+
+- Tears of Steel: https://mango.blender.org/about/
+- Big Buck Bunny: https://peach.blender.org/about/
+- Sintel: https://durian.blender.org/sharing/
+- Blender Studio remixing guidance: https://studio.blender.org/remixing/
+
+Summary:
+
+- Tears of Steel is described by Blender as licensed under Creative Commons Attribution 3.0.
+- Big Buck Bunny project results are described by Blender as licensed under Creative Commons Attribution 3.0.
+- Sintel project results are described by Blender as licensed under Creative Commons Attribution 3.0.
+- Blender Studio content is generally released under CC-BY unless a page says otherwise.
+
+Important conditions and exceptions called out by Blender:
+
+- For full-film screenings or redistribution, Blender’s project pages may require keeping the film credit scroll intact.
+- Some related assets can carry different licenses than the film itself.
+- Blender logos, film title designs, and trademarks are excluded from the Creative Commons grant.
+- Some footage may still involve personal image or privacy rights for actors.
+- Some soundtracks or music releases use more restrictive terms than the film.
+
+Examples from the official project pages:
+
+- Tears of Steel soundtrack files were published separately as CC-BY-ND.
+- Sintel music-related materials may be distributed under CC-BY-NC-ND.
+
+Practical rule for this repo:
+
+- Treat the repository code license and the sample media license as separate things.
+- If you redistribute Blender sample media or derivatives, follow the attribution and any project-specific conditions from the official Blender pages above.
+- Do not assume every Blender-related asset is MIT just because this repository code is MIT.
