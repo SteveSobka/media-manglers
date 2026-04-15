@@ -1,5 +1,9 @@
 # Release Notes - v0.3.0
 
+Tracked version:
+
+- repository/app version: `0.3.0`
+
 ## Highlights
 
 - Added a precompiled Windows executable: `video_to_codex_package.exe`
@@ -15,6 +19,8 @@
 ## Validation and tooling
 
 - Added `AREA51\Build-Exe.ps1` to rebuild the Windows executable
+- Added version tracking through the `VERSION` file
+- Added `-Version` support for the script and executable
 - Improved smoke-test and validator behavior for latest `smoke-*` output detection
 - Simplified validation so common cases do not require remembering package folder names
 

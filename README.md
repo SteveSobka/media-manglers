@@ -24,6 +24,12 @@ For most people, use the Windows executable from the latest release:
 2. Run it.
 3. Follow the prompts.
 
+Check the app version:
+
+```powershell
+.\video_to_codex_package.exe -Version
+```
+
 Current release:
 
 - [Latest release](https://github.com/SteveSobka/media-manglers/releases/latest)
@@ -137,11 +143,19 @@ Run the PowerShell script directly:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
 ```
 
+Show the script version:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 -Version
+```
+
 Rebuild the Windows executable:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
 ```
+
+The current application version is stored in `VERSION`.
 
 ## License
 

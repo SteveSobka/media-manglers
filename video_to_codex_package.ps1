@@ -15,11 +15,40 @@ param(
     [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
     [switch]$SkipEstimate,
+    [Alias("ShowVersion")]
+    [switch]$Version,
     [int]$ChatGptZipMaxMb = 500
 )
 
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
+$script:AppName = "media-manglers"
+$script:FallbackAppVersion = "0.3.0"
+
+function Get-AppVersion {
+    if ($script:ResolvedAppVersion) {
+        return $script:ResolvedAppVersion
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    if ($PSScriptRoot) {
+        $candidates.Add((Join-Path $PSScriptRoot "VERSION"))
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (Test-Path -LiteralPath $candidate) {
+            $value = (Get-Content -LiteralPath $candidate | Select-Object -First 1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $script:ResolvedAppVersion = $value
+                return $script:ResolvedAppVersion
+            }
+        }
+    }
+
+    $script:ResolvedAppVersion = $script:FallbackAppVersion
+    return $script:ResolvedAppVersion
+}
 
 function Get-SafeFolderName {
     param([string]$Name)
@@ -2294,6 +2323,14 @@ function Process-Video {
     }
 }
 
+$appVersion = Get-AppVersion
+
+if ($Version) {
+    Write-Host ("{0} v{1}" -f $script:AppName, $appVersion) -ForegroundColor Cyan
+    return
+}
+
+Write-Host ("{0} v{1}" -f $script:AppName, $appVersion) -ForegroundColor Cyan
 Write-Phase -Name "Preflight" -Detail "Resolving tools and inputs"
 
 $FFmpegPath = Resolve-ExecutablePath `
