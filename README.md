@@ -33,6 +33,7 @@ Check the app version:
 Current release:
 
 - [Latest release](https://github.com/SteveSobka/media-manglers/releases/latest)
+- Plain text local docs: `README.txt`, `THIRD_PARTY_NOTICES.txt`, `RELEASE_NOTES_v0.3.0.txt`
 
 ## What the app asks
 
@@ -160,7 +161,7 @@ The current application version is stored in `VERSION`.
 ## License
 
 - Repository code: [MIT](LICENSE)
-- Blender sample media and any other third-party content: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Blender sample media and any other third-party content: see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
 
 This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for Blender open-movie media referenced in the docs or test flow.
 

@@ -1,12 +1,15 @@
-# Third-Party Notices
+Third-Party Notices
+===================
 
 This repository contains original script/tooling code plus documentation that references third-party sample media.
 
-## Repository code license
+Repository code license
+-----------------------
 
-The code in this repository is licensed under the MIT License. See [LICENSE](LICENSE).
+The code in this repository is licensed under the MIT License. See LICENSE.
 
-## Blender open movie sample media
+Blender open movie sample media
+-------------------------------
 
 The README and test scripts reference public sample media from Blender open movie projects. Those media files are not redistributed inside this repository unless explicitly stated elsewhere.
 
@@ -32,7 +35,7 @@ Summary:
 
 Important conditions and exceptions called out by Blender:
 
-- For full-film screenings or redistribution, Blender’s project pages may require keeping the film credit scroll intact.
+- For full-film screenings or redistribution, Blender's project pages may require keeping the film credit scroll intact.
 - Some related assets can carry different licenses than the film itself.
 - Blender logos, film title designs, and trademarks are excluded from the Creative Commons grant.
 - Some footage may still involve personal image or privacy rights for actors.
