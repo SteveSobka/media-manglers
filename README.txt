@@ -1,173 +1,128 @@
-Video Mangler
+Media Manglers
 ==============
 
-Build a review package from:
+This repo contains two Windows tools:
 
-- a local video file
-- a local folder of videos
-- a remote video URL
-- a YouTube video or public playlist
+- Video Mangler
+- Audio Mangler
 
-Each package includes:
+Use the latest release
+----------------------
 
-- a review proxy video
-- extracted frames
-- audio
-- transcript files
-- a frame index CSV
-- an optional ChatGPT upload zip
+For most people, use the precompiled Windows downloads from the latest GitHub release:
 
-Download and run
-----------------
+  https://github.com/SteveSobka/media-manglers/releases/latest
 
-For most people, use the Windows executable from the latest release:
+Download choices:
 
-1. Download Video Mangler.exe from the latest release.
-2. Run it.
-3. Follow the prompts.
+- Video-Mangler.exe
+- Video-Mangler-v0.4.0.zip
+- Audio-Mangler.exe
+- Audio-Mangler-v0.4.0.zip
 
-Current release:
+Use the zip if you want the executable packaged with plain-text docs, release notes, license text, and the VERSION file.
 
-https://github.com/SteveSobka/media-manglers/releases/latest
+What each tool does
+-------------------
 
-Check the app version:
+Video Mangler
 
-  & '.\Video Mangler.exe' -Version
+- builds a review package from a local video file, local video folder, remote video URL, or YouTube URL/playlist
+- creates a review proxy video, extracted frames, audio, transcript files, a frame index CSV, and an optional ChatGPT upload zip
+- app guide: VIDEO_MANGLER.txt
 
-What the app asks
------------------
+Audio Mangler
 
-When it starts, you choose one input method:
+- builds a transcript-first review package from a local audio file, local audio folder, direct audio URL, supported web page, or YouTube URL/playlist
+- creates review audio, transcript files, translated transcript files when requested, a segment index CSV, and an optional ChatGPT upload zip
+- app guide: AUDIO_MANGLER.txt
 
-1. Paste YouTube video or playlist URLs
-2. Use the default input folder
-3. Paste a full local video file path or folder path
+Public example inputs
+---------------------
 
-Notes:
+Video Mangler examples:
 
-- Press Enter to default to option 3
-- Type Q to quit
-- Local paths can be pasted with or without surrounding quotes
-
-Typical local path examples
----------------------------
-
-Single file:
-
-  C:\Videos\clip.mp4
-
-Folder of videos:
-
-  C:\Videos\session-exports
-
-Quoted path:
-
-  "C:\Video Input\raw footage\session_01.mkv"
-
-Typical remote examples
------------------------
-
-Single public remote video:
-
+- NASA balloon sample:
   https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
-
-Open-source YouTube video:
-
+- Blender open movie on YouTube:
   https://www.youtube.com/watch?v=R6MlUcmOul8
 
-Multiple public URLs in one paste:
+Audio Mangler examples:
 
-  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
-  https://download.blender.org/demo/movies/Sintel.2010.720p.mkv
+- LibriVox page:
+  https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2
+- Direct LibriVox MP3:
+  https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3
+- Multilingual sample MP3:
+  https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3
 
-Public YouTube playlist:
+Audio translation
+-----------------
 
-  <PUBLIC_YOUTUBE_PLAYLIST_URL>
+Audio Mangler always creates the original-language transcript.
 
-Output
-------
+Optional translation behavior:
 
-By default the app uses:
+- Translate to English: handled locally through Whisper
+- Translate to other languages: uses OpenAI
 
-- input folder: C:\DATA\TEMP\_VIDEO_INPUT
-- output folder: C:\DATA\TEMP\_VIDEO_OUTPUT
+To request non-English translation targets, set:
 
-If matching D:\DATA\TEMP\... folders already exist instead, it can use those.
+  OPENAI_API_KEY
 
-Each finished video package contains:
+Example:
 
-- proxy\review_proxy_1280.mp4
-- frames_[interval]\
-- audio\audio.mp3
-- transcript\transcript.srt
-- transcript\transcript.json
-- frame_index.csv
-- README_FOR_CODEX.txt
+  Audio Mangler.exe -TranslateTo en,es
 
-Optional:
+Testing
+-------
 
-- chatgpt_review_package.zip
+AREA51 contains the repo's smoke-test and validation scripts.
 
-ChatGPT zip behavior
---------------------
+Video:
 
-If ChatGPT zip creation is enabled:
+- Run smoke test:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
+- Validate latest smoke output:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
 
-- the script keeps the core review files
-- it includes the proxy if it fits
-- if needed, it automatically reduces the zip contents to stay under the size limit
-- the full main package stays untouched
+Audio:
 
-YouTube and remote downloads
-----------------------------
+- Run smoke test:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+- Run translation smoke test:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1 -TranslateToEnglish
+- Validate latest audio smoke output:
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
 
-- Remote downloads require yt-dlp
-- On Windows, install it with: winget install yt-dlp.yt-dlp
-- The script asks yt-dlp for the best available video/audio and merges to .mp4 when possible
-- Some playlist items may still download into mixed containers such as .mp4, .mkv, or .webm
-- Public playlists continue past unavailable or private entries if other items download successfully
+The default audio smoke test starts with the direct Gettysburg MP3 and automatically falls back to the LibriVox page if the direct file is temporarily unavailable upstream.
 
-From source
------------
+Build from source
+-----------------
 
-Run the PowerShell script directly:
+Run either script directly:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1'
 
-Show the script version:
+Show versions:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Version
 
-Rebuild the Windows executable:
+Rebuild both executables:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
 
-The current application version is stored in VERSION.
+Rebuild only one app:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1 -App Video
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1 -App Audio
 
 License
 -------
 
-- Repository code: MIT (see LICENSE)
-- Sample media and any other third-party content: see THIRD_PARTY_NOTICES.txt
+- Repository code: MIT
+- Third-party media notices: THIRD_PARTY_NOTICES.txt
 
-This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for NASA, Wikimedia Commons, Blender, or any other sample media referenced in the docs or test flow.
-
-AREA51
-------
-
-AREA51 contains the repo's smoke-test and validation scripts.
-
-Smoke test:
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
-
-If test_media is missing or empty, the smoke test falls back to this shorter public NASA balloon sample:
-
-  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
-
-Validation only:
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
-
-By default the validator uses the latest smoke-* folder under .\test-output.
-If that smoke output contains exactly one package folder, the validator will pick it automatically.
+The repo code license does not replace the upstream license terms for NASA, Wikimedia Commons, Blender, LibriVox, Internet Archive, YouTube-hosted media, or any other referenced sample media.

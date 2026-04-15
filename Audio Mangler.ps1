@@ -1,16 +1,19 @@
 param(
     [Alias("InputUrl")]
     [string]$InputPath,
-    [string]$InputFolder = "C:\DATA\TEMP\_VIDEO_INPUT",
-    [string]$OutputFolder = "C:\DATA\TEMP\_VIDEO_OUTPUT",
+    [string]$InputFolder = "C:\DATA\TEMP\_AUDIO_INPUT",
+    [string]$OutputFolder = "C:\DATA\TEMP\_AUDIO_OUTPUT",
     [string]$FFmpegPath = "D:\APPS\ffmpeg\bin\ffmpeg.exe",
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
-    [string]$WhisperModel = "base.en",
-    [string]$Language = "en",
-    [double]$FrameIntervalSeconds = [double]::NaN,
+    [string]$WhisperModel = "base",
+    [string]$Language = "",
+    [string]$TranslateTo = "",
+    [ValidateSet("OpenAI")]
+    [string]$TranslationProvider = "OpenAI",
+    [string]$OpenAiModel = "gpt-5-mini",
     [int]$HeartbeatSeconds = 10,
-    [switch]$CopyRawVideo,
+    [switch]$CopyRawAudio,
     [switch]$CreateChatGptZip,
     [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
@@ -22,7 +25,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
-$script:AppName = "Video Mangler"
+$script:AppName = "Audio Mangler"
 $script:FallbackAppVersion = "0.4.0"
 
 function Get-AppVersion {
@@ -131,10 +134,10 @@ function Resolve-DefaultInputOutputFolders {
         [switch]$NoPrompt
     )
 
-    $cInputDefault = "C:\DATA\TEMP\_VIDEO_INPUT"
-    $cOutputDefault = "C:\DATA\TEMP\_VIDEO_OUTPUT"
-    $dInputDefault = "D:\DATA\TEMP\_VIDEO_INPUT"
-    $dOutputDefault = "D:\DATA\TEMP\_VIDEO_OUTPUT"
+    $cInputDefault = "C:\DATA\TEMP\_AUDIO_INPUT"
+    $cOutputDefault = "C:\DATA\TEMP\_AUDIO_OUTPUT"
+    $dInputDefault = "D:\DATA\TEMP\_AUDIO_INPUT"
+    $dOutputDefault = "D:\DATA\TEMP\_AUDIO_OUTPUT"
 
     if (-not $InputProvided -and -not $OutputProvided) {
         if ((Test-Path -LiteralPath $cInputDefault) -or (Test-Path -LiteralPath $cOutputDefault)) {
@@ -161,8 +164,8 @@ function Resolve-DefaultInputOutputFolders {
 
         $basePath = $baseChoice.Trim()
         return [PSCustomObject]@{
-            InputFolder  = Join-Path $basePath "_VIDEO_INPUT"
-            OutputFolder = Join-Path $basePath "_VIDEO_OUTPUT"
+            InputFolder  = Join-Path $basePath "_AUDIO_INPUT"
+            OutputFolder = Join-Path $basePath "_AUDIO_OUTPUT"
         }
     }
 
@@ -173,7 +176,7 @@ function Resolve-DefaultInputOutputFolders {
         if ($OutputProvided -and -not [string]::IsNullOrWhiteSpace($CurrentOutputFolder)) {
             $outputParent = Split-Path $CurrentOutputFolder -Parent
             if (-not [string]::IsNullOrWhiteSpace($outputParent)) {
-                $resolvedInput = Join-Path $outputParent "_VIDEO_INPUT"
+                $resolvedInput = Join-Path $outputParent "_AUDIO_INPUT"
             }
         }
     }
@@ -182,7 +185,7 @@ function Resolve-DefaultInputOutputFolders {
         if ($InputProvided -and -not [string]::IsNullOrWhiteSpace($CurrentInputFolder)) {
             $inputParent = Split-Path $CurrentInputFolder -Parent
             if (-not [string]::IsNullOrWhiteSpace($inputParent)) {
-                $resolvedOutput = Join-Path $inputParent "_VIDEO_OUTPUT"
+                $resolvedOutput = Join-Path $inputParent "_AUDIO_OUTPUT"
             }
         }
     }
@@ -206,7 +209,7 @@ function Write-YtDlpInstallGuidance {
     param([string]$PythonCommand)
 
     Write-Host ""
-    Write-Host "yt-dlp is required to download from YouTube or another supported video URL." -ForegroundColor Yellow
+    Write-Host "yt-dlp is required to download from YouTube or another supported remote media URL." -ForegroundColor Yellow
     Write-Host "Install it with one of these commands:" -ForegroundColor Yellow
     foreach ($command in (Get-YtDlpInstallCommands -PythonCommand $PythonCommand)) {
         Write-Host ("  {0}" -f $command) -ForegroundColor Yellow
@@ -455,7 +458,7 @@ function Resolve-YtDlpInvoker {
         }
     }
 
-    throw "Remote video URLs require yt-dlp. Install it with 'winget install yt-dlp.yt-dlp' or 'py -m pip install -U yt-dlp'."
+    throw "Remote media URLs that are not direct audio files require yt-dlp. Install it with 'winget install yt-dlp.yt-dlp' or 'py -m pip install -U yt-dlp'."
 }
 
 function Get-RemoteSourceKind {
@@ -471,7 +474,7 @@ function Get-RemoteSourceKind {
         return "playlist"
     }
 
-    return "video"
+    return "url"
 }
 
 function Quote-Argument {
@@ -664,12 +667,90 @@ function Invoke-ExternalStreaming {
     }
 }
 
-function Invoke-RemoteVideoDownload {
+function Get-SupportedAudioExtensions {
+    return @(".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mka", ".mp4")
+}
+
+function Get-AudioFilesFromDownloadFolder {
+    param([string]$FolderPath)
+
+    $supportedExtensions = Get-SupportedAudioExtensions
+    return @(
+        Get-ChildItem -LiteralPath $FolderPath -File -Recurse |
+            Where-Object { $supportedExtensions -contains $_.Extension.ToLowerInvariant() } |
+            Sort-Object Name |
+            ForEach-Object { $_.FullName }
+    )
+}
+
+function Get-WebPageAudioCandidates {
+    param([string]$SourceUrl)
+
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $SourceUrl
+    $baseUri = [System.Uri]$SourceUrl
+    $supportedExtensions = Get-SupportedAudioExtensions
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($link in $response.Links) {
+        $href = [string]$link.href
+        if ([string]::IsNullOrWhiteSpace($href)) {
+            continue
+        }
+
+        try {
+            $absoluteUri = [System.Uri]::new($baseUri, $href)
+        }
+        catch {
+            continue
+        }
+
+        $leaf = [System.IO.Path]::GetExtension($absoluteUri.AbsolutePath).ToLowerInvariant()
+        if ($supportedExtensions -contains $leaf) {
+            [void]$candidates.Add($absoluteUri.AbsoluteUri)
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        foreach ($match in ([regex]::Matches($response.Content, 'https?://[^"\''\s>]+\.(mp3|wav|flac|m4a|aac|ogg|opus|webm|mka|mp4)'))) {
+            [void]$candidates.Add($match.Value)
+        }
+    }
+
+    return @(
+        $candidates |
+            Select-Object -Unique |
+            Sort-Object @{
+                Expression = { if ($_ -match '(^|[^0-9])64kb([^0-9]|$)') { 1 } else { 0 } }
+            }, @{
+                Expression = { if ($_ -match '\.mp3($|\?)') { 0 } else { 1 } }
+            }, Length
+    )
+}
+
+function Download-DirectAudioFile {
+    param(
+        [string]$SourceUrl,
+        [string]$SessionFolder,
+        [int]$Index = 1
+    )
+
+    $uri = [System.Uri]$SourceUrl
+    $leaf = [System.IO.Path]::GetFileName($uri.AbsolutePath)
+    if ([string]::IsNullOrWhiteSpace($leaf)) {
+        $leaf = "audio_{0:00001}.bin" -f $Index
+    }
+
+    $safeLeaf = Get-SafeFolderName -Name $leaf
+    $destinationPath = Join-Path $SessionFolder $safeLeaf
+    Invoke-WebRequest -UseBasicParsing -Headers @{ "User-Agent" = "Mozilla/5.0" } -Uri $SourceUrl -OutFile $destinationPath
+    return $destinationPath
+}
+
+function Invoke-RemoteAudioDownload {
     param(
         [string]$SourceUrl,
         [string]$DownloadFolder,
         [psobject]$YtDlpInvoker,
-        [string]$FFmpegExe,
         [int]$HeartbeatSeconds = 30
     )
 
@@ -680,21 +761,52 @@ function Invoke-RemoteVideoDownload {
     $sessionFolder = Join-Path $DownloadFolder $sessionFolderName
     Ensure-Directory $sessionFolder
 
+    $urlLeafExtension = [System.IO.Path]::GetExtension(([System.Uri]$SourceUrl).AbsolutePath).ToLowerInvariant()
+    if ((Get-SupportedAudioExtensions) -contains $urlLeafExtension) {
+        try {
+            $directAudioPath = Download-DirectAudioFile -SourceUrl $SourceUrl -SessionFolder $sessionFolder
+            Write-Log ("Remote direct-audio downloaded. Items: 1. Cache folder: {0}" -f $sessionFolder)
+            return [PSCustomObject]@{
+                SourceKind      = "direct-audio"
+                DownloadRoot    = $sessionFolder
+                DownloadedPaths = @($directAudioPath)
+            }
+        }
+        catch {
+            if (-not $YtDlpInvoker) {
+                throw
+            }
+
+            Write-Log ("Direct audio download fallback failed for {0}: {1}. Trying yt-dlp instead." -f $SourceUrl, $_.Exception.Message) "WARN"
+        }
+    }
+
+    if (-not $YtDlpInvoker) {
+        if ($sourceKind -eq "playlist") {
+            throw "yt-dlp is required to download playlist URLs."
+        }
+
+        $pageCandidates = @(Get-WebPageAudioCandidates -SourceUrl $SourceUrl)
+        if ($pageCandidates.Count -gt 0) {
+            $selectedCandidate = $pageCandidates[0]
+            Write-Log ("yt-dlp not available. Falling back to discovered audio link: {0}" -f $selectedCandidate) "WARN"
+            $fallbackAudioPath = Download-DirectAudioFile -SourceUrl $selectedCandidate -SessionFolder $sessionFolder
+            Write-Log ("Remote page-audio downloaded. Items: 1. Cache folder: {0}" -f $sessionFolder)
+            return [PSCustomObject]@{
+                SourceKind      = "page-audio"
+                DownloadRoot    = $sessionFolder
+                DownloadedPaths = @($fallbackAudioPath)
+            }
+        }
+
+        throw "yt-dlp is required to download this remote source."
+    }
+
     $outputTemplate = if ($sourceKind -eq "playlist") {
         "%(playlist_index)05d - %(title).120B [%(id)s].%(ext)s"
     }
     else {
         "%(title).120B [%(id)s].%(ext)s"
-    }
-
-    $ffmpegLocation = if ([string]::IsNullOrWhiteSpace($FFmpegExe)) { $null } else { Split-Path -Path $FFmpegExe -Parent }
-    $formatArguments = @(
-        "--format", "bv*+ba/b",
-        "--merge-output-format", "mp4",
-        "--format-sort", "res,fps,hdr,vcodec,acodec,ext"
-    )
-    if (-not [string]::IsNullOrWhiteSpace($ffmpegLocation)) {
-        $formatArguments += @("--ffmpeg-location", $ffmpegLocation)
     }
 
     $playlistArguments = if ($sourceKind -eq "playlist") {
@@ -703,6 +815,7 @@ function Invoke-RemoteVideoDownload {
     else {
         @("--no-playlist")
     }
+
     $result = Invoke-ExternalStreaming `
         -FilePath $YtDlpInvoker.FilePath `
         -Arguments ($YtDlpInvoker.Arguments + @(
@@ -710,53 +823,68 @@ function Invoke-RemoteVideoDownload {
             "--restrict-filenames",
             "--print", "after_move:filepath",
             "-P", $sessionFolder,
-            "-o", $outputTemplate
-        ) + $formatArguments + $playlistArguments + @($SourceUrl)) `
+            "-o", $outputTemplate,
+            "--format", "ba/b"
+        ) + $playlistArguments + @($SourceUrl)) `
         -StepName ("yt-dlp download ({0})" -f $sourceKind) `
-        -IgnoreExitCode:$($sourceKind -eq "playlist") `
+        -IgnoreExitCode `
         -HeartbeatSeconds $HeartbeatSeconds `
         -TimeoutSeconds 7200
 
-    $supportedExtensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
     $downloadedPaths = @()
-
     foreach ($line in ($result.StdOut -split "`r?`n")) {
         $candidate = $line.Trim()
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
             $item = Get-Item -LiteralPath $candidate
-            if (-not $item.PSIsContainer -and $supportedExtensions -contains $item.Extension.ToLowerInvariant()) {
+            if (-not $item.PSIsContainer -and (Get-SupportedAudioExtensions) -contains $item.Extension.ToLowerInvariant()) {
                 $downloadedPaths += $item.FullName
             }
         }
     }
 
     if ($downloadedPaths.Count -eq 0) {
-        $downloadedPaths = @(
-            Get-ChildItem -LiteralPath $sessionFolder -File -Recurse |
-                Where-Object { $supportedExtensions -contains $_.Extension.ToLowerInvariant() } |
-                Sort-Object Name |
-                ForEach-Object { $_.FullName }
-        )
+        $downloadedPaths = Get-AudioFilesFromDownloadFolder -FolderPath $sessionFolder
+    }
+
+    if ($downloadedPaths.Count -eq 0 -and $sourceKind -ne "playlist") {
+        try {
+            $pageCandidates = @(Get-WebPageAudioCandidates -SourceUrl $SourceUrl)
+            if ($pageCandidates.Count -gt 0) {
+                $selectedCandidate = $pageCandidates[0]
+                Write-Log ("yt-dlp could not resolve audio from the page directly. Falling back to discovered audio link: {0}" -f $selectedCandidate) "WARN"
+                $downloadedPaths = @(
+                    Download-DirectAudioFile -SourceUrl $selectedCandidate -SessionFolder $sessionFolder
+                )
+                $sourceKind = "page-audio"
+            }
+        }
+        catch {
+            Write-Log ("Page audio fallback failed for {0}: {1}" -f $SourceUrl, $_.Exception.Message) "WARN"
+        }
     }
 
     if ($downloadedPaths.Count -eq 0) {
-        throw "yt-dlp finished without producing a supported local video file in $sessionFolder"
+        if ($result.ExitCode -ne 0) {
+            throw ("yt-dlp audio download ({0}) failed with exit code {1}. See script_run.log." -f $sourceKind, $result.ExitCode)
+        }
+
+        throw "Remote source finished without producing a supported local audio file in $sessionFolder"
     }
 
     if ($result.ExitCode -ne 0) {
         if ($sourceKind -eq "playlist") {
-            Write-Log ("yt-dlp reported some playlist entries as unavailable or inaccessible. Continuing with {0} downloaded video(s)." -f $downloadedPaths.Count) "WARN"
+            Write-Log ("yt-dlp reported some playlist entries as unavailable or inaccessible. Continuing with {0} downloaded audio file(s)." -f $downloadedPaths.Count) "WARN"
         }
         else {
-            throw ("yt-dlp download ({0}) failed with exit code {1}. See script_run.log." -f $sourceKind, $result.ExitCode)
+            Write-Log ("yt-dlp reported an issue but fallback audio files were recovered. Continuing with {0} downloaded file(s)." -f $downloadedPaths.Count) "WARN"
         }
     }
 
     Write-Log ("Remote {0} downloaded. Items: {1}. Cache folder: {2}" -f $sourceKind, $downloadedPaths.Count, $sessionFolder)
 
     return [PSCustomObject]@{
-        SourceKind    = $sourceKind
-        DownloadRoot  = $sessionFolder
+        SourceKind      = $sourceKind
+        DownloadRoot    = $sessionFolder
         DownloadedPaths = $downloadedPaths
     }
 }
@@ -823,9 +951,9 @@ function Get-InteractiveInputSource {
         Write-Host "Default local input source:" -ForegroundColor Cyan
         Write-Host $DefaultInputFolder -ForegroundColor Cyan
         Write-Host "Choose an input method:" -ForegroundColor Cyan
-        Write-Host "  1. Paste YouTube video or playlist URLs" -ForegroundColor Cyan
+        Write-Host "  1. Paste audio, YouTube, or playlist URLs" -ForegroundColor Cyan
         Write-Host ("  2. Use this folder: {0}" -f $DefaultInputFolder) -ForegroundColor Cyan
-        Write-Host "  3. Paste a full local video file path or folder path" -ForegroundColor Cyan
+        Write-Host "  3. Paste a full local audio file path or folder path" -ForegroundColor Cyan
         Write-Host "Press Enter for 3, or type Q to quit." -ForegroundColor Cyan
         $inputChoice = Read-Host "Enter 1, 2, 3, or Q"
 
@@ -840,7 +968,7 @@ function Get-InteractiveInputSource {
         }
 
         if ($inputChoice -eq "1") {
-            Write-Host "Paste text containing one or more video or playlist URLs." -ForegroundColor Cyan
+            Write-Host "Paste text containing one or more audio, video, or playlist URLs." -ForegroundColor Cyan
             Write-Host "Type DONE on its own line when the paste is complete." -ForegroundColor Cyan
 
             $remoteInputs = New-Object System.Collections.Generic.List[string]
@@ -885,23 +1013,10 @@ function Get-InteractiveInputSource {
 
             Write-Host ("Captured {0} unique remote URL(s)." -f $remoteInputs.Count) -ForegroundColor Cyan
 
-            try {
-                $null = Resolve-YtDlpInvoker -PreferredCommand $YtDlpCommand -PythonCommand $PythonCommand
-            }
-            catch {
-                Write-Host $_.Exception.Message -ForegroundColor Yellow
-                Write-YtDlpInstallGuidance -PythonCommand $PythonCommand
-                $fallbackChoice = Read-Host "Press Enter to choose a local file or folder instead, or type Q to stop"
-                if (-not [string]::IsNullOrWhiteSpace($fallbackChoice) -and $fallbackChoice.Trim() -match '^(q|quit)$') {
-                    throw
-                }
-                continue
-            }
-
             foreach ($remoteUrl in $remoteInputs) {
                 $sourceKind = Get-RemoteSourceKind -SourceUrl $remoteUrl
                 if ($sourceKind -eq "playlist") {
-                    Write-Host "Playlist detected. The script will download each video in the playlist before packaging." -ForegroundColor Cyan
+                    Write-Host "Playlist detected. The script will download each item in the playlist before packaging." -ForegroundColor Cyan
                 }
             }
 
@@ -913,9 +1028,9 @@ function Get-InteractiveInputSource {
         }
 
         if ($inputChoice -eq "3") {
-            $customInput = Read-Host "Paste a full local video file path or folder path"
+            $customInput = Read-Host "Paste a full local audio file path or folder path"
             if ([string]::IsNullOrWhiteSpace($customInput)) {
-                Write-Host "A local video file path or folder path is required for option 3." -ForegroundColor Yellow
+                Write-Host "A local audio file path or folder path is required for option 3." -ForegroundColor Yellow
                 continue
             }
 
@@ -942,10 +1057,10 @@ function Format-DurationHuman {
     }
 }
 
-function Get-VideoFilesFromPath {
+function Get-AudioFilesFromPath {
     param([string]$Path)
 
-    $extensions = @(".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm")
+    $extensions = Get-SupportedAudioExtensions
     $Path = Normalize-UserPath -Path $Path
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -959,7 +1074,7 @@ function Get-VideoFilesFromPath {
     }
 
     if ($extensions -notcontains $item.Extension.ToLowerInvariant()) {
-        throw "Unsupported video file type: $($item.FullName)"
+        throw "Unsupported audio file type: $($item.FullName)"
     }
 
     return @($item)
@@ -1160,83 +1275,79 @@ print(json.dumps(result), flush=True)
 function New-CodexReadme {
     param(
         [string]$ReadmePath,
-        [string]$VideoFileName,
+        [string]$AudioFileName,
         [string]$RawPresent,
-        [string]$AudioPresent,
-        [double]$FrameIntervalSeconds
+        [string]$DetectedLanguage,
+        [string[]]$TranslationTargets
     )
-
-    $framesFolderName = Get-FramesFolderName -Value $FrameIntervalSeconds
 
 @"
 README_FOR_CODEX
 
 Purpose:
-This folder contains a Codex-ready review package generated from:
-$VideoFileName
+This folder contains a Codex-ready audio review package generated from:
+$AudioFileName
 
 What is included:
-- raw\                       original source video (if copied)
-- proxy\review_proxy_1280.mp4
-- $framesFolderName\frame_000001.jpg ...
-- audio\audio.mp3            only if source audio exists
-- transcript\transcript.srt  only if source audio exists
-- transcript\transcript.json only if source audio exists
-- frame_index.csv
+- raw\                            original source audio (if copied)
+- audio\review_audio.mp3
+- transcript\transcript_original.srt
+- transcript\transcript_original.json
+- transcript\transcript_original.txt
+- translations\<lang>\transcript.srt
+- translations\<lang>\transcript.json
+- translations\<lang>\transcript.txt
+- segment_index.csv
 - script_run.log
 
 Recommended review order:
-1. Read transcript\transcript.srt or transcript\transcript.json if present
-2. Watch proxy\review_proxy_1280.mp4 for pacing and sequence
-3. Use frame_index.csv to map timestamps to extracted frames
-4. Inspect frames for detailed visual review
-5. Use audio\audio.mp3 when spoken context needs confirmation
-6. Use raw video only if derived assets are insufficient
+1. Read transcript\transcript_original.txt first for a quick overview.
+2. Use transcript\transcript_original.srt or segment_index.csv for timestamped review.
+3. Review translations\<lang>\ files if translation targets were requested.
+4. Use audio\review_audio.mp3 when pronunciation, emphasis, or spoken nuance matters.
+5. Use raw audio only if the review copy is insufficient.
 
 Notes:
-- Selected frame interval: $FrameIntervalSeconds seconds
-- Frames folder: $framesFolderName
-- Raw video present: $RawPresent
-- Audio present in source: $AudioPresent
+- Detected source language: $DetectedLanguage
+- Translation targets: $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { $TranslationTargets -join ", " } else { "none" })
+- Raw audio present: $RawPresent
+- Script version folder format is intended for transcript-first review.
 "@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
 }
 
 function New-ChatGptReadme {
     param(
         [string]$ReadmePath,
-        [string]$SourceVideoName,
-        [string]$FramesFolderName,
-        [bool]$ProxyIncluded,
-        [string]$FrameSelectionNote
+        [string]$SourceAudioName,
+        [bool]$AudioIncluded,
+        [string[]]$TranslationTargets
     )
 
 @"
 CHATGPT_REVIEW_PACKAGE
 
-Source video:
-$SourceVideoName
+Source audio:
+$SourceAudioName
 
 Package contents:
-- audio\audio.mp3
-- $FramesFolderName\frame_*.jpg
-- transcript\transcript.srt
-- transcript\transcript.json
-- frame_index.csv
-$(if ($ProxyIncluded) { "- proxy\review_proxy_1280.mp4" } else { "- proxy video omitted to stay under upload size limits" })
-
-Frame selection:
-$FrameSelectionNote
+- transcript\transcript_original.srt
+- transcript\transcript_original.json
+- transcript\transcript_original.txt
+- segment_index.csv
+$(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { "- translations\<lang>\transcript.*" } else { "- no translated transcript files were requested" })
+$(if ($AudioIncluded) { "- audio\review_audio.mp3" } else { "- review audio omitted to stay under upload size limits" })
 
 How to use this in ChatGPT:
 1) Upload this zip file.
-2) Ask ChatGPT to summarize the transcript first.
-3) Ask ChatGPT to review visual events using frame_index.csv + the extracted frame images.
-4) If proxy video is included, ask ChatGPT to cross-check key moments against the proxy.
-5) Ask for:
-   - timeline of major events
+2) Ask ChatGPT to summarize the original transcript first.
+3) Ask ChatGPT to use segment_index.csv to reference exact timestamps.
+4) If translated transcripts are included, ask ChatGPT to compare the original and translated wording.
+5) If review audio is included, ask ChatGPT to cross-check pronunciation or emphasis against the audio.
+6) Ask for:
+   - timeline of major spoken points
    - notable quotes
+   - translation quality concerns
    - action items
-   - risks/issues found in the video
    - concise executive summary
 "@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
 }
@@ -1287,18 +1398,12 @@ function New-ChatGptZipPackage {
     )
 
     $maxBytes = [int64]$MaxSizeMb * 1MB
-    $framesFolder = Join-Path $ProcessedItem.OutputPath $ProcessedItem.FramesFolderName
-    $audioFolder = Join-Path $ProcessedItem.OutputPath "audio"
     $transcriptFolder = Join-Path $ProcessedItem.OutputPath "transcript"
-    $frameIndexCsv = Join-Path $ProcessedItem.OutputPath "frame_index.csv"
-    $proxyVideo = Join-Path $ProcessedItem.OutputPath "proxy\review_proxy_1280.mp4"
+    $translationsFolder = Join-Path $ProcessedItem.OutputPath "translations"
+    $segmentIndexCsv = Join-Path $ProcessedItem.OutputPath "segment_index.csv"
+    $audioFile = Join-Path $ProcessedItem.OutputPath "audio\review_audio.mp3"
     $zipPath = Join-Path $ProcessedItem.OutputPath "chatgpt_review_package.zip"
-    $requiredPaths = @($framesFolder, $frameIndexCsv)
-    foreach ($optionalPath in @($audioFolder, $transcriptFolder)) {
-        if (Test-Path -LiteralPath $optionalPath) {
-            $requiredPaths += $optionalPath
-        }
-    }
+    $requiredPaths = @($transcriptFolder, $segmentIndexCsv)
 
     foreach ($path in $requiredPaths) {
         if (-not (Test-Path -LiteralPath $path)) {
@@ -1306,17 +1411,16 @@ function New-ChatGptZipPackage {
         }
     }
 
-    $allFrames = @(Get-ChildItem -LiteralPath $framesFolder -Filter "frame_*.jpg" -File | Sort-Object Name)
-    if ($allFrames.Count -eq 0) {
-        throw "Cannot build ChatGPT zip because no extracted frames were found in $framesFolder"
+    if (Test-Path -LiteralPath $translationsFolder) {
+        $requiredPaths += $translationsFolder
     }
 
-    $nonFrameBaseBytes = [int64]0
-    foreach ($path in ($requiredPaths | Where-Object { $_ -ne $framesFolder })) {
-        $nonFrameBaseBytes += Get-PathSizeBytes -LiteralPath $path
+    $nonAudioBaseBytes = [int64]0
+    foreach ($path in $requiredPaths) {
+        $nonAudioBaseBytes += Get-PathSizeBytes -LiteralPath $path
     }
 
-    $proxyBytes = if (Test-Path -LiteralPath $proxyVideo) { [int64](Get-Item -LiteralPath $proxyVideo).Length } else { [int64]0 }
+    $audioBytes = if (Test-Path -LiteralPath $audioFile) { [int64](Get-Item -LiteralPath $audioFile).Length } else { [int64]0 }
 
     $tempRoot = Join-Path $ProcessedItem.OutputPath "_chatgpt_zip_temp"
     if (Test-Path -LiteralPath $tempRoot) {
@@ -1327,8 +1431,11 @@ function New-ChatGptZipPackage {
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-        $samplingStep = 1
-        while ($samplingStep -le $allFrames.Count) {
+        foreach ($includeAudio in @($true, $false)) {
+            if ($includeAudio -and $audioBytes -gt 0 -and (($nonAudioBaseBytes + $audioBytes) -gt $maxBytes)) {
+                continue
+            }
+
             if (Test-Path -LiteralPath $zipPath) {
                 Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
             }
@@ -1339,56 +1446,24 @@ function New-ChatGptZipPackage {
             }
             Ensure-Directory $stagingRoot
 
-            if (Test-Path -LiteralPath $audioFolder) {
-                Copy-Item -LiteralPath $audioFolder -Destination (Join-Path $stagingRoot "audio") -Recurse -Force
-            }
-            if (Test-Path -LiteralPath $transcriptFolder) {
-                Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
+            Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
+            if (Test-Path -LiteralPath $translationsFolder) {
+                Copy-Item -LiteralPath $translationsFolder -Destination (Join-Path $stagingRoot "translations") -Recurse -Force
             }
 
-            $selectedFrames = @()
-            for ($i = 0; $i -lt $allFrames.Count; $i += $samplingStep) {
-                $selectedFrames += $allFrames[$i]
-            }
+            Copy-Item -LiteralPath $segmentIndexCsv -Destination (Join-Path $stagingRoot "segment_index.csv") -Force
 
-            $selectedFrameBytes = [int64]0
-            foreach ($frame in $selectedFrames) {
-                $selectedFrameBytes += [int64]$frame.Length
-            }
-
-            $stagedFramesFolder = Join-Path $stagingRoot $ProcessedItem.FramesFolderName
-            Ensure-Directory $stagedFramesFolder
-            foreach ($frame in $selectedFrames) {
-                Copy-Item -LiteralPath $frame.FullName -Destination (Join-Path $stagedFramesFolder $frame.Name) -Force
-            }
-
-            $stagedFrameIndex = Join-Path $stagingRoot "frame_index.csv"
-            New-ChatGptFrameIndex `
-                -SourceFrameIndexCsv $frameIndexCsv `
-                -DestinationFrameIndexCsv $stagedFrameIndex `
-                -SelectedFrames $selectedFrames
-
-            $includeProxy = $false
-            if ($proxyBytes -gt 0 -and (($nonFrameBaseBytes + $selectedFrameBytes + $proxyBytes) -le $maxBytes)) {
-                $includeProxy = $true
-                Ensure-Directory (Join-Path $stagingRoot "proxy")
-                Copy-Item -LiteralPath $proxyVideo -Destination (Join-Path $stagingRoot "proxy\review_proxy_1280.mp4") -Force
-            }
-
-            $frameSelectionNote = if ($samplingStep -le 1) {
-                "All extracted frames are included."
-            }
-            else {
-                "Every $samplingStep-th extracted frame is included automatically to stay under the upload limit."
+            if ($includeAudio -and $audioBytes -gt 0) {
+                Ensure-Directory (Join-Path $stagingRoot "audio")
+                Copy-Item -LiteralPath $audioFile -Destination (Join-Path $stagingRoot "audio\review_audio.mp3") -Force
             }
 
             $chatGptReadme = Join-Path $stagingRoot "README_FOR_CHATGPT.txt"
             New-ChatGptReadme `
                 -ReadmePath $chatGptReadme `
-                -SourceVideoName $ProcessedItem.SourceVideoName `
-                -FramesFolderName $ProcessedItem.FramesFolderName `
-                -ProxyIncluded:$includeProxy `
-                -FrameSelectionNote $frameSelectionNote
+                -SourceAudioName $ProcessedItem.SourceAudioName `
+                -AudioIncluded:$($includeAudio -and $audioBytes -gt 0) `
+                -TranslationTargets $ProcessedItem.TranslationTargets
 
             [System.IO.Compression.ZipFile]::CreateFromDirectory(
                 $stagingRoot,
@@ -1400,29 +1475,16 @@ function New-ChatGptZipPackage {
             $zipSize = (Get-Item -LiteralPath $zipPath).Length
             if ($zipSize -le $maxBytes) {
                 return [PSCustomObject]@{
-                    ZipPath           = $zipPath
-                    ZipSizeMb         = [math]::Round($zipSize / 1MB, 2)
-                    ProxyIncluded     = $includeProxy
-                    FrameSamplingStep = $samplingStep
-                    IncludedFrameCount = $selectedFrames.Count
+                    ZipPath       = $zipPath
+                    ZipSizeMb     = [math]::Round($zipSize / 1MB, 2)
+                    AudioIncluded = ($includeAudio -and $audioBytes -gt 0)
                 }
             }
 
             Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
-
-            if ($selectedFrames.Count -le 1) {
-                break
-            }
-
-            if ($samplingStep -eq 1) {
-                $samplingStep = 2
-            }
-            else {
-                $samplingStep = $samplingStep * 2
-            }
         }
 
-        throw "ChatGPT zip exceeded $MaxSizeMb MB even after automatically thinning the frame set."
+        throw "ChatGPT zip exceeded $MaxSizeMb MB even after omitting review audio."
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) {
@@ -1435,36 +1497,32 @@ function New-MasterReadme {
     param(
         [string]$MasterReadmePath,
         [string]$OutputRoot,
-        [array]$ProcessedItems,
-        [double]$FrameIntervalSeconds
+        [array]$ProcessedItems
     )
 
     $lines = @()
     $lines += "CODEX_MASTER_README"
     $lines += ""
     $lines += "Purpose:"
-    $lines += "This root contains one Codex-ready review package per processed source video."
+    $lines += "This root contains one Codex-ready audio review package per processed source item."
     $lines += ""
     $lines += "Root:"
     $lines += $OutputRoot
     $lines += ""
-    $lines += "Selected frame interval:"
-    $lines += "$FrameIntervalSeconds seconds"
-    $lines += ""
-    $lines += "Each video folder contains:"
-    $lines += "- raw\                       original source video (optional)"
-    $lines += "- proxy\review_proxy_1280.mp4"
-    $lines += "- $(Get-FramesFolderName -Value $FrameIntervalSeconds)\frame_000001.jpg ..."
-    $lines += "- audio\audio.mp3 (if source has audio)"
-    $lines += "- transcript\transcript.srt (if source has audio)"
-    $lines += "- transcript\transcript.json (if source has audio)"
-    $lines += "- frame_index.csv"
+    $lines += "Each audio folder contains:"
+    $lines += "- raw\                            original source audio (optional)"
+    $lines += "- audio\review_audio.mp3"
+    $lines += "- transcript\transcript_original.srt"
+    $lines += "- transcript\transcript_original.json"
+    $lines += "- transcript\transcript_original.txt"
+    $lines += "- translations\<lang>\transcript.srt / .json / .txt"
+    $lines += "- segment_index.csv"
     $lines += "- README_FOR_CODEX.txt"
     $lines += "- script_run.log"
     $lines += ""
-    $lines += "Processed video folders:"
+    $lines += "Processed audio folders:"
     foreach ($item in $ProcessedItems) {
-        $lines += "- $($item.OutputFolderName)  <=  $($item.SourceVideoName)"
+        $lines += "- $($item.OutputFolderName)  <=  $($item.SourceAudioName)"
     }
 
     $lines | Set-Content -LiteralPath $MasterReadmePath -Encoding UTF8
@@ -1473,38 +1531,35 @@ function New-MasterReadme {
 function Add-SummaryRow {
     param(
         [string]$SummaryCsv,
-        [string]$SourceVideo,
+        [string]$SourceAudio,
         [string]$OutputFolderName,
         [string]$OutputPath,
-        [int]$FrameCount,
-        [string]$ProxyVideo,
         [string]$AudioFile,
-        [string]$TranscriptSrt,
-        [string]$TranscriptJson,
+        [string]$OriginalTranscriptSrt,
+        [string]$OriginalTranscriptJson,
+        [string]$OriginalTranscriptText,
+        [string]$SegmentIndexCsv,
         [string]$RawCopied,
-        [string]$AudioPresent,
-        [string]$ProxyMode,
-        [string]$FrameMode,
-        [string]$WhisperMode,
-        [double]$FrameIntervalSeconds
+        [string]$DetectedLanguage,
+        [string]$TranslationTargets,
+        [string]$TranslationProvider,
+        [string]$WhisperMode
     )
 
     $row = [PSCustomObject]@{
-        source_video           = $SourceVideo
-        output_folder_name     = $OutputFolderName
-        output_path            = $OutputPath
-        frame_count            = $FrameCount
-        frame_interval_seconds = $FrameIntervalSeconds
-        frames_folder          = (Get-FramesFolderName -Value $FrameIntervalSeconds)
-        proxy_video            = $ProxyVideo
-        audio_file             = $AudioFile
-        transcript_srt         = $TranscriptSrt
-        transcript_json        = $TranscriptJson
-        raw_copied             = $RawCopied
-        audio_present          = $AudioPresent
-        proxy_mode             = $ProxyMode
-        frame_mode             = $FrameMode
-        whisper_mode           = $WhisperMode
+        source_audio             = $SourceAudio
+        output_folder_name       = $OutputFolderName
+        output_path              = $OutputPath
+        review_audio             = $AudioFile
+        transcript_original_srt  = $OriginalTranscriptSrt
+        transcript_original_json = $OriginalTranscriptJson
+        transcript_original_txt  = $OriginalTranscriptText
+        segment_index_csv        = $SegmentIndexCsv
+        raw_copied               = $RawCopied
+        detected_language        = $DetectedLanguage
+        translation_targets      = $TranslationTargets
+        translation_provider     = $TranslationProvider
+        whisper_mode             = $WhisperMode
     }
 
     if (-not (Test-Path $SummaryCsv)) {
@@ -1524,6 +1579,11 @@ function Invoke-PythonWhisperTranscript {
         [string]$LanguageCode,
         [string]$FFmpegExe,
         [bool]$PreferGpu,
+        [ValidateSet("transcribe","translate")]
+        [string]$Task = "transcribe",
+        [string]$JsonName = "transcript_original.json",
+        [string]$SrtName = "transcript_original.srt",
+        [string]$TextName = "transcript_original.txt",
         [int]$HeartbeatSeconds = 10
     )
 
@@ -1548,6 +1608,10 @@ model_name = sys.argv[3]
 language_code = sys.argv[4]
 ffmpeg_dir = sys.argv[5]
 prefer_gpu = sys.argv[6].lower() == "true"
+task_name = sys.argv[7]
+json_name = sys.argv[8]
+srt_name = sys.argv[9]
+text_name = sys.argv[10]
 
 os.makedirs(output_dir, exist_ok=True)
 
@@ -1597,10 +1661,11 @@ def run_transcription(device_name):
     fp16 = device_name == "cuda"
     log(f"[PY] Loading model '{model_name}' on device '{device_name}'...")
     model = whisper.load_model(model_name, device=device_name)
-    log(f"[PY] Starting transcription on {device_name}...")
+    log(f"[PY] Starting {task_name} on {device_name}...")
     result = model.transcribe(
         audio_path,
         language=language_code if language_code else None,
+        task=task_name,
         verbose=True,
         fp16=fp16
     )
@@ -1631,11 +1696,19 @@ try:
 
     log("[PY] Writing transcript files...")
 
-    srt_path = os.path.join(output_dir, "transcript.srt")
-    json_path = os.path.join(output_dir, "transcript.json")
+    srt_path = os.path.join(output_dir, srt_name)
+    json_path = os.path.join(output_dir, json_name)
+    text_path = os.path.join(output_dir, text_name)
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
+
+    with open(text_path, "w", encoding="utf-8") as f:
+        segments = result.get("segments") or []
+        for seg in segments:
+            text = (seg.get("text") or "").strip()
+            if text:
+                f.write(text + "\n")
 
     with open(srt_path, "w", encoding="utf-8") as f:
         segments = result.get("segments") or []
@@ -1652,6 +1725,9 @@ try:
         "fp16": fp16,
         "json_path": json_path,
         "srt_path": srt_path,
+        "text_path": text_path,
+        "language": result.get("language", ""),
+        "segments_count": len(result.get("segments") or []),
         "gpu_error": gpu_error
     }), flush=True)
 
@@ -1675,7 +1751,11 @@ finally:
                 $ModelName,
                 $LanguageCode,
                 $ffmpegDir,
-                $PreferGpu.ToString()
+                $PreferGpu.ToString(),
+                $Task,
+                $JsonName,
+                $SrtName,
+                $TextName
             ) `
             -StepName "Python Whisper transcription" `
             -IgnoreExitCode `
@@ -1695,11 +1775,14 @@ finally:
         $parsed = $parsedJsonLine | ConvertFrom-Json
 
         return [PSCustomObject]@{
-            Device   = [string]$parsed.device
-            Fp16     = [bool]$parsed.fp16
-            JsonPath = [string]$parsed.json_path
-            SrtPath  = [string]$parsed.srt_path
-            GpuError = [string]$parsed.gpu_error
+            Device        = [string]$parsed.device
+            Fp16          = [bool]$parsed.fp16
+            JsonPath      = [string]$parsed.json_path
+            SrtPath       = [string]$parsed.srt_path
+            TextPath      = [string]$parsed.text_path
+            Language      = [string]$parsed.language
+            SegmentsCount = [int]$parsed.segments_count
+            GpuError      = [string]$parsed.gpu_error
         }
     }
     finally {
@@ -2403,6 +2486,712 @@ if ($null -ne $requestedInputValue) {
     }
 }
 
+function Get-TranslationTargets {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+
+    return @(
+        $Value -split '[,\s]+' |
+            ForEach-Object { $_.Trim().ToLowerInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+}
+
+function Convert-ToSrtTimestamp {
+    param([double]$Seconds)
+
+    $totalMs = [int][math]::Round($Seconds * 1000)
+    $hours = [math]::Floor($totalMs / 3600000)
+    $totalMs = $totalMs % 3600000
+    $minutes = [math]::Floor($totalMs / 60000)
+    $totalMs = $totalMs % 60000
+    $secondsPart = [math]::Floor($totalMs / 1000)
+    $millis = $totalMs % 1000
+    return ("{0:00}:{1:00}:{2:00},{3:000}" -f $hours, $minutes, $secondsPart, $millis)
+}
+
+function Write-TranscriptArtifactsFromSegments {
+    param(
+        [string]$OutputFolder,
+        [array]$Segments,
+        [string]$Language,
+        [string]$JsonName,
+        [string]$SrtName,
+        [string]$TextName,
+        [string]$Task = "translate",
+        [string]$SourceLanguage = ""
+    )
+
+    Ensure-Directory $OutputFolder
+
+    $jsonPath = Join-Path $OutputFolder $JsonName
+    $srtPath = Join-Path $OutputFolder $SrtName
+    $textPath = Join-Path $OutputFolder $TextName
+
+    $jsonPayload = [PSCustomObject]@{
+        language        = $Language
+        source_language = $SourceLanguage
+        task            = $Task
+        text            = (($Segments | ForEach-Object { $_.text }) -join " ").Trim()
+        segments        = @(
+            $Segments | ForEach-Object {
+                [PSCustomObject]@{
+                    id    = $_.id
+                    start = $_.start
+                    end   = $_.end
+                    text  = $_.text
+                }
+            }
+        )
+    }
+
+    $jsonPayload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+    $srtBuilder = New-Object System.Text.StringBuilder
+    $textBuilder = New-Object System.Text.StringBuilder
+    $index = 1
+    foreach ($segment in $Segments) {
+        $text = [string]$segment.text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        [void]$srtBuilder.AppendLine($index)
+        [void]$srtBuilder.AppendLine(("{0} --> {1}" -f (Convert-ToSrtTimestamp -Seconds $segment.start), (Convert-ToSrtTimestamp -Seconds $segment.end)))
+        [void]$srtBuilder.AppendLine($text.Trim())
+        [void]$srtBuilder.AppendLine("")
+        [void]$textBuilder.AppendLine($text.Trim())
+        $index += 1
+    }
+
+    $srtBuilder.ToString() | Set-Content -LiteralPath $srtPath -Encoding UTF8
+    $textBuilder.ToString() | Set-Content -LiteralPath $textPath -Encoding UTF8
+
+    return [PSCustomObject]@{
+        JsonPath = $jsonPath
+        SrtPath  = $srtPath
+        TextPath = $textPath
+    }
+}
+
+function Get-OpenAiApiKey {
+    $apiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY")
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        throw "OPENAI_API_KEY is required for non-English translation targets. Set OPENAI_API_KEY and run Audio Mangler again."
+    }
+
+    return $apiKey
+}
+
+function Invoke-OpenAiSegmentTranslation {
+    param(
+        [array]$Segments,
+        [string]$SourceLanguage,
+        [string]$TargetLanguage,
+        [string]$Model,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $apiKey = Get-OpenAiApiKey
+    $headers = @{
+        Authorization = "Bearer $apiKey"
+        "Content-Type" = "application/json"
+    }
+
+    $translatedSegments = @()
+    $lastProgress = Get-Date
+    $segmentIndex = 0
+    foreach ($segment in $Segments) {
+        $segmentIndex += 1
+        $text = [string]$segment.text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            $translatedSegments += [PSCustomObject]@{
+                id    = $segment.id
+                start = $segment.start
+                end   = $segment.end
+                text  = ""
+            }
+            continue
+        }
+
+        if (((Get-Date) - $lastProgress).TotalSeconds -ge $HeartbeatSeconds) {
+            Write-Log ("OpenAI translation still working... {0}/{1} segments translated" -f $segmentIndex, $Segments.Count)
+            $lastProgress = Get-Date
+        }
+
+        $userPrompt = if ([string]::IsNullOrWhiteSpace($SourceLanguage)) {
+            "Translate this spoken transcript segment into $TargetLanguage. Return only the translated text.`n`n$text"
+        }
+        else {
+            "Translate this spoken transcript segment from $SourceLanguage into $TargetLanguage. Return only the translated text.`n`n$text"
+        }
+
+        $body = @{
+            model = $Model
+            messages = @(
+                @{
+                    role = "system"
+                    content = "You translate transcript segments. Return only the translated text with no commentary, labels, or quotes."
+                },
+                @{
+                    role = "user"
+                    content = $userPrompt
+                }
+            )
+        } | ConvertTo-Json -Depth 6
+
+        try {
+            $response = Invoke-RestMethod -Method Post -Uri "https://api.openai.com/v1/chat/completions" -Headers $headers -Body $body
+        }
+        catch {
+            throw "OpenAI translation failed for language '$TargetLanguage'. $($_.Exception.Message)"
+        }
+
+        $translatedText = [string]$response.choices[0].message.content
+        $translatedSegments += [PSCustomObject]@{
+            id    = $segment.id
+            start = $segment.start
+            end   = $segment.end
+            text  = $translatedText.Trim()
+        }
+    }
+
+    return $translatedSegments
+}
+
+function Get-LanguageDisplayName {
+    param([string]$Code)
+
+    if ([string]::IsNullOrWhiteSpace($Code)) {
+        return ""
+    }
+
+    switch ($Code.Trim().ToLowerInvariant()) {
+        "en" { return "English" }
+        "es" { return "Spanish" }
+        "fr" { return "French" }
+        "de" { return "German" }
+        "it" { return "Italian" }
+        "pt" { return "Portuguese" }
+        "ja" { return "Japanese" }
+        "ko" { return "Korean" }
+        "zh" { return "Chinese" }
+        "ar" { return "Arabic" }
+        "ru" { return "Russian" }
+        default { return $Code.Trim() }
+    }
+}
+
+function Export-ReviewAudioMp3 {
+    param(
+        [string]$FFmpegExe,
+        [string]$InputMedia,
+        [string]$OutputAudio,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    if (Test-Path -LiteralPath $OutputAudio) {
+        Write-Log "Review audio already exists. Skipping build."
+        return "SKIPPED_EXISTING"
+    }
+
+    $result = Invoke-ExternalCapture `
+        -FilePath $FFmpegExe `
+        -Arguments @("-y", "-i", $InputMedia, "-vn", "-c:a", "libmp3lame", "-b:a", "192k", $OutputAudio) `
+        -StepName "Review audio build" `
+        -HeartbeatSeconds $HeartbeatSeconds
+
+    if ($result.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $OutputAudio)) {
+        throw "Review audio build failed."
+    }
+
+    return "CREATED"
+}
+
+function Get-TranscriptSegments {
+    param([string]$TranscriptJsonPath)
+
+    if (-not (Test-Path -LiteralPath $TranscriptJsonPath)) {
+        throw "Transcript JSON not found: $TranscriptJsonPath"
+    }
+
+    $payload = Get-Content -LiteralPath $TranscriptJsonPath -Raw | ConvertFrom-Json
+    $segments = @()
+    $index = 0
+    foreach ($segment in @($payload.segments)) {
+        $segments += [PSCustomObject]@{
+            id    = if ($null -ne $segment.id) { [int]$segment.id } else { $index }
+            start = [double]$segment.start
+            end   = [double]$segment.end
+            text  = [string]$segment.text
+        }
+        $index += 1
+    }
+
+    return [PSCustomObject]@{
+        Language       = [string]$payload.language
+        SourceLanguage = [string]$payload.source_language
+        Segments       = $segments
+    }
+}
+
+function Build-SegmentIndex {
+    param(
+        [array]$Segments,
+        [string]$SegmentIndexCsv
+    )
+
+    if (-not $Segments -or $Segments.Count -eq 0) {
+        throw "No transcript segments were available to index."
+    }
+
+    $rows = @()
+    $segmentNumber = 0
+    foreach ($segment in $Segments) {
+        $segmentNumber += 1
+        $rows += [PSCustomObject]@{
+            segment_number = $segmentNumber
+            start_seconds  = ([math]::Round([double]$segment.start, 3)).ToString("0.###", [System.Globalization.CultureInfo]::InvariantCulture)
+            end_seconds    = ([math]::Round([double]$segment.end, 3)).ToString("0.###", [System.Globalization.CultureInfo]::InvariantCulture)
+            start_time     = Convert-ToSrtTimestamp -Seconds ([double]$segment.start)
+            end_time       = Convert-ToSrtTimestamp -Seconds ([double]$segment.end)
+            original_text  = ([string]$segment.text).Trim()
+        }
+    }
+
+    $rows | Export-Csv -LiteralPath $SegmentIndexCsv -NoTypeInformation -Encoding UTF8
+    return $rows.Count
+}
+
+function Get-BenchmarkSampleDurationSeconds {
+    param(
+        [string]$FFprobeExe,
+        [string]$MediaPath,
+        [double]$MaximumSampleSeconds
+    )
+
+    $duration = Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $MediaPath
+    if ($duration -le 0) {
+        return 0.0
+    }
+
+    return [math]::Min($duration, $MaximumSampleSeconds)
+}
+
+function Get-BenchmarkAudioEncodeSeconds {
+    param(
+        [string]$FFmpegExe,
+        [string]$FFprobeExe,
+        [string]$MediaPath
+    )
+
+    $tempOut = Join-Path $env:TEMP ("audio_bench_" + [guid]::NewGuid().ToString() + ".mp3")
+    $sampleSeconds = Get-BenchmarkSampleDurationSeconds -FFprobeExe $FFprobeExe -MediaPath $MediaPath -MaximumSampleSeconds 45.0
+
+    try {
+        if ($sampleSeconds -le 0) {
+            return $null
+        }
+
+        $sampleText = $sampleSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        $result = Invoke-ExternalCapture `
+            -FilePath $FFmpegExe `
+            -Arguments @("-y", "-ss", "0", "-t", $sampleText, "-i", $MediaPath, "-vn", "-c:a", "libmp3lame", "-b:a", "192k", $tempOut) `
+            -StepName "Benchmark review audio build"
+
+        return [PSCustomObject]@{ Elapsed = $result.DurationSeconds; Sample = $sampleSeconds }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempOut) {
+            Remove-Item -LiteralPath $tempOut -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Get-BestEffortAudioEstimate {
+    param(
+        [array]$AudioItems,
+        [string]$FFmpegExe,
+        [string]$FFprobeExe,
+        [bool]$CanUseWhisperGpu,
+        [string[]]$TranslationTargets
+    )
+
+    Write-Phase -Name "Estimate" -Detail "Running best-effort runtime estimate. Failures here will not stop processing."
+
+    $warnings = @()
+
+    try {
+        $totalDuration = 0.0
+        foreach ($audioItem in $AudioItems) {
+            $totalDuration += Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $audioItem.FullName
+        }
+
+        if ($totalDuration -le 0) {
+            $warnings += "Could not determine media duration for estimation."
+            return $null
+        }
+
+        $sampleAudio = $AudioItems | Select-Object -First 1
+        $audioEstimate = $null
+
+        try {
+            $audioBench = Get-BenchmarkAudioEncodeSeconds -FFmpegExe $FFmpegExe -FFprobeExe $FFprobeExe -MediaPath $sampleAudio.FullName
+            if ($audioBench -and $audioBench.Sample -gt 0) {
+                $audioEstimate = $totalDuration * ($audioBench.Elapsed / $audioBench.Sample)
+            }
+        }
+        catch {
+            $warnings += "Review audio benchmark failed: $($_.Exception.Message)"
+        }
+
+        if ($null -eq $audioEstimate) {
+            $audioEstimate = $totalDuration * 0.04
+            $warnings += "Review audio estimate used a heuristic rather than a benchmark."
+        }
+
+        $whisperMultiplier = if ($CanUseWhisperGpu) { 0.55 } else { 1.65 }
+        $whisperEstimate = [math]::Max(10.0, $totalDuration * $whisperMultiplier)
+
+        $translationTargetsNormalized = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $englishTranslationEstimate = if ($translationTargetsNormalized -contains "en") {
+            [math]::Max(5.0, $totalDuration * (if ($CanUseWhisperGpu) { 0.45 } else { 1.20 }))
+        }
+        else {
+            0.0
+        }
+
+        $nonEnglishTargets = @($translationTargetsNormalized | Where-Object { $_ -ne "en" })
+        $openAiTranslationEstimate = if ($nonEnglishTargets.Count -gt 0) {
+            [math]::Max(5.0, $totalDuration * 0.18 * $nonEnglishTargets.Count)
+        }
+        else {
+            0.0
+        }
+
+        if ($translationTargetsNormalized.Count -gt 0) {
+            $warnings += "Translation estimates use heuristics because the target language path depends on transcript content and provider response times."
+        }
+
+        $indexEstimate = [math]::Max(2.0, $totalDuration * 0.01)
+        $totalEstimate = $audioEstimate + $whisperEstimate + $englishTranslationEstimate + $openAiTranslationEstimate + $indexEstimate
+        $warnings += ("Whisper estimate uses a {0} heuristic rather than a transcription benchmark so estimation can never kill the real run." -f $(if ($CanUseWhisperGpu) { "GPU" } else { "CPU" }))
+
+        return [PSCustomObject]@{
+            TotalDurationSeconds       = $totalDuration
+            AudioEstimateSeconds       = [math]::Round($audioEstimate)
+            WhisperEstimateSeconds     = [math]::Round($whisperEstimate)
+            TranslationEstimateSeconds = [math]::Round($englishTranslationEstimate + $openAiTranslationEstimate)
+            IndexEstimateSeconds       = [math]::Round($indexEstimate)
+            TotalEstimateSeconds       = [math]::Round($totalEstimate)
+            Warnings                   = $warnings
+        }
+    }
+    catch {
+        Write-Log "Estimate step failed: $($_.Exception.Message)" "WARN"
+        return $null
+    }
+}
+
+function Process-Audio {
+    param(
+        [string]$AudioPath,
+        [string]$BaseOutputFolder,
+        [string]$FFmpegExe,
+        [string]$FFprobeExe,
+        [string]$PythonCommand,
+        [string]$ModelName,
+        [string]$LanguageCode,
+        [string[]]$TranslationTargets,
+        [bool]$DoCopyRaw,
+        [string]$SummaryCsv,
+        [bool]$CanUseWhisperGpu,
+        [string]$TranslationProvider,
+        [string]$OpenAiModel,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $AudioPath = Normalize-UserPath -Path $AudioPath
+    if (-not (Test-Path -LiteralPath $AudioPath)) {
+        throw "Input audio not found: $AudioPath"
+    }
+
+    $audioItem = Get-Item -LiteralPath $AudioPath
+    $safeBaseName = Get-SafeFolderName $audioItem.BaseName
+    if ([string]::IsNullOrWhiteSpace($safeBaseName)) {
+        $safeBaseName = "audio_package"
+    }
+
+    $audioOutputRoot = Join-Path $BaseOutputFolder $safeBaseName
+    $rawFolder = Join-Path $audioOutputRoot "raw"
+    $audioFolder = Join-Path $audioOutputRoot "audio"
+    $transcriptFolder = Join-Path $audioOutputRoot "transcript"
+    $translationsFolder = Join-Path $audioOutputRoot "translations"
+    $rawAudioPath = Join-Path $rawFolder $audioItem.Name
+    $reviewAudioPath = Join-Path $audioFolder "review_audio.mp3"
+    $originalTranscriptSrt = Join-Path $transcriptFolder "transcript_original.srt"
+    $originalTranscriptJson = Join-Path $transcriptFolder "transcript_original.json"
+    $originalTranscriptText = Join-Path $transcriptFolder "transcript_original.txt"
+    $segmentIndexCsv = Join-Path $audioOutputRoot "segment_index.csv"
+    $readmeFile = Join-Path $audioOutputRoot "README_FOR_CODEX.txt"
+    $logFile = Join-Path $audioOutputRoot "script_run.log"
+
+    Ensure-Directory $audioOutputRoot
+    Ensure-Directory $rawFolder
+    Ensure-Directory $audioFolder
+    Ensure-Directory $transcriptFolder
+    Ensure-Directory $translationsFolder
+
+    $script:CurrentLogFile = $logFile
+    Set-Content -LiteralPath $script:CurrentLogFile -Value ("Audio Mangler log - {0}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss")) -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "==================================================" -ForegroundColor Cyan
+    Write-Host ("Processing: {0}" -f $audioItem.FullName) -ForegroundColor Cyan
+    Write-Host ("Output:     {0}" -f $audioOutputRoot) -ForegroundColor Cyan
+    Write-Host "==================================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    Write-Log "Processing audio: $($audioItem.FullName)"
+    Write-Log "Output folder: $audioOutputRoot"
+
+    $null = Invoke-PhaseAction -Name "Preflight" -Detail $audioItem.Name -Action {
+        $phaseHasAudio = Test-VideoHasAudio -FFprobeExe $FFprobeExe -VideoPath $audioItem.FullName
+        if (-not $phaseHasAudio) {
+            throw "Source file does not contain a readable audio stream."
+        }
+
+        $phaseDuration = Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $audioItem.FullName
+        Write-Log ("Source duration: {0}" -f (Format-DurationHuman $phaseDuration))
+    }
+
+    if ($DoCopyRaw) {
+        Invoke-PhaseAction -Name "Raw" -Detail $audioItem.Name -Action {
+            if (-not (Test-Path -LiteralPath $rawAudioPath)) {
+                Write-Log "Copying raw audio..."
+                Copy-Item -LiteralPath $audioItem.FullName -Destination $rawAudioPath -Force
+            }
+            else {
+                Write-Log "Raw audio already copied. Skipping."
+            }
+        } | Out-Null
+    }
+
+    $reviewAudioMode = Invoke-PhaseAction -Name "Audio" -Detail $audioItem.Name -Action {
+        Export-ReviewAudioMp3 `
+            -FFmpegExe $FFmpegExe `
+            -InputMedia $audioItem.FullName `
+            -OutputAudio $reviewAudioPath `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
+
+    $whisperMode = "CPU"
+    $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $audioItem.Name -Action {
+        if ((Test-Path -LiteralPath $originalTranscriptSrt) -and (Test-Path -LiteralPath $originalTranscriptJson) -and (Test-Path -LiteralPath $originalTranscriptText)) {
+            Write-Log "Transcript files already exist. Skipping Whisper transcription."
+            return [PSCustomObject]@{
+                Device   = "existing"
+                JsonPath = $originalTranscriptJson
+                SrtPath  = $originalTranscriptSrt
+                TextPath = $originalTranscriptText
+                Language = ""
+                GpuError = ""
+            }
+        }
+
+        Write-Log ("Generating transcript with Whisper on {0}..." -f $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
+        Invoke-PythonWhisperTranscript `
+            -PythonCommand $PythonCommand `
+            -AudioPath $reviewAudioPath `
+            -TranscriptFolder $transcriptFolder `
+            -ModelName $ModelName `
+            -LanguageCode $LanguageCode `
+            -FFmpegExe $FFmpegExe `
+            -PreferGpu $CanUseWhisperGpu `
+            -Task "transcribe" `
+            -JsonName "transcript_original.json" `
+            -SrtName "transcript_original.srt" `
+            -TextName "transcript_original.txt" `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
+
+    if ($transcriptResult.Device -eq "cuda") {
+        $whisperMode = "GPU_CUDA"
+    }
+    elseif ($transcriptResult.Device -eq "existing") {
+        $whisperMode = "SKIPPED_EXISTING"
+    }
+
+    if ($transcriptResult.GpuError) {
+        Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
+    }
+
+    $transcriptData = Get-TranscriptSegments -TranscriptJsonPath $originalTranscriptJson
+    if (-not $transcriptData.Segments -or $transcriptData.Segments.Count -eq 0) {
+        throw "Transcript generation completed but no segments were found."
+    }
+
+    $detectedLanguage = if (-not [string]::IsNullOrWhiteSpace($transcriptResult.Language)) {
+        $transcriptResult.Language
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($transcriptData.Language)) {
+        $transcriptData.Language
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($LanguageCode)) {
+        $LanguageCode
+    }
+    else {
+        "unknown"
+    }
+
+    Write-Log "Detected source language: $detectedLanguage"
+
+    $normalizedTargets = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    $nonEnglishTargetsUsedOpenAi = $false
+
+    foreach ($targetLanguage in $normalizedTargets) {
+        $translationFolder = Join-Path $translationsFolder $targetLanguage
+        Ensure-Directory $translationFolder
+
+        Invoke-PhaseAction -Name "Translation" -Detail ("{0} -> {1}" -f $audioItem.Name, $targetLanguage) -Action {
+            if ($targetLanguage -eq $detectedLanguage) {
+                Write-Log "Target language matches detected source language. Reusing original transcript."
+                $null = Write-TranscriptArtifactsFromSegments `
+                    -OutputFolder $translationFolder `
+                    -Segments $transcriptData.Segments `
+                    -Language $detectedLanguage `
+                    -SourceLanguage $detectedLanguage `
+                    -Task "copy" `
+                    -JsonName "transcript.json" `
+                    -SrtName "transcript.srt" `
+                    -TextName "transcript.txt"
+                return
+            }
+
+            if ($targetLanguage -eq "en") {
+                $tempJsonName = "transcript_whisper_translate.json"
+                $tempSrtName = "transcript_whisper_translate.srt"
+                $tempTextName = "transcript_whisper_translate.txt"
+                $translateResult = Invoke-PythonWhisperTranscript `
+                    -PythonCommand $PythonCommand `
+                    -AudioPath $reviewAudioPath `
+                    -TranscriptFolder $translationFolder `
+                    -ModelName $ModelName `
+                    -LanguageCode $LanguageCode `
+                    -FFmpegExe $FFmpegExe `
+                    -PreferGpu $CanUseWhisperGpu `
+                    -Task "translate" `
+                    -JsonName $tempJsonName `
+                    -SrtName $tempSrtName `
+                    -TextName $tempTextName `
+                    -HeartbeatSeconds $HeartbeatSeconds
+
+                $translatedData = Get-TranscriptSegments -TranscriptJsonPath $translateResult.JsonPath
+                $null = Write-TranscriptArtifactsFromSegments `
+                    -OutputFolder $translationFolder `
+                    -Segments $translatedData.Segments `
+                    -Language "en" `
+                    -SourceLanguage $detectedLanguage `
+                    -Task "translate" `
+                    -JsonName "transcript.json" `
+                    -SrtName "transcript.srt" `
+                    -TextName "transcript.txt"
+
+                foreach ($tempPath in @(
+                    (Join-Path $translationFolder $tempJsonName),
+                    (Join-Path $translationFolder $tempSrtName),
+                    (Join-Path $translationFolder $tempTextName)
+                )) {
+                    if (Test-Path -LiteralPath $tempPath) {
+                        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                    }
+                }
+
+                return
+            }
+
+            $nonEnglishTargetsUsedOpenAi = $true
+            $targetDisplayName = Get-LanguageDisplayName -Code $targetLanguage
+            $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
+            $translatedSegments = Invoke-OpenAiSegmentTranslation `
+                -Segments $transcriptData.Segments `
+                -SourceLanguage $sourceDisplayName `
+                -TargetLanguage $targetDisplayName `
+                -Model $OpenAiModel `
+                -HeartbeatSeconds $HeartbeatSeconds
+
+            $null = Write-TranscriptArtifactsFromSegments `
+                -OutputFolder $translationFolder `
+                -Segments $translatedSegments `
+                -Language $targetLanguage `
+                -SourceLanguage $detectedLanguage `
+                -Task "translate" `
+                -JsonName "transcript.json" `
+                -SrtName "transcript.srt" `
+                -TextName "transcript.txt"
+        } | Out-Null
+    }
+
+    $segmentCount = Invoke-PhaseAction -Name "Index" -Detail $audioItem.Name -Action {
+        Build-SegmentIndex -Segments $transcriptData.Segments -SegmentIndexCsv $segmentIndexCsv
+    }
+
+    $rawPresent = if ($DoCopyRaw) { "Yes" } else { "No" }
+    $translationProviderText = if ($normalizedTargets.Count -eq 0) {
+        "none"
+    }
+    elseif ($nonEnglishTargetsUsedOpenAi -and ($normalizedTargets -contains "en")) {
+        "Whisper + $TranslationProvider"
+    }
+    elseif ($nonEnglishTargetsUsedOpenAi) {
+        $TranslationProvider
+    }
+    else {
+        "Whisper"
+    }
+
+    Invoke-PhaseAction -Name "README" -Detail $audioItem.Name -Action {
+        New-CodexReadme `
+            -ReadmePath $readmeFile `
+            -AudioFileName $audioItem.Name `
+            -RawPresent $rawPresent `
+            -DetectedLanguage $detectedLanguage `
+            -TranslationTargets $normalizedTargets
+    } | Out-Null
+
+    Add-SummaryRow `
+        -SummaryCsv $SummaryCsv `
+        -SourceAudio $audioItem.Name `
+        -OutputFolderName $safeBaseName `
+        -OutputPath $audioOutputRoot `
+        -AudioFile $reviewAudioPath `
+        -OriginalTranscriptSrt $originalTranscriptSrt `
+        -OriginalTranscriptJson $originalTranscriptJson `
+        -OriginalTranscriptText $originalTranscriptText `
+        -SegmentIndexCsv $segmentIndexCsv `
+        -RawCopied $rawPresent `
+        -DetectedLanguage $detectedLanguage `
+        -TranslationTargets ($normalizedTargets -join ", ") `
+        -TranslationProvider $translationProviderText `
+        -WhisperMode $whisperMode
+
+    return [PSCustomObject]@{
+        SourceAudioName     = $audioItem.Name
+        OutputFolderName    = $safeBaseName
+        OutputPath          = $audioOutputRoot
+        ReviewAudioMode     = $reviewAudioMode
+        WhisperMode         = $whisperMode
+        SegmentCount        = $segmentCount
+        DetectedLanguage    = $detectedLanguage
+        TranslationTargets  = $normalizedTargets
+        TranslationProvider = $translationProviderText
+    }
+}
+
 $inputSourceDisplay = if ($remoteInputSources.Count -gt 0) {
     $remoteInputSources -join "; "
 }
@@ -2428,9 +3217,9 @@ $OutputFolder = $requestedOutputFolder
 Ensure-Directory $OutputFolder
 Ensure-Directory $InputFolder
 
-$doCopyRaw = $CopyRawVideo.IsPresent
-if (-not $PSBoundParameters.ContainsKey("CopyRawVideo") -and -not $NoPrompt) {
-    $value = Read-Host "Copy original source video into raw folder? (Y/n)"
+$doCopyRaw = $CopyRawAudio.IsPresent
+if (-not $PSBoundParameters.ContainsKey("CopyRawAudio") -and -not $NoPrompt) {
+    $value = Read-Host "Copy original source audio into raw folder? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($value)) {
         $doCopyRaw = $true
     }
@@ -2441,7 +3230,7 @@ if (-not $PSBoundParameters.ContainsKey("CopyRawVideo") -and -not $NoPrompt) {
 
 $doCreateChatGptZip = $CreateChatGptZip.IsPresent
 if (-not $PSBoundParameters.ContainsKey("CreateChatGptZip") -and -not $NoPrompt) {
-    $value = Read-Host "Create a ChatGPT upload zip package for each completed video? (Y/n)"
+    $value = Read-Host "Create a ChatGPT upload zip package for each completed audio item? (Y/n)"
     if ([string]::IsNullOrWhiteSpace($value)) {
         $doCreateChatGptZip = $true
     }
@@ -2461,22 +3250,19 @@ if (-not $PSBoundParameters.ContainsKey("OpenOutputInExplorer") -and -not $NoPro
     }
 }
 
-if ([double]::IsNaN($FrameIntervalSeconds)) {
-    if ($NoPrompt) {
-        $FrameIntervalSeconds = 0.5
-    }
-    else {
-        $FrameIntervalSeconds = Get-InteractiveFrameInterval -DefaultValue 0.5
-    }
+$translationTargets = Get-TranslationTargets -Value $TranslateTo
+if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
+    $translationInput = Read-Host "Translate transcript into additional languages? Enter codes like en, es, fr or press Enter for none"
+    $translationTargets = Get-TranslationTargets -Value $translationInput
 }
-
-Test-FrameIntervalValue -Value $FrameIntervalSeconds
 
 $bootstrapLog = Join-Path $OutputFolder "_script_bootstrap.log"
 $script:CurrentLogFile = $bootstrapLog
 "==== Bootstrap started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -Path $bootstrapLog -Encoding UTF8
-Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
 Write-Log "Output folder root: $OutputFolder"
+if ($translationTargets.Count -gt 0) {
+    Write-Log ("Translation targets selected: {0}" -f ($translationTargets -join ", "))
+}
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
 $summaryCsv = Join-Path $OutputFolder "PROCESSING_SUMMARY.csv"
@@ -2484,37 +3270,47 @@ $downloadedInputPaths = @()
 $downloadedInputCount = 0
 $downloadedInputKinds = @()
 
-$videos = @()
+$audioItems = @()
+$ytDlpInvoker = $null
+try {
+    $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+}
+catch {
+    Write-Log ("yt-dlp is not currently available: {0}" -f $_.Exception.Message) "WARN"
+}
 
 if ($remoteInputSources.Count -gt 0) {
     $downloadCacheFolder = $InputFolder
-    $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
-    Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+    if ($ytDlpInvoker) {
+        Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+    }
+    else {
+        Write-Log "Downloading remote input without yt-dlp where direct audio/page fallback is possible."
+    }
 
     foreach ($remoteSource in $remoteInputSources) {
         $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $remoteSource -Action {
-            Invoke-RemoteVideoDownload `
+            Invoke-RemoteAudioDownload `
                 -SourceUrl $remoteSource `
                 -DownloadFolder $downloadCacheFolder `
                 -YtDlpInvoker $ytDlpInvoker `
-                -FFmpegExe $FFmpegPath `
                 -HeartbeatSeconds $HeartbeatSeconds
         }
 
         $downloadedInputPaths += $downloadResult.DownloadRoot
         $downloadedInputKinds += $downloadResult.SourceKind
         $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
-        $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
+        $audioItems += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
     }
 }
 elseif ($InputPath) {
-    $videos = Get-VideoFilesFromPath -Path $InputPath
+    $audioItems = Get-AudioFilesFromPath -Path $InputPath
 }
 else {
-    $videos = Get-VideoFilesFromPath -Path $InputFolder
+    $audioItems = Get-AudioFilesFromPath -Path $InputFolder
 
-    if ((-not $videos -or $videos.Count -eq 0) -and -not $NoPrompt) {
-        Write-Host "No supported video files found in the selected local input source." -ForegroundColor Yellow
+    if ((-not $audioItems -or $audioItems.Count -eq 0) -and -not $NoPrompt) {
+        Write-Host "No supported audio files found in the selected local input source." -ForegroundColor Yellow
         $manual = Get-InteractiveInputSource `
             -DefaultInputFolder $InputFolder `
             -YtDlpCommand $YtDlpPath `
@@ -2530,74 +3326,69 @@ else {
 
         if ($manualRemoteSources.Count -gt 0) {
             $downloadCacheFolder = $InputFolder
-            $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
-            Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+            if ($ytDlpInvoker) {
+                Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
+            }
+            else {
+                Write-Log "Downloading remote input without yt-dlp where direct audio/page fallback is possible."
+            }
 
             $downloadedInputPaths = @()
             $downloadedInputKinds = @()
             $downloadedInputCount = 0
-            $videos = @()
+            $audioItems = @()
 
             foreach ($manualRemoteSource in $manualRemoteSources) {
                 $downloadResult = Invoke-PhaseAction -Name "Download" -Detail $manualRemoteSource -Action {
-                    Invoke-RemoteVideoDownload `
+                    Invoke-RemoteAudioDownload `
                         -SourceUrl $manualRemoteSource `
                         -DownloadFolder $downloadCacheFolder `
                         -YtDlpInvoker $ytDlpInvoker `
-                        -FFmpegExe $FFmpegPath `
                         -HeartbeatSeconds $HeartbeatSeconds
                 }
 
                 $downloadedInputPaths += $downloadResult.DownloadRoot
                 $downloadedInputKinds += $downloadResult.SourceKind
                 $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
-                $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
+                $audioItems += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
             }
 
             $inputSourceDisplay = $manualRemoteSources -join "; "
         }
         else {
             $inputSourceDisplay = $manual
-            $videos = Get-VideoFilesFromPath -Path $manual
+            $audioItems = Get-AudioFilesFromPath -Path $manual
         }
     }
 }
 
-if (-not $videos -or $videos.Count -eq 0) {
-    throw "No supported video files found to process."
+if (-not $audioItems -or $audioItems.Count -eq 0) {
+    throw "No supported audio files found to process."
 }
 
-$videos = @($videos | Sort-Object FullName -Unique)
+$audioItems = @($audioItems | Sort-Object FullName -Unique)
 
-if (Test-Path $summaryCsv) {
-    Remove-Item $summaryCsv -Force
+if (Test-Path -LiteralPath $summaryCsv) {
+    Remove-Item -LiteralPath $summaryCsv -Force
 }
 
-$videosWithAudio = @()
-foreach ($video in $videos) {
+foreach ($audioItem in $audioItems) {
     try {
-        if (Test-VideoHasAudio -FFprobeExe $FFprobePath -VideoPath $video.FullName) {
-            $videosWithAudio += $video
+        if (-not (Test-VideoHasAudio -FFprobeExe $FFprobePath -VideoPath $audioItem.FullName)) {
+            throw "No readable audio stream found in $($audioItem.FullName)"
         }
     }
     catch {
-        Write-Log "Audio probe warning for $($video.FullName): $($_.Exception.Message)" "WARN"
+        Write-Log "Audio probe warning for $($audioItem.FullName): $($_.Exception.Message)" "WARN"
     }
 }
 
-if ($videosWithAudio.Count -gt 0) {
+if ($audioItems.Count -gt 0) {
     Test-PythonWhisper -PythonCommand $PythonExe
 }
 
-$nvencSupported = Test-FFmpegNvencSupport -FFmpegExe $FFmpegPath
-$cudaHwaccelSupported = Test-FFmpegCudaHwaccelSupport -FFmpegExe $FFmpegPath
 $nvidiaPresent = Test-NvidiaSmiAvailable
 $whisperProbe = Get-WhisperExecutionMode -PythonCommand $PythonExe
-
-$canUseFfmpegGpu = $false
-if ($nvencSupported -and $cudaHwaccelSupported -and $nvidiaPresent) {
-    $canUseFfmpegGpu = $true
-}
 
 $canUseWhisperGpu = $false
 if ($whisperProbe.WhisperImportOk -and $whisperProbe.TorchImportOk -and $whisperProbe.CudaAvailable) {
@@ -2610,12 +3401,11 @@ Write-Host "--------------"
 Write-Host ("FFmpeg:   {0}" -f $FFmpegPath)
 Write-Host ("FFprobe:  {0}" -f $FFprobePath)
 Write-Host ("Python:   {0}" -f $PythonExe)
+Write-Host ("yt-dlp:   {0}" -f $(if ($ytDlpInvoker) { $ytDlpInvoker.DisplayName } else { "not resolved" }))
 Write-Host ""
 Write-Host "Hardware Acceleration Detection"
 Write-Host "-------------------------------"
 Write-Host ("NVIDIA GPU detected (nvidia-smi): {0}" -f $(if ($nvidiaPresent) { "Yes" } else { "No" }))
-Write-Host ("FFmpeg CUDA hwaccel support:     {0}" -f $(if ($cudaHwaccelSupported) { "Yes" } else { "No" }))
-Write-Host ("FFmpeg NVENC support:            {0}" -f $(if ($nvencSupported) { "Yes" } else { "No" }))
 Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($canUseWhisperGpu) { "Yes" } else { "No" }))
 if ($whisperProbe.TorchVersion) {
     Write-Host ("PyTorch version:                 {0}" -f $whisperProbe.TorchVersion)
@@ -2627,35 +3417,30 @@ if ($whisperProbe.Error) {
     Write-Host ("Whisper probe notes:             {0}" -f $whisperProbe.Error)
 }
 Write-Host ""
-Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
-Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
 Write-Host ("Whisper path selected:           {0}" -f $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
-Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
 Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
 Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
 if ($downloadedInputPaths.Count -gt 0) {
     Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
     Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
-    Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
+    Write-Host ("Downloaded audio count:          {0}" -f $downloadedInputCount)
 }
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
+Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
+Write-Host ("Translation provider:            {0}" -f $TranslationProvider)
 Write-Host ""
-Write-Host "Videos to process:"
-$videos | ForEach-Object { Write-Host " - $($_.FullName)" }
+Write-Host "Audio items to process:"
+$audioItems | ForEach-Object { Write-Host " - $($_.FullName)" }
 Write-Host ""
 
 $estimate = $null
 if (-not $SkipEstimate) {
-    $estimate = Get-BestEffortEstimate `
-        -Videos $videos `
+    $estimate = Get-BestEffortAudioEstimate `
+        -AudioItems $audioItems `
         -FFmpegExe $FFmpegPath `
         -FFprobeExe $FFprobePath `
-        -PythonCommand $PythonExe `
-        -ModelName $WhisperModel `
-        -LanguageCode $Language `
-        -CanUseFfmpegGpu $canUseFfmpegGpu `
         -CanUseWhisperGpu $canUseWhisperGpu `
-        -FrameIntervalSeconds $FrameIntervalSeconds
+        -TranslationTargets $translationTargets
 }
 else {
     Write-Log "Skipping runtime estimate because -SkipEstimate was requested." "WARN"
@@ -2665,10 +3450,9 @@ if ($estimate) {
     Write-Host "Estimated completion for this run"
     Write-Host "---------------------------------"
     Write-Host ("Total media duration:   {0}" -f (Format-DurationHuman $estimate.TotalDurationSeconds))
-    Write-Host ("Proxy generation:       {0}" -f (Format-DurationHuman $estimate.ProxyEstimateSeconds))
-    Write-Host ("Frame extraction:       {0}" -f (Format-DurationHuman $estimate.FramesEstimateSeconds))
-    Write-Host ("Audio extraction:       {0}" -f (Format-DurationHuman $estimate.AudioEstimateSeconds))
+    Write-Host ("Review audio build:     {0}" -f (Format-DurationHuman $estimate.AudioEstimateSeconds))
     Write-Host ("Whisper transcription:  {0}" -f (Format-DurationHuman $estimate.WhisperEstimateSeconds))
+    Write-Host ("Translations:           {0}" -f (Format-DurationHuman $estimate.TranslationEstimateSeconds))
     Write-Host ("Index/build overhead:   {0}" -f (Format-DurationHuman $estimate.IndexEstimateSeconds))
     Write-Host ("Estimated total:        {0}" -f (Format-DurationHuman $estimate.TotalEstimateSeconds))
     Write-Host ""
@@ -2690,45 +3474,46 @@ $processedItems = @()
 $failedItems = @()
 $chatGptPackages = @()
 
-foreach ($video in $videos) {
+foreach ($audioItem in $audioItems) {
     try {
-        $result = Process-Video `
-            -VideoPath $video.FullName `
+        $result = Process-Audio `
+            -AudioPath $audioItem.FullName `
             -BaseOutputFolder $OutputFolder `
             -FFmpegExe $FFmpegPath `
             -FFprobeExe $FFprobePath `
             -PythonCommand $PythonExe `
             -ModelName $WhisperModel `
             -LanguageCode $Language `
+            -TranslationTargets $translationTargets `
             -DoCopyRaw:$doCopyRaw `
             -SummaryCsv $summaryCsv `
-            -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
-            -FrameIntervalSeconds $FrameIntervalSeconds `
+            -TranslationProvider $TranslationProvider `
+            -OpenAiModel $OpenAiModel `
             -HeartbeatSeconds $HeartbeatSeconds
 
         $processedItems += $result
 
         if ($doCreateChatGptZip) {
-            $zipInfo = Invoke-PhaseAction -Name "ChatGPT zip" -Detail $result.SourceVideoName -Action {
+            $zipInfo = Invoke-PhaseAction -Name "ChatGPT zip" -Detail $result.SourceAudioName -Action {
                 New-ChatGptZipPackage -ProcessedItem $result -MaxSizeMb $ChatGptZipMaxMb
             }
             $chatGptPackages += [PSCustomObject]@{
-                SourceVideoName = $result.SourceVideoName
+                SourceAudioName = $result.SourceAudioName
                 ZipPath         = $zipInfo.ZipPath
                 ZipSizeMb       = $zipInfo.ZipSizeMb
-                ProxyIncluded   = $zipInfo.ProxyIncluded
+                AudioIncluded   = $zipInfo.AudioIncluded
             }
         }
     }
     catch {
         $failedItems += [PSCustomObject]@{
-            VideoPath = $video.FullName
+            AudioPath = $audioItem.FullName
             Message   = $_.Exception.Message
         }
 
         Write-Host ""
-        Write-Host ("FAIL {0}" -f $video.FullName) -ForegroundColor Red
+        Write-Host ("FAIL {0}" -f $audioItem.FullName) -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Red
 
         if ($script:CurrentLogFile) {
@@ -2741,7 +3526,7 @@ foreach ($video in $videos) {
     }
 }
 
-New-MasterReadme -MasterReadmePath $masterReadme -OutputRoot $OutputFolder -ProcessedItems $processedItems -FrameIntervalSeconds $FrameIntervalSeconds
+New-MasterReadme -MasterReadmePath $masterReadme -OutputRoot $OutputFolder -ProcessedItems $processedItems
 
 Write-Phase -Name "Final Summary" -Detail "Packaging complete"
 Write-Host ("Successful packages: {0}" -f $processedItems.Count)
@@ -2751,22 +3536,23 @@ Write-Host ("Master README:       {0}" -f $masterReadme)
 Write-Host ("Processing summary:  {0}" -f $summaryCsv)
 
 foreach ($item in $processedItems) {
-    Write-Host ("PASS {0}" -f $item.SourceVideoName) -ForegroundColor Green
+    Write-Host ("PASS {0}" -f $item.SourceAudioName) -ForegroundColor Green
     Write-Host ("  Output:  {0}" -f $item.OutputPath)
-    Write-Host ("  Proxy:   {0}" -f $item.ProxyMode)
-    Write-Host ("  Frames:  {0}" -f $item.FrameMode)
+    Write-Host ("  Review:  {0}" -f $item.ReviewAudioMode)
     Write-Host ("  Whisper: {0}" -f $item.WhisperMode)
+    Write-Host ("  Lang:    {0}" -f $item.DetectedLanguage)
+    Write-Host ("  Xlate:   {0}" -f $(if ($item.TranslationTargets.Count -gt 0) { $item.TranslationTargets -join ", " } else { "none" }))
 }
 
 foreach ($zip in $chatGptPackages) {
-    Write-Host ("ChatGPT ZIP {0}" -f $zip.SourceVideoName) -ForegroundColor Cyan
+    Write-Host ("ChatGPT ZIP {0}" -f $zip.SourceAudioName) -ForegroundColor Cyan
     Write-Host ("  File:   {0}" -f $zip.ZipPath)
     Write-Host ("  SizeMB: {0}" -f $zip.ZipSizeMb)
-    Write-Host ("  Proxy:  {0}" -f $(if ($zip.ProxyIncluded) { "included" } else { "omitted to stay under limit" }))
+    Write-Host ("  Audio:  {0}" -f $(if ($zip.AudioIncluded) { "included" } else { "omitted to stay under limit" }))
 }
 
 foreach ($item in $failedItems) {
-    Write-Host ("FAIL {0}" -f $item.VideoPath) -ForegroundColor Red
+    Write-Host ("FAIL {0}" -f $item.AudioPath) -ForegroundColor Red
     Write-Host ("  Error: {0}" -f $item.Message) -ForegroundColor Red
 }
 
@@ -2775,7 +3561,7 @@ if ($failedItems.Count -gt 0 -or $processedItems.Count -eq 0) {
     throw ("Processing completed with {0} failure(s)." -f $failedItems.Count)
 }
 
-Write-Log ("PASS: All {0} video(s) processed successfully. Output root: {1}" -f $processedItems.Count, $OutputFolder)
+Write-Log ("PASS: All {0} audio item(s) processed successfully. Output root: {1}" -f $processedItems.Count, $OutputFolder)
 
 if ($doOpenOutputInExplorer) {
     try {

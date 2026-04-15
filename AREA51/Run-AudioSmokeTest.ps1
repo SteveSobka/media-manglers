@@ -1,0 +1,195 @@
+param(
+    [string]$TestAudioFolder = (Join-Path $PSScriptRoot "..\test_audio"),
+    [string]$AudioPath,
+    [string]$RemoteSampleUrl = "https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3",
+    [string]$RemoteSampleFallbackUrl = "https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2",
+    [string]$TranslationSampleUrl = "https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3",
+    [string]$WhisperModel = "base",
+    [int]$HeartbeatSeconds = 10,
+    [switch]$CopyRawAudio,
+    [switch]$SkipEstimate,
+    [switch]$AllAudio,
+    [switch]$TranslateToEnglish
+)
+
+$ErrorActionPreference = "Stop"
+
+function Get-SmokeTestAudioFiles {
+    param([string]$FolderPath)
+
+    $extensions = @(".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".mka", ".mp4")
+    return @(Get-ChildItem -LiteralPath $FolderPath -File | Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } | Sort-Object Name)
+}
+
+function Get-RepresentativeSmokeTestAudio {
+    param([System.IO.FileInfo[]]$Files)
+
+    foreach ($preferredName in @("gettysburg_address.mp3", "msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3")) {
+        $preferred = $Files | Where-Object { $_.Name -eq $preferredName } | Select-Object -First 1
+        if ($preferred) {
+            return $preferred
+        }
+    }
+
+    return $Files | Sort-Object Length -Descending | Select-Object -First 1
+}
+
+function Invoke-AudioPackaging {
+    param(
+        [string]$ScriptPath,
+        [string]$InputTarget,
+        [string]$OutputRoot,
+        [string]$WhisperModel,
+        [int]$HeartbeatSeconds,
+        [switch]$CopyRawAudio,
+        [switch]$SkipEstimate,
+        [switch]$TranslateToEnglish
+    )
+
+    $args = New-Object System.Collections.Generic.List[string]
+    [void]$args.Add("-NoProfile")
+    [void]$args.Add("-ExecutionPolicy")
+    [void]$args.Add("Bypass")
+    [void]$args.Add("-File")
+    [void]$args.Add($ScriptPath)
+    [void]$args.Add("-InputPath")
+    [void]$args.Add($InputTarget)
+    [void]$args.Add("-OutputFolder")
+    [void]$args.Add($OutputRoot)
+    [void]$args.Add("-WhisperModel")
+    [void]$args.Add($WhisperModel)
+    [void]$args.Add("-HeartbeatSeconds")
+    [void]$args.Add($HeartbeatSeconds.ToString())
+    [void]$args.Add("-NoPrompt")
+
+    if ($CopyRawAudio) {
+        [void]$args.Add("-CopyRawAudio")
+    }
+
+    if ($SkipEstimate) {
+        [void]$args.Add("-SkipEstimate")
+    }
+
+    if ($TranslateToEnglish) {
+        [void]$args.Add("-TranslateTo")
+        [void]$args.Add("en")
+    }
+
+    & powershell @($args) | Out-Host
+    $commandExitCode = $LASTEXITCODE
+    return [int]$commandExitCode
+}
+
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$audioScript = Join-Path $repoRoot "Audio Mangler.ps1"
+$validator = Join-Path $PSScriptRoot "Validate-AudioManglerPackage.ps1"
+$runId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
+$outputRoot = Join-Path $repoRoot ("test-output\audio-smoke-{0}" -f $runId)
+$usingRemoteSample = $false
+
+if (-not (Test-Path -LiteralPath $audioScript)) {
+    throw "Main script not found: $audioScript"
+}
+
+if (-not (Test-Path -LiteralPath $validator)) {
+    throw "Validator script not found: $validator"
+}
+
+$audioFiles = @()
+if (Test-Path -LiteralPath $TestAudioFolder) {
+    $audioFiles = Get-SmokeTestAudioFiles -FolderPath $TestAudioFolder
+}
+
+$selectedFiles = @()
+$inputTarget = $null
+
+if ($AudioPath) {
+    if (-not (Test-Path -LiteralPath $AudioPath)) {
+        throw "Requested audio path not found: $AudioPath"
+    }
+    $selectedFiles = @((Get-Item -LiteralPath $AudioPath))
+    $inputTarget = $selectedFiles[0].FullName
+}
+elseif ($AllAudio) {
+    if (-not (Test-Path -LiteralPath $TestAudioFolder)) {
+        throw "Test audio folder not found: $TestAudioFolder"
+    }
+    if ($audioFiles.Count -eq 0) {
+        throw "No supported audio files found in $TestAudioFolder"
+    }
+    $selectedFiles = $audioFiles
+    $inputTarget = (Resolve-Path -LiteralPath $TestAudioFolder).ProviderPath
+}
+elseif ($audioFiles.Count -gt 0 -and -not $TranslateToEnglish) {
+    $representative = Get-RepresentativeSmokeTestAudio -Files $audioFiles
+    $selectedFiles = @($representative)
+    $inputTarget = $representative.FullName
+}
+else {
+    $usingRemoteSample = $true
+    $inputTarget = if ($TranslateToEnglish) { $TranslationSampleUrl } else { $RemoteSampleUrl }
+}
+
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+
+Write-Host ("Audio smoke test output root: {0}" -f $outputRoot) -ForegroundColor Cyan
+if (Test-Path -LiteralPath $TestAudioFolder) {
+    Write-Host ("Test audio folder:            {0}" -f (Resolve-Path -LiteralPath $TestAudioFolder).ProviderPath) -ForegroundColor Cyan
+}
+else {
+    Write-Host ("Test audio folder:            {0}" -f $TestAudioFolder) -ForegroundColor DarkGray
+}
+if ($usingRemoteSample) {
+    Write-Host ("Remote sample URL:            {0}" -f $inputTarget) -ForegroundColor Cyan
+    if (-not $TranslateToEnglish -and -not [string]::IsNullOrWhiteSpace($RemoteSampleFallbackUrl)) {
+        Write-Host ("Remote fallback URL:          {0}" -f $RemoteSampleFallbackUrl) -ForegroundColor DarkGray
+    }
+}
+elseif ($AllAudio) {
+    Write-Host ("Mode:                         all audio ({0} files)" -f $selectedFiles.Count) -ForegroundColor Cyan
+}
+else {
+    Write-Host ("Audio under test:             {0}" -f $selectedFiles[0].FullName) -ForegroundColor Cyan
+}
+if ($TranslateToEnglish) {
+    Write-Host "Translation mode:             -> en" -ForegroundColor Cyan
+}
+
+$exitCode = Invoke-AudioPackaging `
+    -ScriptPath $audioScript `
+    -InputTarget $inputTarget `
+    -OutputRoot $outputRoot `
+    -WhisperModel $WhisperModel `
+    -HeartbeatSeconds $HeartbeatSeconds `
+    -CopyRawAudio:$CopyRawAudio `
+    -SkipEstimate:$SkipEstimate `
+    -TranslateToEnglish:$TranslateToEnglish
+
+if ($exitCode -ne 0 -and $usingRemoteSample -and -not $TranslateToEnglish -and -not [string]::IsNullOrWhiteSpace($RemoteSampleFallbackUrl) -and ($inputTarget -ne $RemoteSampleFallbackUrl)) {
+    Write-Host ("Primary remote audio smoke sample failed. Retrying with fallback page: {0}" -f $RemoteSampleFallbackUrl) -ForegroundColor Yellow
+    $inputTarget = $RemoteSampleFallbackUrl
+    $exitCode = Invoke-AudioPackaging `
+        -ScriptPath $audioScript `
+        -InputTarget $inputTarget `
+        -OutputRoot $outputRoot `
+        -WhisperModel $WhisperModel `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -CopyRawAudio:$CopyRawAudio `
+        -SkipEstimate:$SkipEstimate `
+        -TranslateToEnglish:$TranslateToEnglish
+}
+
+if ($exitCode -ne 0) {
+    throw "Audio smoke test packaging run failed with exit code $exitCode"
+}
+
+if ($usingRemoteSample) {
+    & $validator -OutputRoot $outputRoot
+}
+else {
+    foreach ($file in $selectedFiles) {
+        & $validator -OutputRoot $outputRoot -AudioPath $file.FullName
+    }
+}
+
+Write-Host ("PASS audio smoke test completed. Output root: {0}" -f $outputRoot) -ForegroundColor Green

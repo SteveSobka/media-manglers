@@ -35,8 +35,8 @@ function Get-RepresentativeSmokeTestMedia {
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $videoScript = Join-Path $repoRoot "Video Mangler.ps1"
 $validator = Join-Path $PSScriptRoot "Validate-VideoToCodexPackage.ps1"
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$outputRoot = Join-Path $repoRoot ("test-output\smoke-{0}" -f $timestamp)
+$runId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
+$outputRoot = Join-Path $repoRoot ("test-output\smoke-{0}" -f $runId)
 $usingRemoteSample = $false
 
 if (-not (Test-Path -LiteralPath $videoScript)) {

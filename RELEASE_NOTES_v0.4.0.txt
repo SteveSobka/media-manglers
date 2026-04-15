@@ -1,0 +1,63 @@
+Release Notes - v0.4.0
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.4.0
+
+What is new
+-----------
+
+- Added Audio Mangler as a second app in the repo
+- Audio Mangler supports:
+  - local audio files
+  - local audio folders
+  - direct audio URLs
+  - supported web pages with audio links
+  - YouTube URLs and playlists
+- Audio Mangler creates:
+  - review audio
+  - original transcript files
+  - translated transcript files when requested
+  - segment index CSV
+  - optional ChatGPT upload zip
+- Added translation support:
+  - English translation through Whisper
+  - other languages through OpenAI
+
+Packaging and release updates
+-----------------------------
+
+- Build flow now supports Video Mangler, Audio Mangler, or both
+- Release packaging now creates:
+  - Video-Mangler.exe
+  - Video-Mangler-v0.4.0.zip
+  - Audio-Mangler.exe
+  - Audio-Mangler-v0.4.0.zip
+- Release zips now include plain-text docs, release notes, notices, license text, and version text
+
+Testing and validation
+----------------------
+
+- Added AREA51\Run-AudioSmokeTest.ps1
+- Added AREA51\Validate-AudioManglerPackage.ps1
+- Audio smoke tests use the public Gettysburg MP3 by default
+- Audio smoke tests automatically retry through the LibriVox page if the direct Gettysburg MP3 is temporarily unavailable upstream
+- Audio translation smoke tests use the multilingual Italian sample and translate to English
+- Smoke-test output roots now get a unique suffix so two runs started in the same second do not collide
+
+Docs and cleanup
+----------------
+
+- Simplified the main repo docs into a two-app overview
+- Added VIDEO_MANGLER.txt and AUDIO_MANGLER.txt
+- Removed helper-note clutter from the repo
+- Refreshed third-party notices for NASA, Blender, LibriVox, Internet Archive, and OpenAI translation usage
+
+Licensing
+---------
+
+- Repository code: MIT
+- Referenced sample media remains under its own upstream terms
+- See THIRD_PARTY_NOTICES.txt for practical licensing notes

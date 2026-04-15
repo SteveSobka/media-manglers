@@ -1,0 +1,91 @@
+Video Mangler
+=============
+
+What it does
+------------
+
+Build a review package from:
+
+- a local video file
+- a local folder of videos
+- a remote video URL
+- a YouTube video or public playlist
+
+Each finished package includes:
+
+- proxy\review_proxy_1280.mp4
+- frames_[interval]\
+- audio\audio.mp3
+- transcript\transcript.srt
+- transcript\transcript.json
+- frame_index.csv
+- README_FOR_CODEX.txt
+
+Optional:
+
+- chatgpt_review_package.zip
+
+Use the executable
+------------------
+
+Download Video-Mangler.exe or Video-Mangler-v0.4.0.zip from:
+
+  https://github.com/SteveSobka/media-manglers/releases/latest
+
+Check the version:
+
+  & '.\Video Mangler.exe' -Version
+
+Interactive input choices
+-------------------------
+
+1. Paste YouTube video or playlist URLs
+2. Use the default input folder
+3. Paste a full local video file path or folder path
+
+Notes:
+
+- Press Enter to default to option 3
+- Type Q to quit
+- Local paths can be pasted with or without surrounding quotes
+
+Examples
+--------
+
+Single local file:
+
+  C:\Videos\clip.mp4
+
+Local folder:
+
+  C:\Videos\session-exports
+
+Public remote video:
+
+  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
+
+Open-source YouTube video:
+
+  https://www.youtube.com/watch?v=R6MlUcmOul8
+
+Build from source
+-----------------
+
+Run the script directly:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
+
+Show the script version:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
+
+Validation
+----------
+
+Smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
+
+Validator:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5

@@ -1,0 +1,127 @@
+Audio Mangler
+=============
+
+What it does
+------------
+
+Build a transcript-first review package from:
+
+- a local audio file
+- a local folder of audio files
+- a direct audio URL
+- a supported web page that contains audio links
+- a YouTube URL or public playlist
+
+Each finished package includes:
+
+- audio\review_audio.mp3
+- transcript\transcript_original.srt
+- transcript\transcript_original.json
+- transcript\transcript_original.txt
+- translations\<lang>\transcript.srt / .json / .txt when requested
+- segment_index.csv
+- README_FOR_CODEX.txt
+
+Optional:
+
+- raw\ original source file
+- chatgpt_review_package.zip
+
+Use the executable
+------------------
+
+Download Audio-Mangler.exe or Audio-Mangler-v0.4.0.zip from:
+
+  https://github.com/SteveSobka/media-manglers/releases/latest
+
+Check the version:
+
+  & '.\Audio Mangler.exe' -Version
+
+Interactive input choices
+-------------------------
+
+1. Paste audio, YouTube, or playlist URLs
+2. Use the default input folder
+3. Paste a full local audio file path or folder path
+
+Notes:
+
+- Press Enter to default to option 3
+- Type Q to quit
+- Local paths can be pasted with or without surrounding quotes
+
+Examples
+--------
+
+LibriVox page:
+
+  https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2
+
+Direct MP3:
+
+  https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3
+
+Multilingual MP3:
+
+  https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3
+
+Open-source YouTube video for audio-only review:
+
+  https://www.youtube.com/watch?v=R6MlUcmOul8
+
+Translation
+-----------
+
+Audio Mangler always creates the original-language transcript.
+
+Optional translation targets:
+
+- en
+- es
+- fr
+- de
+- it
+- pt
+- other short language codes you want to route through the translator
+
+Behavior:
+
+- Translate to English: handled locally with Whisper
+- Translate to other languages: handled with OpenAI
+
+Non-English translation targets require:
+
+  OPENAI_API_KEY
+
+Example:
+
+  & '.\Audio Mangler.exe' -TranslateTo en,es
+
+Build from source
+-----------------
+
+Run the script directly:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1'
+
+Show the script version:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Version
+
+Validation
+----------
+
+Smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+
+The default smoke test starts with the direct Gettysburg MP3 and automatically falls back to the LibriVox page if the direct file is temporarily unavailable upstream.
+
+Translation smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1 -TranslateToEnglish
+
+Validator:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
