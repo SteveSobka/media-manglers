@@ -174,10 +174,13 @@ $proxyPath = Join-Path $packageRoot "proxy\review_proxy_1280.mp4"
 $audioPath = Join-Path $packageRoot "audio\audio.mp3"
 $transcriptSrt = Join-Path $packageRoot "transcript\transcript.srt"
 $transcriptJson = Join-Path $packageRoot "transcript\transcript.json"
+$transcriptText = Join-Path $packageRoot "transcript\transcript.txt"
 $frameIndexCsv = Join-Path $packageRoot "frame_index.csv"
 $readmePath = Join-Path $packageRoot "README_FOR_CODEX.txt"
 $logPath = Join-Path $packageRoot "script_run.log"
 $framesFolder = Join-Path $packageRoot $framesFolderName
+$translationsFolder = Join-Path $packageRoot "translations"
+$commentsFolder = Join-Path $packageRoot "comments"
 $hasAudio = if ($videoItem) { Test-VideoHasAudio -VideoPath $videoItem.FullName } else { $true }
 
 Assert-File -Path $proxyPath -Label "proxy video"
@@ -189,6 +192,20 @@ if ($hasAudio) {
     Assert-File -Path $audioPath -Label "audio mp3"
     Assert-File -Path $transcriptSrt -Label "transcript srt"
     Assert-File -Path $transcriptJson -Label "transcript json"
+    Assert-File -Path $transcriptText -Label "transcript txt"
+}
+
+if (Test-Path -LiteralPath $translationsFolder) {
+    foreach ($translationFolder in @(Get-ChildItem -LiteralPath $translationsFolder -Directory)) {
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.srt") -Label ("translation srt ({0})" -f $translationFolder.Name)
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.json") -Label ("translation json ({0})" -f $translationFolder.Name)
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.txt") -Label ("translation txt ({0})" -f $translationFolder.Name)
+    }
+}
+
+if (Test-Path -LiteralPath $commentsFolder) {
+    Assert-File -Path (Join-Path $commentsFolder "comments.txt") -Label "comments txt"
+    Assert-File -Path (Join-Path $commentsFolder "comments.json") -Label "comments json"
 }
 
 if (-not (Test-Path -LiteralPath $framesFolder)) {

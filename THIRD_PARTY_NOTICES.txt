@@ -1,18 +1,44 @@
 Third-Party Notices
 ===================
 
-This repository contains original code plus docs and test flows that reference third-party sample media.
+This repository contains original code plus documentation, smoke tests, and
+optional workflows that rely on third-party media, tools, or services.
 
 Repository code
 ---------------
 
 The code in this repository is licensed under the MIT License.
-See LICENSE.
+See LICENSE for the repository license text.
+
+Optional tooling and services
+-----------------------------
+
+Media Manglers can use third-party tools and services that are not owned by
+this repository.
+
+Examples include:
+
+- FFmpeg for media processing
+- Whisper for local transcription and some local translation paths
+- yt-dlp for supported remote media downloads and metadata retrieval
+- Argos Translate for free local translation to non-English targets
+- OpenAI for optional cloud translation when you configure an API key
+
+Practical notes:
+
+- These tools and services are separate from the MIT license that covers this
+  repository's code.
+- OpenAI is optional and not bundled with the repo.
+- OpenAI API usage depends on your own account, key, pricing, and service
+  terms.
+- Generated transcripts and translations should be reviewed before you rely on
+  them for publication or downstream work.
 
 NASA and Wikimedia Commons sample media
 ---------------------------------------
 
-The video docs and smoke tests reference a short NASA balloon clip that is also mirrored on Wikimedia Commons.
+The video docs and smoke tests reference a short NASA balloon clip that is also
+mirrored on Wikimedia Commons.
 
 Referenced pages:
 
@@ -22,14 +48,17 @@ Referenced pages:
 
 Practical notes:
 
-- Wikimedia Commons describes this specific NASA video as public domain in the United States.
+- Wikimedia Commons describes this specific NASA video as public domain in the
+  United States.
 - NASA logos, insignia, and emblems remain restricted.
-- Treat the repo code license and any referenced sample-media license as separate things.
+- Treat the repo code license and any referenced sample-media license as
+  separate things.
 
 Blender open movie sample media
 -------------------------------
 
-The video docs also reference Blender open movie media such as Tears of Steel and Sintel.
+The video docs also reference Blender open movie media such as Tears of Steel
+and Sintel.
 
 Referenced pages:
 
@@ -39,14 +68,18 @@ Referenced pages:
 
 Practical notes:
 
-- Blender project pages describe the film results as Creative Commons Attribution 3.0.
-- Project pages also call out exceptions for trademarks, logos, title treatments, and some soundtrack/music materials.
-- If you redistribute Blender sample media or derivatives, follow the attribution and project-specific conditions from the upstream pages.
+- Blender project pages describe the film results as Creative Commons
+  Attribution 3.0.
+- Project pages also call out exceptions for trademarks, logos, title
+  treatments, and some soundtrack or music materials.
+- If you redistribute Blender sample media or derivatives, follow the
+  attribution and project-specific conditions from the upstream pages.
 
 LibriVox and Internet Archive sample audio
 ------------------------------------------
 
-The audio docs and smoke tests reference public-domain LibriVox recordings, including:
+The audio docs and smoke tests reference public-domain LibriVox recordings,
+including:
 
 - https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2
 - https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3
@@ -54,24 +87,22 @@ The audio docs and smoke tests reference public-domain LibriVox recordings, incl
 
 Practical notes:
 
-- LibriVox recordings are presented by LibriVox as public-domain recordings.
+- LibriVox presents these recordings as public-domain recordings.
 - Internet Archive hosts mirrors and downloadable files for those recordings.
-- Treat the repo code license and the upstream recording status as separate things.
+- Treat the repo code license and the upstream recording status as separate
+  things.
 
-Translation provider
---------------------
+Remote site content
+-------------------
 
-Audio Mangler can translate to English locally with Whisper.
-For non-English target languages, Audio Mangler can call OpenAI if OPENAI_API_KEY is set.
-
-Practical notes:
-
-- OpenAI is not bundled with this repository.
-- OpenAI API usage is subject to your own account, API key, pricing, and service terms.
-- Generated translations are output from a third-party service path and should be reviewed before reuse or publication.
+When you point either app at YouTube or another supported remote source, the
+media, metadata, and public comments remain subject to that source platform and
+the rights status of the underlying content.
 
 General rule
 ------------
 
-Do not assume that referenced sample media becomes MIT just because this repository code is MIT.
-If you redistribute any referenced media, follow the upstream source-page terms for that specific file or project.
+Do not assume that referenced media, metadata, or third-party services become
+MIT just because this repository is MIT licensed.
+If you redistribute any referenced media or exported content, follow the
+upstream terms for that specific source.

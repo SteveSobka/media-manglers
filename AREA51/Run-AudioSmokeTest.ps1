@@ -9,7 +9,12 @@ param(
     [switch]$CopyRawAudio,
     [switch]$SkipEstimate,
     [switch]$AllAudio,
-    [switch]$TranslateToEnglish
+    [switch]$TranslateToEnglish,
+    [string]$TranslateTo,
+    [ValidateSet("Auto", "OpenAI", "Local")]
+    [string]$TranslationProvider = "Auto",
+    [switch]$IncludeComments,
+    [switch]$KeepTestOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +48,10 @@ function Invoke-AudioPackaging {
         [int]$HeartbeatSeconds,
         [switch]$CopyRawAudio,
         [switch]$SkipEstimate,
-        [switch]$TranslateToEnglish
+        [string]$TranslateTo,
+        [string]$TranslationProvider,
+        [switch]$TranslateToEnglish,
+        [switch]$IncludeComments
     )
 
     $args = New-Object System.Collections.Generic.List[string]
@@ -70,9 +78,20 @@ function Invoke-AudioPackaging {
         [void]$args.Add("-SkipEstimate")
     }
 
-    if ($TranslateToEnglish) {
+    $resolvedTranslateTo = $TranslateTo
+    if ($TranslateToEnglish -and [string]::IsNullOrWhiteSpace($resolvedTranslateTo)) {
+        $resolvedTranslateTo = "en"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($resolvedTranslateTo)) {
         [void]$args.Add("-TranslateTo")
-        [void]$args.Add("en")
+        [void]$args.Add($resolvedTranslateTo)
+        [void]$args.Add("-TranslationProvider")
+        [void]$args.Add($TranslationProvider)
+    }
+
+    if ($IncludeComments) {
+        [void]$args.Add("-IncludeComments")
     }
 
     & powershell @($args) | Out-Host
@@ -154,6 +173,9 @@ else {
 if ($TranslateToEnglish) {
     Write-Host "Translation mode:             -> en" -ForegroundColor Cyan
 }
+elseif (-not [string]::IsNullOrWhiteSpace($TranslateTo)) {
+    Write-Host ("Translation mode:             -> {0} via {1}" -f $TranslateTo, $TranslationProvider) -ForegroundColor Cyan
+}
 
 $exitCode = Invoke-AudioPackaging `
     -ScriptPath $audioScript `
@@ -163,7 +185,10 @@ $exitCode = Invoke-AudioPackaging `
     -HeartbeatSeconds $HeartbeatSeconds `
     -CopyRawAudio:$CopyRawAudio `
     -SkipEstimate:$SkipEstimate `
-    -TranslateToEnglish:$TranslateToEnglish
+    -TranslateTo $TranslateTo `
+    -TranslationProvider $TranslationProvider `
+    -TranslateToEnglish:$TranslateToEnglish `
+    -IncludeComments:$IncludeComments
 
 if ($exitCode -ne 0 -and $usingRemoteSample -and -not $TranslateToEnglish -and -not [string]::IsNullOrWhiteSpace($RemoteSampleFallbackUrl) -and ($inputTarget -ne $RemoteSampleFallbackUrl)) {
     Write-Host ("Primary remote audio smoke sample failed. Retrying with fallback page: {0}" -f $RemoteSampleFallbackUrl) -ForegroundColor Yellow
@@ -176,7 +201,10 @@ if ($exitCode -ne 0 -and $usingRemoteSample -and -not $TranslateToEnglish -and -
         -HeartbeatSeconds $HeartbeatSeconds `
         -CopyRawAudio:$CopyRawAudio `
         -SkipEstimate:$SkipEstimate `
-        -TranslateToEnglish:$TranslateToEnglish
+        -TranslateTo $TranslateTo `
+        -TranslationProvider $TranslationProvider `
+        -TranslateToEnglish:$TranslateToEnglish `
+        -IncludeComments:$IncludeComments
 }
 
 if ($exitCode -ne 0) {
@@ -193,3 +221,8 @@ else {
 }
 
 Write-Host ("PASS audio smoke test completed. Output root: {0}" -f $outputRoot) -ForegroundColor Green
+
+if (-not $KeepTestOutput -and (Test-Path -LiteralPath $outputRoot)) {
+    Remove-Item -LiteralPath $outputRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Audio smoke output was cleaned up automatically. Use -KeepTestOutput to retain it." -ForegroundColor DarkGray
+}

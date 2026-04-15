@@ -1,7 +1,8 @@
 Release Notes - v0.3.0
 ======================
 
-Tracked version:
+Tracked version
+---------------
 
 - repository/app version: 0.3.0
 
@@ -25,11 +26,13 @@ Validation and tooling
 - Added version tracking through the VERSION file
 - Added -Version support for the script and executable
 - Improved smoke-test and validator behavior for latest smoke-* output detection
-- Simplified validation so common cases do not require remembering package folder names
+- Simplified validation so common cases do not require remembering package
+  folder names
 
 Licensing
 ---------
 
 - Repository code is MIT licensed
 - Sample media references remain under their own upstream terms
-- See THIRD_PARTY_NOTICES.txt for NASA, Wikimedia Commons, Blender, and other media-license notes
+- See THIRD_PARTY_NOTICES.txt for NASA, Wikimedia Commons, Blender, and other
+  media-license notes

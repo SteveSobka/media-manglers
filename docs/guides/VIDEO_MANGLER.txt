@@ -1,0 +1,143 @@
+Video Mangler
+=============
+
+Who it is for
+-------------
+
+Video Mangler is for video review when the pictures matter as much as the
+words.
+
+Good fits:
+
+- interviews and talks
+- presentations and training videos
+- reference review for edits
+- remote or local video that needs a cleaner package for review, handoff, or
+  LLM upload
+
+What it makes
+-------------
+
+Each completed package usually includes:
+
+- proxy\review_proxy_1280.mp4
+- frames_[interval]\frame_000001.jpg ...
+- audio\audio.mp3 when the source has readable audio
+- transcript\transcript.srt
+- transcript\transcript.json
+- transcript\transcript.txt
+- translations\<lang>\transcript.srt / .json / .txt when requested
+- comments\comments.txt / .json when requested and available from a YouTube
+  source
+- frame_index.csv
+- README_FOR_CODEX.txt
+- script_run.log
+
+Optional extras:
+
+- raw\ original source video copy
+- chatgpt_review_package.zip
+
+How translation works
+---------------------
+
+Video Mangler now uses a source-audio-first translation flow.
+
+That means it does this:
+
+1. Extract the source audio.
+2. Create the original-language transcript from that source audio.
+3. If you request translation, create translated transcript files from that
+   original spoken source.
+
+This is especially useful for remote video. If a YouTube video has poor
+platform-translated audio or captions, Video Mangler is meant to prefer the
+original spoken source instead.
+
+Provider choices:
+
+- Auto: choose the best available path
+- OpenAI: best-quality option when OPENAI_API_KEY is configured
+- Local: free fallback
+
+Local translation paths:
+
+- to English: can use Whisper locally
+- to other target languages: can use Argos Translate when the language packages
+  are installed
+
+If translation is requested and you are using an English-only Whisper model,
+the app explains the issue clearly. When possible, it auto-switches the default
+model from an English-only variant to the matching multilingual one. If you
+explicitly chose an English-only model, it stops and tells you what to change.
+
+Examples
+--------
+
+Single local file:
+
+  C:\Videos\clip.mp4
+
+Local folder:
+
+  C:\Videos\session-exports
+
+Public remote video:
+
+  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
+
+Open-source YouTube video:
+
+  https://www.youtube.com/watch?v=R6MlUcmOul8
+
+Common commands
+---------------
+
+Run the script:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
+
+Show the version:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
+
+Create an English translation from the original spoken source:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en
+
+Request multiple translated transcript outputs:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en,es -TranslationProvider Auto
+
+Request YouTube comments when available:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -IncludeComments
+
+Keep temporary processing files for troubleshooting:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -KeepTempFiles
+
+Validation
+----------
+
+Smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
+
+Translation smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1 -TranslateTo en -TranslationProvider Local
+
+Validator:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
+
+Notes
+-----
+
+- OpenAI translation is optional.
+- Local transcription stays on your machine.
+- Local translation stays on your machine after its dependencies are installed.
+- OpenAI translation sends transcript text to OpenAI.
+- Temporary helper files, staging folders, and transient download folders are
+  cleaned up by default unless you use -KeepTempFiles.

@@ -9,6 +9,9 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $distFolder = Join-Path $repoRoot "dist"
 $releaseRoot = Join-Path $distFolder "release"
 $versionFile = Join-Path $repoRoot "VERSION"
+$docsRoot = Join-Path $repoRoot "docs"
+$guidesRoot = Join-Path $docsRoot "guides"
+$releaseNotesRoot = Join-Path $docsRoot "release-notes"
 $modulePath = Join-Path $HOME "Documents\PowerShell\Modules\ps2exe\1.0.17\ps2exe.psm1"
 
 if (-not (Test-Path -LiteralPath $versionFile)) {
@@ -24,7 +27,7 @@ if ([string]::IsNullOrWhiteSpace($appVersion)) {
     throw "Version file is empty: $versionFile"
 }
 
-$releaseNotes = Join-Path $repoRoot ("RELEASE_NOTES_v{0}.txt" -f $appVersion)
+$releaseNotes = Join-Path $releaseNotesRoot ("RELEASE_NOTES_v{0}.txt" -f $appVersion)
 if (-not (Test-Path -LiteralPath $releaseNotes)) {
     throw "Release notes file not found: $releaseNotes"
 }
@@ -82,7 +85,10 @@ foreach ($appConfig in $selectedApps) {
     $appFolder = Join-Path $releaseFolder "app"
     $docsFolder = Join-Path $releaseFolder "docs"
 
-    foreach ($requiredPath in @($inputFile, $iconFile, (Join-Path $repoRoot $appConfig.AppGuide), (Join-Path $repoRoot "README.txt"), (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"))) {
+    $appGuideSource = Join-Path $guidesRoot $appConfig.AppGuide
+    $readmeTextSource = Join-Path $guidesRoot "README.txt"
+
+    foreach ($requiredPath in @($inputFile, $iconFile, $appGuideSource, $readmeTextSource, (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"))) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Required file not found: $requiredPath"
         }
@@ -120,14 +126,17 @@ foreach ($appConfig in $selectedApps) {
 
     Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
     Copy-Item -LiteralPath $outputFile -Destination $releaseExe -Force
-    Copy-Item -LiteralPath (Join-Path $repoRoot "README.txt") -Destination (Join-Path $docsFolder "README.txt") -Force
-    Copy-Item -LiteralPath (Join-Path $repoRoot $appConfig.AppGuide) -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
+    Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
+    Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
     Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
     Copy-Item -LiteralPath (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt") -Destination (Join-Path $docsFolder "THIRD_PARTY_NOTICES.txt") -Force
     Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $docsFolder "LICENSE.txt") -Force
     Copy-Item -LiteralPath $versionFile -Destination (Join-Path $docsFolder "VERSION.txt") -Force
 
     Compress-Archive -LiteralPath $releaseFolder -DestinationPath $releaseZip -CompressionLevel Optimal
+    if (Test-Path -LiteralPath $releaseFolder) {
+        Remove-Item -LiteralPath $releaseFolder -Recurse -Force
+    }
 
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
     Write-Host ("Release exe: {0}" -f $releaseExe) -ForegroundColor Green
