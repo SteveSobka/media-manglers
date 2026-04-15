@@ -1,6 +1,6 @@
 # media-manglers
 
-PowerShell scripts for turning local videos, YouTube videos, or playlists into a review package with:
+Turn local videos, remote video URLs, or YouTube playlists into a review package with:
 
 - a review proxy
 - extracted frames
@@ -9,9 +9,19 @@ PowerShell scripts for turning local videos, YouTube videos, or playlists into a
 - frame index CSV
 - optional ChatGPT upload zip
 
-## Main script
+## Quick start
 
-Run the package builder directly:
+For most users on Windows, use the precompiled executable from the latest GitHub release:
+
+```powershell
+.\video_to_codex_package.exe
+```
+
+It uses the same interactive prompts as the script version. No PowerShell command syntax is required beyond launching the `.exe`.
+
+## Source script
+
+Run the package builder directly from source:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
@@ -21,7 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -NoPrompt
 ```
 
-Use the dedicated remote-input alias for a single public remote video URL:
+Single public remote video URL:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 `
@@ -31,14 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -NoPrompt
 ```
 
-Use the precompiled Windows executable:
-
-```powershell
-.\dist\video_to_codex_package.exe
-```
-
-The executable uses the same prompts and parameters as the PowerShell script. It is a packaged console app, not a point-and-click GUI.
-Rebuild it with:
+Rebuild the Windows executable from source:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
