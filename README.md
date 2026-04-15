@@ -1,6 +1,13 @@
 # media-manglers
 
-Windows-first PowerShell tooling to turn one or more local or remote video sources into a Codex review package.
+PowerShell scripts for turning local videos, YouTube videos, or playlists into a review package with:
+
+- a review proxy
+- extracted frames
+- audio
+- transcript files
+- frame index CSV
+- optional ChatGPT upload zip
 
 ## Main script
 
@@ -32,6 +39,49 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
   -OutputFolder .\test-output\playlist `
   -FrameIntervalSeconds 0.5 `
   -NoPrompt
+```
+
+## Interactive walkthroughs
+
+Single YouTube video:
+
+```text
+PS D:\repo> powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
+
+Default local input source:
+D:\DATA\TEMP\_VIDEO_INPUT
+Do you want to download from YouTube or another supported video URL? (y/N): y
+Paste text containing one or more video or playlist URLs.
+Type DONE on its own line when the paste is complete.
+Paste line 1: https://www.youtube.com/watch?v=1aA1WGON49E
+Next line: DONE
+```
+
+Pasted notes plus multiple URLs:
+
+```text
+Default local input source:
+D:\DATA\TEMP\_VIDEO_INPUT
+Do you want to download from YouTube or another supported video URL? (y/N): y
+Paste text containing one or more video or playlist URLs.
+Type DONE on its own line when the paste is complete.
+Paste line 1: SimHub Tutorial Video and PlayLists to capture:
+Next line:
+Next line: 1 Minute Test Video:
+Next line: https://www.youtube.com/watch?v=8OANC2YBLdk
+Next line:
+Next line: VIDEO:
+Next line: https://www.youtube.com/watch?v=1aA1WGON49E
+Next line: DONE
+```
+
+Local file walkthrough:
+
+```text
+Default local input source:
+D:\DATA\TEMP\_VIDEO_INPUT
+Do you want to download from YouTube or another supported video URL? (y/N): n
+Press Enter to use the default folder, or type a full video file or folder path: D:\capture\clip.mp4
 ```
 
 Notes:
