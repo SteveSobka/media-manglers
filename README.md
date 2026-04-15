@@ -75,6 +75,16 @@ The zip contains:
 Size management:
 - Use `-ChatGptZipMaxMb` (default `500`) to cap zip size.
 - Proxy video is automatically omitted when needed to stay within the limit.
+- If the package is still too large, the script automatically thins the frame set for the ChatGPT zip only until the archive fits.
+- The full package in the main output folder is left untouched; only the ChatGPT upload zip is reduced when necessary.
+- `README_FOR_CHATGPT.txt` notes whether all frames were included or whether the frame set was automatically sampled to fit the limit.
+
+## Remote download format notes
+
+- The script does not force YouTube downloads to `.webm`.
+- `yt-dlp` chooses the best available downloadable format for the source at run time, so the raw download may be `.mp4`, `.webm`, or another supported container.
+- The raw copied source video preserves whatever container `yt-dlp` downloaded.
+- If `yt-dlp` is installed but not yet visible on `PATH` in the current shell, you can still run the script by passing `-YtDlpPath` with the full executable path.
 
 ## One-shot smoke test
 

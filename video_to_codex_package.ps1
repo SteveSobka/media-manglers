@@ -3,7 +3,7 @@ param(
     [string]$InputPath,
     [string]$InputFolder = "C:\DATA\TEMP\_VIDEO_INPUT",
     [string]$OutputFolder = "C:\DATA\TEMP\_VIDEO_OUTPUT",
-    [string]$FFmpegPath = "C:\APPS\ffmpeg\bin\ffmpeg.exe",
+    [string]$FFmpegPath = "D:\APPS\ffmpeg\bin\ffmpeg.exe",
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
     [string]$WhisperModel = "base.en",
@@ -170,7 +170,7 @@ function Write-Log {
     }
 
     if ($script:CurrentLogFile) {
-        Add-Content -Path $script:CurrentLogFile -Value $line -Encoding UTF8
+        Add-Content -LiteralPath $script:CurrentLogFile -Value $line
     }
 }
 
@@ -275,7 +275,7 @@ function Get-FFprobePath {
     return Resolve-ExecutablePath `
         -PreferredPath $sibling `
         -FallbackCommands @("ffprobe") `
-        -FallbackPaths @("C:\APPS\ffmpeg\bin\ffprobe.exe") `
+        -FallbackPaths @("D:\APPS\ffmpeg\bin\ffprobe.exe", "C:\APPS\ffmpeg\bin\ffprobe.exe") `
         -ToolName "ffprobe"
 }
 
@@ -461,14 +461,14 @@ function Invoke-ExternalCapture {
     $stderr = $stderrTask.GetAwaiter().GetResult()
     $sw.Stop()
 
-    if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-        Add-Content -Path $script:CurrentLogFile -Value "----- STDOUT: $StepName -----" -Encoding UTF8
-        Add-Content -Path $script:CurrentLogFile -Value $stdout -Encoding UTF8
+    if (-not [string]::IsNullOrWhiteSpace($stdout) -and $script:CurrentLogFile) {
+        Add-Content -LiteralPath $script:CurrentLogFile -Value "----- STDOUT: $StepName -----"
+        Add-Content -LiteralPath $script:CurrentLogFile -Value $stdout
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-        Add-Content -Path $script:CurrentLogFile -Value "----- STDERR: $StepName -----" -Encoding UTF8
-        Add-Content -Path $script:CurrentLogFile -Value $stderr -Encoding UTF8
+    if (-not [string]::IsNullOrWhiteSpace($stderr) -and $script:CurrentLogFile) {
+        Add-Content -LiteralPath $script:CurrentLogFile -Value "----- STDERR: $StepName -----"
+        Add-Content -LiteralPath $script:CurrentLogFile -Value $stderr
     }
 
     if (-not $IgnoreExitCode -and $proc.ExitCode -ne 0) {
@@ -549,7 +549,7 @@ function Invoke-ExternalStreaming {
                 }
             }
             if ($script:CurrentLogFile) {
-                Add-Content -Path $script:CurrentLogFile -Value $stdout -Encoding UTF8
+                Add-Content -LiteralPath $script:CurrentLogFile -Value $stdout
             }
         }
 
@@ -560,7 +560,7 @@ function Invoke-ExternalStreaming {
                 }
             }
             if ($script:CurrentLogFile) {
-                Add-Content -Path $script:CurrentLogFile -Value $stderr -Encoding UTF8
+                Add-Content -LiteralPath $script:CurrentLogFile -Value $stderr
             }
         }
 
@@ -1030,7 +1030,7 @@ Notes:
 - Frames folder: $framesFolderName
 - Raw video present: $RawPresent
 - Audio present in source: $AudioPresent
-"@ | Set-Content -Path $ReadmePath -Encoding UTF8
+"@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
 }
 
 function New-ChatGptReadme {
@@ -1038,7 +1038,8 @@ function New-ChatGptReadme {
         [string]$ReadmePath,
         [string]$SourceVideoName,
         [string]$FramesFolderName,
-        [bool]$ProxyIncluded
+        [bool]$ProxyIncluded,
+        [string]$FrameSelectionNote
     )
 
 @"
@@ -1055,6 +1056,9 @@ Package contents:
 - frame_index.csv
 $(if ($ProxyIncluded) { "- proxy\review_proxy_1280.mp4" } else { "- proxy video omitted to stay under upload size limits" })
 
+Frame selection:
+$FrameSelectionNote
+
 How to use this in ChatGPT:
 1) Upload this zip file.
 2) Ask ChatGPT to summarize the transcript first.
@@ -1066,7 +1070,46 @@ How to use this in ChatGPT:
    - action items
    - risks/issues found in the video
    - concise executive summary
-"@ | Set-Content -Path $ReadmePath -Encoding UTF8
+"@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
+}
+
+function Get-PathSizeBytes {
+    param([string]$LiteralPath)
+
+    if (-not (Test-Path -LiteralPath $LiteralPath)) {
+        return [int64]0
+    }
+
+    if (Test-Path -LiteralPath $LiteralPath -PathType Container) {
+        $measured = (Get-ChildItem -LiteralPath $LiteralPath -File -Recurse | Measure-Object -Property Length -Sum).Sum
+        if ($null -eq $measured) {
+            return [int64]0
+        }
+
+        return [int64]$measured
+    }
+
+    return [int64](Get-Item -LiteralPath $LiteralPath).Length
+}
+
+function New-ChatGptFrameIndex {
+    param(
+        [string]$SourceFrameIndexCsv,
+        [string]$DestinationFrameIndexCsv,
+        [array]$SelectedFrames
+    )
+
+    $selectedNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($frame in $SelectedFrames) {
+        [void]$selectedNames.Add($frame.Name)
+    }
+
+    $rows = @(Import-Csv -LiteralPath $SourceFrameIndexCsv | Where-Object { $selectedNames.Contains($_.filename) })
+    if ($rows.Count -eq 0) {
+        throw "No matching frame index rows were found for the selected ChatGPT frame subset."
+    }
+
+    $rows | Export-Csv -LiteralPath $DestinationFrameIndexCsv -NoTypeInformation -Encoding UTF8
 }
 
 function New-ChatGptZipPackage {
@@ -1082,34 +1125,30 @@ function New-ChatGptZipPackage {
     $frameIndexCsv = Join-Path $ProcessedItem.OutputPath "frame_index.csv"
     $proxyVideo = Join-Path $ProcessedItem.OutputPath "proxy\review_proxy_1280.mp4"
     $zipPath = Join-Path $ProcessedItem.OutputPath "chatgpt_review_package.zip"
+    $requiredPaths = @($framesFolder, $frameIndexCsv)
+    foreach ($optionalPath in @($audioFolder, $transcriptFolder)) {
+        if (Test-Path -LiteralPath $optionalPath) {
+            $requiredPaths += $optionalPath
+        }
+    }
 
-    $required = @($framesFolder, $audioFolder, $transcriptFolder, $frameIndexCsv)
-    foreach ($path in $required) {
+    foreach ($path in $requiredPaths) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Cannot build ChatGPT zip because required item is missing: $path"
         }
     }
 
-    $baseSize = [int64]0
-    foreach ($path in $required) {
-        if (Test-Path -LiteralPath $path -PathType Container) {
-            $measured = (Get-ChildItem -LiteralPath $path -File -Recurse | Measure-Object -Property Length -Sum).Sum
-            if ($null -ne $measured) {
-                $baseSize += [int64]$measured
-            }
-        }
-        else {
-            $baseSize += [int64](Get-Item -LiteralPath $path).Length
-        }
+    $allFrames = @(Get-ChildItem -LiteralPath $framesFolder -Filter "frame_*.jpg" -File | Sort-Object Name)
+    if ($allFrames.Count -eq 0) {
+        throw "Cannot build ChatGPT zip because no extracted frames were found in $framesFolder"
     }
 
-    $includeProxy = $false
-    if (Test-Path -LiteralPath $proxyVideo) {
-        $proxySize = (Get-Item -LiteralPath $proxyVideo).Length
-        if (($baseSize + $proxySize) -le $maxBytes) {
-            $includeProxy = $true
-        }
+    $nonFrameBaseBytes = [int64]0
+    foreach ($path in ($requiredPaths | Where-Object { $_ -ne $framesFolder })) {
+        $nonFrameBaseBytes += Get-PathSizeBytes -LiteralPath $path
     }
+
+    $proxyBytes = if (Test-Path -LiteralPath $proxyVideo) { [int64](Get-Item -LiteralPath $proxyVideo).Length } else { [int64]0 }
 
     $tempRoot = Join-Path $ProcessedItem.OutputPath "_chatgpt_zip_temp"
     if (Test-Path -LiteralPath $tempRoot) {
@@ -1118,42 +1157,104 @@ function New-ChatGptZipPackage {
     Ensure-Directory $tempRoot
 
     try {
-        $stagingRoot = Join-Path $tempRoot "chatgpt_review"
-        Ensure-Directory $stagingRoot
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-        Copy-Item -LiteralPath $audioFolder -Destination (Join-Path $stagingRoot "audio") -Recurse -Force
-        Copy-Item -LiteralPath $framesFolder -Destination (Join-Path $stagingRoot $ProcessedItem.FramesFolderName) -Recurse -Force
-        Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
-        Copy-Item -LiteralPath $frameIndexCsv -Destination (Join-Path $stagingRoot "frame_index.csv") -Force
+        $samplingStep = 1
+        while ($samplingStep -le $allFrames.Count) {
+            if (Test-Path -LiteralPath $zipPath) {
+                Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+            }
 
-        if ($includeProxy) {
-            Ensure-Directory (Join-Path $stagingRoot "proxy")
-            Copy-Item -LiteralPath $proxyVideo -Destination (Join-Path $stagingRoot "proxy\review_proxy_1280.mp4") -Force
-        }
+            $stagingRoot = Join-Path $tempRoot "chatgpt_review"
+            if (Test-Path -LiteralPath $stagingRoot) {
+                Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Ensure-Directory $stagingRoot
 
-        $chatGptReadme = Join-Path $stagingRoot "README_FOR_CHATGPT.txt"
-        New-ChatGptReadme `
-            -ReadmePath $chatGptReadme `
-            -SourceVideoName $ProcessedItem.SourceVideoName `
-            -FramesFolderName $ProcessedItem.FramesFolderName `
-            -ProxyIncluded:$includeProxy
+            if (Test-Path -LiteralPath $audioFolder) {
+                Copy-Item -LiteralPath $audioFolder -Destination (Join-Path $stagingRoot "audio") -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $transcriptFolder) {
+                Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
+            }
 
-        if (Test-Path -LiteralPath $zipPath) {
-            Remove-Item -LiteralPath $zipPath -Force
-        }
+            $selectedFrames = @()
+            for ($i = 0; $i -lt $allFrames.Count; $i += $samplingStep) {
+                $selectedFrames += $allFrames[$i]
+            }
 
-        Compress-Archive -Path (Join-Path $stagingRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
-        $zipSize = (Get-Item -LiteralPath $zipPath).Length
-        if ($zipSize -gt $maxBytes) {
+            $selectedFrameBytes = [int64]0
+            foreach ($frame in $selectedFrames) {
+                $selectedFrameBytes += [int64]$frame.Length
+            }
+
+            $stagedFramesFolder = Join-Path $stagingRoot $ProcessedItem.FramesFolderName
+            Ensure-Directory $stagedFramesFolder
+            foreach ($frame in $selectedFrames) {
+                Copy-Item -LiteralPath $frame.FullName -Destination (Join-Path $stagedFramesFolder $frame.Name) -Force
+            }
+
+            $stagedFrameIndex = Join-Path $stagingRoot "frame_index.csv"
+            New-ChatGptFrameIndex `
+                -SourceFrameIndexCsv $frameIndexCsv `
+                -DestinationFrameIndexCsv $stagedFrameIndex `
+                -SelectedFrames $selectedFrames
+
+            $includeProxy = $false
+            if ($proxyBytes -gt 0 -and (($nonFrameBaseBytes + $selectedFrameBytes + $proxyBytes) -le $maxBytes)) {
+                $includeProxy = $true
+                Ensure-Directory (Join-Path $stagingRoot "proxy")
+                Copy-Item -LiteralPath $proxyVideo -Destination (Join-Path $stagingRoot "proxy\review_proxy_1280.mp4") -Force
+            }
+
+            $frameSelectionNote = if ($samplingStep -le 1) {
+                "All extracted frames are included."
+            }
+            else {
+                "Every $samplingStep-th extracted frame is included automatically to stay under the upload limit."
+            }
+
+            $chatGptReadme = Join-Path $stagingRoot "README_FOR_CHATGPT.txt"
+            New-ChatGptReadme `
+                -ReadmePath $chatGptReadme `
+                -SourceVideoName $ProcessedItem.SourceVideoName `
+                -FramesFolderName $ProcessedItem.FramesFolderName `
+                -ProxyIncluded:$includeProxy `
+                -FrameSelectionNote $frameSelectionNote
+
+            [System.IO.Compression.ZipFile]::CreateFromDirectory(
+                $stagingRoot,
+                $zipPath,
+                [System.IO.Compression.CompressionLevel]::Optimal,
+                $false
+            )
+
+            $zipSize = (Get-Item -LiteralPath $zipPath).Length
+            if ($zipSize -le $maxBytes) {
+                return [PSCustomObject]@{
+                    ZipPath           = $zipPath
+                    ZipSizeMb         = [math]::Round($zipSize / 1MB, 2)
+                    ProxyIncluded     = $includeProxy
+                    FrameSamplingStep = $samplingStep
+                    IncludedFrameCount = $selectedFrames.Count
+                }
+            }
+
             Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
-            throw "ChatGPT zip exceeded $MaxSizeMb MB limit. Try a larger frame interval or skip the zip."
+
+            if ($selectedFrames.Count -le 1) {
+                break
+            }
+
+            if ($samplingStep -eq 1) {
+                $samplingStep = 2
+            }
+            else {
+                $samplingStep = $samplingStep * 2
+            }
         }
 
-        return [PSCustomObject]@{
-            ZipPath       = $zipPath
-            ZipSizeMb     = [math]::Round($zipSize / 1MB, 2)
-            ProxyIncluded = $includeProxy
-        }
+        throw "ChatGPT zip exceeded $MaxSizeMb MB even after automatically thinning the frame set."
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) {
@@ -1198,7 +1299,7 @@ function New-MasterReadme {
         $lines += "- $($item.OutputFolderName)  <=  $($item.SourceVideoName)"
     }
 
-    $lines | Set-Content -Path $MasterReadmePath -Encoding UTF8
+    $lines | Set-Content -LiteralPath $MasterReadmePath -Encoding UTF8
 }
 
 function Add-SummaryRow {
@@ -1239,10 +1340,10 @@ function Add-SummaryRow {
     }
 
     if (-not (Test-Path $SummaryCsv)) {
-        $row | Export-Csv -Path $SummaryCsv -NoTypeInformation -Encoding UTF8
+        $row | Export-Csv -LiteralPath $SummaryCsv -NoTypeInformation -Encoding UTF8
     }
     else {
-        $row | Export-Csv -Path $SummaryCsv -NoTypeInformation -Encoding UTF8 -Append
+        $row | Export-Csv -LiteralPath $SummaryCsv -NoTypeInformation -Encoding UTF8 -Append
     }
 }
 
@@ -1458,7 +1559,7 @@ function New-ProxyVideo {
         [int]$HeartbeatSeconds = 10
     )
 
-    if (Test-Path $OutputVideo) {
+    if (Test-Path -LiteralPath $OutputVideo) {
         Write-Log "Proxy video already exists. Skipping."
         return "SKIPPED_EXISTING"
     }
@@ -1479,19 +1580,19 @@ function New-ProxyVideo {
         Write-Log "Creating proxy video with NVIDIA NVENC..."
 
         $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Proxy generation (GPU)" -HeartbeatSeconds $HeartbeatSeconds -IgnoreExitCode
-        if ($gpuResult.ExitCode -eq 0 -and (Test-Path $OutputVideo)) {
+        if ($gpuResult.ExitCode -eq 0 -and (Test-Path -LiteralPath $OutputVideo)) {
             return "GPU_NVENC"
         }
 
         Write-Log "GPU proxy generation failed. Falling back to CPU libx264." "WARN"
-        if (Test-Path $OutputVideo) {
-            Remove-Item -Path $OutputVideo -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $OutputVideo) {
+            Remove-Item -LiteralPath $OutputVideo -Force -ErrorAction SilentlyContinue
         }
     }
 
     Write-Log "Creating proxy video with CPU libx264..."
     $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Proxy generation (CPU)" -HeartbeatSeconds $HeartbeatSeconds
-    if ($cpuResult.ExitCode -ne 0 -or -not (Test-Path $OutputVideo)) {
+    if ($cpuResult.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $OutputVideo)) {
         throw "Proxy video generation failed."
     }
 
@@ -1508,7 +1609,7 @@ function Extract-FramesAtInterval {
         [int]$HeartbeatSeconds = 10
     )
 
-    $existingFrames = @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue)
+    $existingFrames = @(Get-ChildItem -LiteralPath $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue)
     if ($existingFrames.Count -gt 0) {
         Write-Log "Frames already exist. Skipping frame extraction."
         return "SKIPPED_EXISTING"
@@ -1525,17 +1626,17 @@ function Extract-FramesAtInterval {
         Write-Log "Extracting frames every $FrameIntervalSeconds seconds with CUDA decode attempt..."
 
         $gpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $gpuArgs -StepName "Frame extraction (GPU)" -HeartbeatSeconds $HeartbeatSeconds -IgnoreExitCode
-        if ($gpuResult.ExitCode -eq 0 -and @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -gt 0) {
+        if ($gpuResult.ExitCode -eq 0 -and @(Get-ChildItem -LiteralPath $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -gt 0) {
             return "GPU_DECODE_ATTEMPT"
         }
 
         Write-Log "GPU-assisted frame extraction failed. Falling back to CPU." "WARN"
-        Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     }
 
     Write-Log "Extracting frames every $FrameIntervalSeconds seconds with CPU path..."
     $cpuResult = Invoke-ExternalCapture -FilePath $FFmpegExe -Arguments $cpuArgs -StepName "Frame extraction (CPU)" -HeartbeatSeconds $HeartbeatSeconds
-    if ($cpuResult.ExitCode -ne 0 -or @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -eq 0) {
+    if ($cpuResult.ExitCode -ne 0 -or @(Get-ChildItem -LiteralPath $FramesFolder -Filter "frame_*.jpg" -ErrorAction SilentlyContinue).Count -eq 0) {
         throw "Frame extraction failed."
     }
 
@@ -1550,7 +1651,7 @@ function Export-AudioMp3 {
         [int]$HeartbeatSeconds = 10
     )
 
-    if (Test-Path $AudioFile) {
+    if (Test-Path -LiteralPath $AudioFile) {
         Write-Log "Audio file already exists. Skipping extraction."
         return "SKIPPED_EXISTING"
     }
@@ -1561,7 +1662,7 @@ function Export-AudioMp3 {
         -StepName "Audio extraction" `
         -HeartbeatSeconds $HeartbeatSeconds
 
-    if ($result.ExitCode -ne 0 -or -not (Test-Path $AudioFile)) {
+    if ($result.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $AudioFile)) {
         throw "Audio extraction failed."
     }
 
@@ -1819,9 +1920,9 @@ function Build-FrameIndex {
     )
 
     Write-Log "Building frame index..."
-    "frame_number,seconds,timestamp,filename,relative_path" | Set-Content -Path $FrameIndexCsv -Encoding UTF8
+    "frame_number,seconds,timestamp,filename,relative_path" | Set-Content -LiteralPath $FrameIndexCsv -Encoding UTF8
 
-    $frames = @(Get-ChildItem $FramesFolder -Filter "frame_*.jpg" | Sort-Object Name)
+    $frames = @(Get-ChildItem -LiteralPath $FramesFolder -Filter "frame_*.jpg" | Sort-Object Name)
     $nextHeartbeat = if ($HeartbeatSeconds -gt 0) { (Get-Date).AddSeconds($HeartbeatSeconds) } else { $null }
 
     for ($i = 0; $i -lt $frames.Count; $i++) {
@@ -1831,7 +1932,7 @@ function Build-FrameIndex {
             $seconds = [math]::Round(($frameNumber - 1) * $FrameIntervalSeconds, 3)
             $timestamp = [TimeSpan]::FromSeconds($seconds).ToString("hh\:mm\:ss\.fff")
             $relativePath = "$FramesFolderName/$($frame.Name)"
-            "$frameNumber,$seconds,$timestamp,$($frame.Name),$relativePath" | Add-Content -Path $FrameIndexCsv -Encoding UTF8
+            "$frameNumber,$seconds,$timestamp,$($frame.Name),$relativePath" | Add-Content -LiteralPath $FrameIndexCsv
         }
 
         $processed = $i + 1
@@ -1864,11 +1965,11 @@ function Process-Video {
         [int]$HeartbeatSeconds = 10
     )
 
-    if (-not (Test-Path $VideoPath)) {
+    if (-not (Test-Path -LiteralPath $VideoPath)) {
         throw "Input video not found: $VideoPath"
     }
 
-    $videoItem = Get-Item $VideoPath
+    $videoItem = Get-Item -LiteralPath $VideoPath
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($videoItem.Name)
     $safeBaseName = Get-SafeFolderName $baseName
 
@@ -1897,7 +1998,7 @@ function Process-Video {
     Ensure-Directory $transcriptFolder
 
     $script:CurrentLogFile = $logFile
-    "==== Script run started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -Path $logFile -Encoding UTF8
+    "==== Script run started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -LiteralPath $logFile -Encoding UTF8
 
     Write-Host ""
     Write-Host "==================================================" -ForegroundColor Cyan
@@ -1925,9 +2026,9 @@ function Process-Video {
 
     if ($DoCopyRaw) {
         Invoke-PhaseAction -Name "Raw" -Detail $videoItem.Name -Action {
-            if (-not (Test-Path $rawVideoPath)) {
+            if (-not (Test-Path -LiteralPath $rawVideoPath)) {
                 Write-Log "Copying raw video..."
-                Copy-Item -Path $videoItem.FullName -Destination $rawVideoPath -Force
+                Copy-Item -LiteralPath $videoItem.FullName -Destination $rawVideoPath -Force
             }
             else {
                 Write-Log "Raw video already copied. Skipping."
@@ -1963,7 +2064,7 @@ function Process-Video {
         } | Out-Null
 
         $whisperMode = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
-            if ((Test-Path $transcriptSrt) -and (Test-Path $transcriptJson)) {
+            if ((Test-Path -LiteralPath $transcriptSrt) -and (Test-Path -LiteralPath $transcriptJson)) {
                 Write-Log "Transcript files already exist. Skipping Whisper transcription."
                 return "SKIPPED_EXISTING"
             }
@@ -1987,11 +2088,11 @@ function Process-Video {
                     -PreferGpu $CanUseWhisperGpu `
                     -HeartbeatSeconds $HeartbeatSeconds
 
-                if (-not (Test-Path $transcriptSrt)) {
+                if (-not (Test-Path -LiteralPath $transcriptSrt)) {
                     throw "Expected SRT not found: $transcriptSrt"
                 }
 
-                if (-not (Test-Path $transcriptJson)) {
+                if (-not (Test-Path -LiteralPath $transcriptJson)) {
                     throw "Expected JSON not found: $transcriptJson"
                 }
 
@@ -2079,7 +2180,7 @@ Write-Phase -Name "Preflight" -Detail "Resolving tools and inputs"
 $FFmpegPath = Resolve-ExecutablePath `
     -PreferredPath $FFmpegPath `
     -FallbackCommands @("ffmpeg") `
-    -FallbackPaths @("C:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\Program Files\digiKam\ffmpeg.exe") `
+    -FallbackPaths @("D:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\Program Files\digiKam\ffmpeg.exe") `
     -ToolName "FFmpeg"
 $FFprobePath = Get-FFprobePath -FFmpegExe $FFmpegPath
 $PythonExe = Resolve-ExecutablePath `
@@ -2407,10 +2508,10 @@ foreach ($video in $videos) {
         Write-Host $_.Exception.Message -ForegroundColor Red
 
         if ($script:CurrentLogFile) {
-            Add-Content -Path $script:CurrentLogFile -Value "----- FAILURE -----" -Encoding UTF8
-            Add-Content -Path $script:CurrentLogFile -Value $_.Exception.Message -Encoding UTF8
+            Add-Content -LiteralPath $script:CurrentLogFile -Value "----- FAILURE -----"
+            Add-Content -LiteralPath $script:CurrentLogFile -Value $_.Exception.Message
             if ($_.ScriptStackTrace) {
-                Add-Content -Path $script:CurrentLogFile -Value $_.ScriptStackTrace -Encoding UTF8
+                Add-Content -LiteralPath $script:CurrentLogFile -Value $_.ScriptStackTrace
             }
         }
     }
