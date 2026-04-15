@@ -36,8 +36,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
 
 Notes:
 
-- Default input folder: `C:\TEMP\INPUT`
-- Default output folder: `C:\DATA\TEMP`
+- Default input folder: `C:\DATA\TEMP\_VIDEO_INPUT`
+- Default output folder: `C:\DATA\TEMP\_VIDEO_OUTPUT`
+- Auto-detect behavior for defaults when not explicitly passed:
+  - If the `C:\DATA\TEMP\...` default folders already exist, the script uses them.
+  - Otherwise, if matching `D:\DATA\TEMP\...` folders exist, it uses those.
+  - If neither exists, interactive mode asks once for a simple base location.
 - `-InputPath` accepts a local video file, a folder of videos, or an `http/https` video URL.
 - `-InputUrl` is a dedicated alias for remote video or playlist URLs and is the clearer option when you are downloading first.
 - `-FrameIntervalSeconds` accepts `0.1` second increments such as `0.3`, `0.5`, `1.0`, `1.1`.
@@ -45,13 +49,32 @@ Notes:
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
 - If you run the script interactively without `-InputPath` or `-InputUrl`, it asks whether you want to download from YouTube or another supported video URL first.
 - In interactive mode, you can paste either a single-video URL or a playlist URL. Playlist URLs download every video before packaging.
+- Downloaded remote videos are stored under the selected input folder.
 - `-SkipEstimate` disables the best-effort estimate phase.
+- Interactive mode now also asks:
+  - whether to create a ChatGPT-ready zip package per video
+  - whether to open Windows Explorer to the output folder when processing finishes
 - GPU acceleration is used when available, with CPU fallback if the GPU path fails.
 - Remote URL downloads require `yt-dlp`. On Windows, install it with `winget install yt-dlp.yt-dlp` or `py -m pip install -U yt-dlp`.
 - If you choose a remote URL interactively and `yt-dlp` is missing, the script tells you how to install it before continuing.
-- Downloaded media is cached under `<OutputFolder>\_download_cache`.
 - Use remote download only for video sources you have permission to download.
 - Long-running phases emit timestamped `still working...` lines without using fragile PowerShell background event handlers.
+
+## ChatGPT zip package (optional)
+
+When enabled (`-CreateChatGptZip` or interactive prompt), each processed video gets a `chatgpt_review_package.zip` inside its package folder.
+
+The zip contains:
+- `audio\`
+- `frames_[interval]\`
+- `transcript\`
+- `frame_index.csv`
+- `README_FOR_CHATGPT.txt`
+- `proxy\review_proxy_1280.mp4` only when it fits the configured size limit
+
+Size management:
+- Use `-ChatGptZipMaxMb` (default `500`) to cap zip size.
+- Proxy video is automatically omitted when needed to stay within the limit.
 
 ## One-shot smoke test
 
