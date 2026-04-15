@@ -49,7 +49,7 @@ Notes:
 - Omit `-NoPrompt` if you want interactive output-folder and frame-interval prompts.
 - If you run the script interactively without `-InputPath` or `-InputUrl`, it asks whether you want to download from YouTube or another supported video URL first.
 - In interactive mode, you can paste either a single-video URL, multiple video URLs, or a playlist URL.
-- When pasting multiple remote URLs interactively, enter one URL per line and press Enter on a blank line to start downloading.
+- When adding multiple remote URLs interactively, the script now asks `Add another remote URL? (y/N)` after each pasted URL.
 - Playlist URLs download every available video before packaging.
 - Public playlist downloads continue past unavailable, hidden, or private entries when other playlist items are downloadable.
 - Downloaded remote videos are stored under the selected input folder.

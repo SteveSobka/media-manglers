@@ -758,15 +758,15 @@ function Get-InteractiveInputSource {
         $downloadChoice = Read-Host "Do you want to download from YouTube or another supported video URL? (y/N)"
 
         if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
-            Write-Host "Paste one or more video or playlist URLs. Press Enter on a blank line when finished." -ForegroundColor Cyan
+            Write-Host "Paste the first video or playlist URL. After each entry, the script will ask whether you want to add another." -ForegroundColor Cyan
             $remoteInputs = New-Object System.Collections.Generic.List[string]
             $lineNumber = 1
             while ($true) {
-                $prompt = if ($lineNumber -eq 1) { "URL 1" } else { "URL $lineNumber (blank to finish)" }
+                $prompt = "URL $lineNumber"
                 $remoteInput = Read-Host $prompt
-
                 if ([string]::IsNullOrWhiteSpace($remoteInput)) {
-                    break
+                    Write-Host "Please enter at least one full http/https URL." -ForegroundColor Yellow
+                    continue
                 }
 
                 $parsedUrls = @(Get-HttpUrlsFromText -Value $remoteInput)
@@ -782,11 +782,11 @@ function Get-InteractiveInputSource {
                 }
 
                 $lineNumber += 1
-            }
 
-            if ($remoteInputs.Count -eq 0) {
-                Write-Host "Please enter at least one video or playlist URL." -ForegroundColor Yellow
-                continue
+                $addAnother = Read-Host "Add another remote URL? (y/N)"
+                if ([string]::IsNullOrWhiteSpace($addAnother) -or $addAnother.Trim() -notmatch '^(y|yes)$') {
+                    break
+                }
             }
 
             try {
