@@ -1,4 +1,4 @@
-media-manglers
+Video Mangler
 ==============
 
 Build a review package from:
@@ -22,7 +22,7 @@ Download and run
 
 For most people, use the Windows executable from the latest release:
 
-1. Download video_to_codex_package.exe from the latest release.
+1. Download Video Mangler.exe from the latest release.
 2. Run it.
 3. Follow the prompts.
 
@@ -32,7 +32,7 @@ https://github.com/SteveSobka/media-manglers/releases/latest
 
 Check the app version:
 
-  .\video_to_codex_package.exe -Version
+  & '.\Video Mangler.exe' -Version
 
 What the app asks
 -----------------
@@ -132,11 +132,11 @@ From source
 
 Run the PowerShell script directly:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
 
 Show the script version:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 -Version
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
 
 Rebuild the Windows executable:
 

@@ -22,7 +22,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
-$script:AppName = "media-manglers"
+$script:AppName = "Video Mangler"
 $script:FallbackAppVersion = "0.3.0"
 
 function Get-AppVersion {

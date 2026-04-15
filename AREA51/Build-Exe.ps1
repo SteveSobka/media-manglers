@@ -1,10 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
-$inputFile = Join-Path $repoRoot "video_to_codex_package.ps1"
+$inputFile = Join-Path $repoRoot "Video Mangler.ps1"
 $distFolder = Join-Path $repoRoot "dist"
-$outputFile = Join-Path $distFolder "video_to_codex_package.exe"
-$iconFile = Join-Path $repoRoot "assets\video_to_codex_package.ico"
+$outputFile = Join-Path $distFolder "Video Mangler.exe"
+$iconFile = Join-Path $repoRoot "assets\Video Mangler.ico"
 $versionFile = Join-Path $repoRoot "VERSION"
 $modulePath = Join-Path $HOME "Documents\PowerShell\Modules\ps2exe\1.0.17\ps2exe.psm1"
 $releaseRoot = Join-Path $distFolder "release"
@@ -30,13 +30,19 @@ if ([string]::IsNullOrWhiteSpace($appVersion)) {
     throw "Version file is empty: $versionFile"
 }
 
-$releaseName = "media-manglers-v{0}" -f $appVersion
+$legacyPaths = @(
+    (Join-Path $distFolder "video_to_codex_package.exe"),
+    (Join-Path $releaseRoot ("media-manglers-v{0}" -f $appVersion)),
+    (Join-Path $releaseRoot ("media-manglers-v{0}.zip" -f $appVersion))
+)
+
+$releaseName = "Video-Mangler-v{0}" -f $appVersion
 $releaseFolder = Join-Path $releaseRoot $releaseName
 $releaseZip = Join-Path $releaseRoot ("{0}.zip" -f $releaseName)
 $appFolder = Join-Path $releaseFolder "app"
 $docsFolder = Join-Path $releaseFolder "docs"
 $releaseFiles = @(
-    @{ Source = $outputFile; Destination = Join-Path $appFolder "video_to_codex_package.exe" },
+    @{ Source = $outputFile; Destination = Join-Path $appFolder "Video Mangler.exe" },
     @{ Source = $repoRoot; Relative = "README.txt"; Destination = Join-Path $docsFolder "README.txt" },
     @{ Source = $repoRoot; Relative = "RELEASE_NOTES_v{0}.txt" -f $appVersion; Destination = Join-Path $docsFolder ("RELEASE_NOTES_v{0}.txt" -f $appVersion) },
     @{ Source = $repoRoot; Relative = "THIRD_PARTY_NOTICES.txt"; Destination = Join-Path $docsFolder "THIRD_PARTY_NOTICES.txt" },
@@ -47,13 +53,19 @@ $releaseFiles = @(
 New-Item -ItemType Directory -Path $distFolder -Force | Out-Null
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
+foreach ($legacyPath in $legacyPaths) {
+    if (Test-Path -LiteralPath $legacyPath) {
+        Remove-Item -LiteralPath $legacyPath -Recurse -Force
+    }
+}
+
 Import-Module $modulePath -Force
 Invoke-ps2exe `
     -inputFile $inputFile `
     -outputFile $outputFile `
     -iconFile $iconFile `
-    -title "video_to_codex_package" `
-    -product "media-manglers" `
+    -title "Video Mangler" `
+    -product "Video Mangler" `
     -description "Builds review packages from local videos, remote URLs, and YouTube inputs." `
     -company "Steve Sobka" `
     -copyright "Copyright (c) 2026 Steve Sobka" `

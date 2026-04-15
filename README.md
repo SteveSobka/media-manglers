@@ -1,4 +1,4 @@
-# media-manglers
+# Video Mangler
 
 Build a review package from:
 
@@ -20,7 +20,7 @@ Each package includes:
 
 For most people, use the Windows executable from the latest release:
 
-1. Download `video_to_codex_package.exe` from the latest release.
+1. Download `Video Mangler.exe` from the latest release.
 2. Run it.
 3. Follow the prompts.
 
@@ -29,7 +29,7 @@ If you want the executable bundled with local docs, release notes, license text,
 Check the app version:
 
 ```powershell
-.\video_to_codex_package.exe -Version
+& '.\Video Mangler.exe' -Version
 ```
 
 Current release:
@@ -143,13 +143,13 @@ If ChatGPT zip creation is enabled:
 Run the PowerShell script directly:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
 ```
 
 Show the script version:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\video_to_codex_package.ps1 -Version
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
 ```
 
 Rebuild the Windows executable:

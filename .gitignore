@@ -3,3 +3,4 @@ test-output/
 .vscode/
 test_media/
 /*.mkv
+dist/release/

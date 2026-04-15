@@ -8,7 +8,7 @@ Tracked version:
 Highlights
 ----------
 
-- Added a precompiled Windows executable: video_to_codex_package.exe
+- Added a precompiled Windows executable: Video Mangler.exe
 - Renamed tests to AREA51
 - Improved interactive input selection with numbered choices
 - Defaulted Enter to local path mode and added Q to quit
