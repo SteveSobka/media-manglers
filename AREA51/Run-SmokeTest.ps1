@@ -7,7 +7,12 @@ param(
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawVideo,
     [switch]$SkipEstimate,
-    [switch]$AllMedia
+    [switch]$AllMedia,
+    [string]$TranslateTo,
+    [ValidateSet("Auto", "OpenAI", "Local")]
+    [string]$TranslationProvider = "Auto",
+    [switch]$IncludeComments,
+    [switch]$KeepTestOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -124,12 +129,23 @@ else {
 [void]$args.Add($HeartbeatSeconds.ToString())
 [void]$args.Add("-NoPrompt")
 
+if (-not [string]::IsNullOrWhiteSpace($TranslateTo)) {
+    [void]$args.Add("-TranslateTo")
+    [void]$args.Add($TranslateTo)
+    [void]$args.Add("-TranslationProvider")
+    [void]$args.Add($TranslationProvider)
+}
+
 if ($CopyRawVideo) {
     [void]$args.Add("-CopyRawVideo")
 }
 
 if ($SkipEstimate) {
     [void]$args.Add("-SkipEstimate")
+}
+
+if ($IncludeComments) {
+    [void]$args.Add("-IncludeComments")
 }
 
 & powershell @($args)
@@ -147,3 +163,8 @@ else {
 }
 
 Write-Host ("PASS smoke test completed. Output root: {0}" -f $outputRoot) -ForegroundColor Green
+
+if (-not $KeepTestOutput -and (Test-Path -LiteralPath $outputRoot)) {
+    Remove-Item -LiteralPath $outputRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "Video smoke output was cleaned up automatically. Use -KeepTestOutput to retain it." -ForegroundColor DarkGray
+}

@@ -1,0 +1,83 @@
+Release Notes - v0.5.0
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.5.0
+
+What changed
+------------
+
+- Reworked the repo front page and packaged guides so the project reads like a
+  user-facing toolset instead of a script inventory
+- Moved longer guides and release notes into docs/ to keep the repo root
+  cleaner and easier to scan
+- Refreshed generated package readmes so finished output folders explain
+  themselves more clearly
+
+Translation improvements
+------------------------
+
+- Video Mangler now supports first-class translated transcript output
+- Both apps now follow a source-audio-first translation flow:
+  - make the original-language transcript from the source audio first
+  - then create translated transcript files from that source-derived transcript
+- Added TranslationProvider choices across both apps:
+  - Auto
+  - OpenAI
+  - Local
+- OpenAI remains optional and is treated as the best-quality path when
+  configured
+- Local translation remains available as a free fallback
+- Same-language translation targets now reuse the original transcript instead of
+  retranslating it
+- Both apps now explain the provider choice in logs and output metadata
+
+Local translation setup
+-----------------------
+
+- Missing local translation support now uses a prompt-install flow instead of a
+  silent install path
+- The apps explain what is missing, what it unlocks, and how to install it
+- Interactive runs offer install, skip, or cancel
+- Non-interactive runs fail with clear install guidance instead of trying to
+  modify the machine automatically
+
+Video Mangler updates
+---------------------
+
+- Added translation CLI and interactive prompts
+- Added translated transcript outputs to the package structure
+- Added translated transcript support to the ChatGPT upload zip when present
+- Added clearer handling for English-only Whisper model selections
+- Added optional YouTube comments export when comments are available through the
+  toolchain
+
+Audio Mangler updates
+---------------------
+
+- Redesigned translation handling so non-English targets do not hard-require
+  OPENAI_API_KEY
+- Added the same provider-selection model as Video Mangler
+- Added optional YouTube comments export when comments are available through the
+  toolchain
+
+Cleanup and validation
+----------------------
+
+- Added KeepTempFiles support so troubleshooting artifacts are opt-in
+- Added cleanup for temporary helper scripts, staging folders, transient
+  download folders, and zip build scratch space
+- Updated smoke tests with KeepTestOutput support and translation-related
+  parameters
+- Expanded validators to check translated transcript outputs, transcript text
+  files, and optional comments exports
+
+Licensing
+---------
+
+- Repository code: MIT
+- Referenced media, optional services, and third-party tools remain under their
+  own terms
+- See THIRD_PARTY_NOTICES.txt for practical notes

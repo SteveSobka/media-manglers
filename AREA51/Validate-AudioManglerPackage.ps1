@@ -159,6 +159,7 @@ $logPath = Join-Path $packageRoot "script_run.log"
 $summaryCsv = Join-Path $OutputRoot "PROCESSING_SUMMARY.csv"
 $masterReadme = Join-Path $OutputRoot "CODEX_MASTER_README.txt"
 $translationsFolder = Join-Path $packageRoot "translations"
+$commentsFolder = Join-Path $packageRoot "comments"
 
 Assert-File -Path $reviewAudio -Label "review audio"
 Assert-File -Path $transcriptSrt -Label "transcript srt"
@@ -181,6 +182,11 @@ if (Test-Path -LiteralPath $translationsFolder) {
         Assert-File -Path (Join-Path $translationFolder.FullName "transcript.json") -Label ("translation json ({0})" -f $translationFolder.Name)
         Assert-File -Path (Join-Path $translationFolder.FullName "transcript.txt") -Label ("translation txt ({0})" -f $translationFolder.Name)
     }
+}
+
+if (Test-Path -LiteralPath $commentsFolder) {
+    Assert-File -Path (Join-Path $commentsFolder "comments.txt") -Label "comments txt"
+    Assert-File -Path (Join-Path $commentsFolder "comments.json") -Label "comments json"
 }
 
 Write-Host "PASS audio validation completed." -ForegroundColor Green

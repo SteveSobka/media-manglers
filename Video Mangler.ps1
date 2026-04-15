@@ -7,11 +7,17 @@ param(
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
     [string]$WhisperModel = "base.en",
-    [string]$Language = "en",
+    [string]$Language = "",
+    [string]$TranslateTo = "",
+    [ValidateSet("Auto", "OpenAI", "Local")]
+    [string]$TranslationProvider = "Auto",
+    [string]$OpenAiModel = "gpt-5-mini",
     [double]$FrameIntervalSeconds = [double]::NaN,
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawVideo,
+    [switch]$IncludeComments,
     [switch]$CreateChatGptZip,
+    [switch]$KeepTempFiles,
     [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
     [switch]$SkipEstimate,
@@ -23,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Video Mangler"
-$script:FallbackAppVersion = "0.4.0"
+$script:FallbackAppVersion = "0.5.0"
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -670,6 +676,7 @@ function Invoke-RemoteVideoDownload {
         [string]$DownloadFolder,
         [psobject]$YtDlpInvoker,
         [string]$FFmpegExe,
+        [switch]$IncludeComments,
         [int]$HeartbeatSeconds = 30
     )
 
@@ -711,7 +718,7 @@ function Invoke-RemoteVideoDownload {
             "--print", "after_move:filepath",
             "-P", $sessionFolder,
             "-o", $outputTemplate
-        ) + $formatArguments + $playlistArguments + @($SourceUrl)) `
+        ) + $(if ($IncludeComments) { @("--write-info-json", "--write-comments") } else { @() }) + $formatArguments + $playlistArguments + @($SourceUrl)) `
         -StepName ("yt-dlp download ({0})" -f $sourceKind) `
         -IgnoreExitCode:$($sourceKind -eq "playlist") `
         -HeartbeatSeconds $HeartbeatSeconds `
@@ -754,10 +761,103 @@ function Invoke-RemoteVideoDownload {
 
     Write-Log ("Remote {0} downloaded. Items: {1}. Cache folder: {2}" -f $sourceKind, $downloadedPaths.Count, $sessionFolder)
 
+    $infoJsonByMediaPath = @{}
+    foreach ($downloadedPath in $downloadedPaths) {
+        $basePath = Join-Path ([System.IO.Path]::GetDirectoryName($downloadedPath)) ([System.IO.Path]::GetFileNameWithoutExtension($downloadedPath))
+        $infoJsonPath = "$basePath.info.json"
+        if (Test-Path -LiteralPath $infoJsonPath) {
+            $infoJsonByMediaPath[$downloadedPath] = $infoJsonPath
+        }
+    }
+
     return [PSCustomObject]@{
         SourceKind    = $sourceKind
         DownloadRoot  = $sessionFolder
         DownloadedPaths = $downloadedPaths
+        InfoJsonByMediaPath = $infoJsonByMediaPath
+    }
+}
+
+function Export-CommentsArtifactsFromInfoJson {
+    param(
+        [string]$InfoJsonPath,
+        [string]$CommentsFolder
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InfoJsonPath) -or -not (Test-Path -LiteralPath $InfoJsonPath)) {
+        return $null
+    }
+
+    $payload = Get-Content -LiteralPath $InfoJsonPath -Raw | ConvertFrom-Json
+    $comments = @($payload.comments)
+    if ($comments.Count -eq 0) {
+        return $null
+    }
+
+    Ensure-Directory $CommentsFolder
+
+    $commentsJsonPath = Join-Path $CommentsFolder "comments.json"
+    $commentsTextPath = Join-Path $CommentsFolder "comments.txt"
+
+    $normalizedComments = @()
+    $textLines = New-Object System.Collections.Generic.List[string]
+    [void]$textLines.Add("Public comments export")
+    [void]$textLines.Add("======================")
+    [void]$textLines.Add("")
+
+    if ($payload.title) {
+        [void]$textLines.Add(("Title: {0}" -f $payload.title))
+    }
+    if ($payload.webpage_url) {
+        [void]$textLines.Add(("Source: {0}" -f $payload.webpage_url))
+    }
+    [void]$textLines.Add(("Comments exported: {0}" -f $comments.Count))
+    [void]$textLines.Add("")
+
+    $index = 0
+    foreach ($comment in $comments) {
+        $index += 1
+        $author = [string]$comment.author
+        $text = [string]$comment.text
+        $timestamp = [string]$comment.timestamp
+        $likeCount = [string]$comment.like_count
+        $normalizedComments += [PSCustomObject]@{
+            id           = [string]$comment.id
+            author       = $author
+            text         = $text
+            timestamp    = $timestamp
+            like_count   = $likeCount
+            parent       = [string]$comment.parent
+            is_favorited = [string]$comment.is_favorited
+        }
+
+        [void]$textLines.Add(("[{0}] {1}" -f $index, $(if ([string]::IsNullOrWhiteSpace($author)) { "Unknown author" } else { $author })))
+        if (-not [string]::IsNullOrWhiteSpace($timestamp)) {
+            [void]$textLines.Add(("Date: {0}" -f $timestamp))
+        }
+        if (-not [string]::IsNullOrWhiteSpace($likeCount)) {
+            [void]$textLines.Add(("Likes: {0}" -f $likeCount))
+        }
+        [void]$textLines.Add("Comment:")
+        [void]$textLines.Add($(if ([string]::IsNullOrWhiteSpace($text)) { "[empty]" } else { $text.Trim() }))
+        [void]$textLines.Add("")
+    }
+
+    [PSCustomObject]@{
+        title         = [string]$payload.title
+        webpage_url   = [string]$payload.webpage_url
+        extractor_key = [string]$payload.extractor_key
+        comment_count = $normalizedComments.Count
+        comments      = $normalizedComments
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $commentsJsonPath -Encoding UTF8
+
+    $textLines | Set-Content -LiteralPath $commentsTextPath -Encoding UTF8
+
+    return [PSCustomObject]@{
+        CommentsFolder   = $CommentsFolder
+        CommentsJsonPath = $commentsJsonPath
+        CommentsTextPath = $commentsTextPath
+        CommentCount     = $normalizedComments.Count
     }
 }
 
@@ -1163,7 +1263,11 @@ function New-CodexReadme {
         [string]$VideoFileName,
         [string]$RawPresent,
         [string]$AudioPresent,
-        [double]$FrameIntervalSeconds
+        [double]$FrameIntervalSeconds,
+        [string]$DetectedLanguage,
+        [string[]]$TranslationTargets,
+        [string]$TranslationProviderDetails,
+        [string]$CommentsSummary
     )
 
     $framesFolderName = Get-FramesFolderName -Value $FrameIntervalSeconds
@@ -1171,33 +1275,37 @@ function New-CodexReadme {
 @"
 README_FOR_CODEX
 
-Purpose:
-This folder contains a Codex-ready review package generated from:
+This folder contains a Video Mangler review package for:
 $VideoFileName
 
 What is included:
-- raw\                       original source video (if copied)
-- proxy\review_proxy_1280.mp4
+- raw\                            original source video (only if you chose to keep a copy)
+- proxy\review_proxy_1280.mp4     review copy for playback
 - $framesFolderName\frame_000001.jpg ...
-- audio\audio.mp3            only if source audio exists
-- transcript\transcript.srt  only if source audio exists
-- transcript\transcript.json only if source audio exists
-- frame_index.csv
-- script_run.log
+- audio\audio.mp3                 only when the source has spoken audio
+- transcript\transcript.srt / .json / .txt
+- translations\<lang>\transcript.srt / .json / .txt when translation was requested
+- comments\comments.txt / .json   public comments export when available and requested
+- frame_index.csv                 timestamp index for the extracted frames
+- script_run.log                  processing log
 
-Recommended review order:
-1. Read transcript\transcript.srt or transcript\transcript.json if present
-2. Watch proxy\review_proxy_1280.mp4 for pacing and sequence
-3. Use frame_index.csv to map timestamps to extracted frames
-4. Inspect frames for detailed visual review
-5. Use audio\audio.mp3 when spoken context needs confirmation
-6. Use raw video only if derived assets are insufficient
+A good review order:
+1. Start with transcript\transcript.txt when audio is present.
+2. Watch proxy\review_proxy_1280.mp4 for pacing, sequence, and spoken context.
+3. Use frame_index.csv to map timestamps to the extracted frames.
+4. Check translations\<lang>\ if you asked for translated text.
+5. Check comments\ if public source comments were included for context.
+6. Use raw video only if the derived review assets are not enough.
 
 Notes:
 - Selected frame interval: $FrameIntervalSeconds seconds
 - Frames folder: $framesFolderName
 - Raw video present: $RawPresent
 - Audio present in source: $AudioPresent
+- Detected source language: $(if ([string]::IsNullOrWhiteSpace($DetectedLanguage)) { "not available" } else { $DetectedLanguage })
+- Translation targets: $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { $TranslationTargets -join ", " } else { "none" })
+- Translation path used: $(if ([string]::IsNullOrWhiteSpace($TranslationProviderDetails)) { "none" } else { $TranslationProviderDetails })
+- Comments: $(if ([string]::IsNullOrWhiteSpace($CommentsSummary)) { "not included" } else { $CommentsSummary })
 "@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
 }
 
@@ -1207,7 +1315,9 @@ function New-ChatGptReadme {
         [string]$SourceVideoName,
         [string]$FramesFolderName,
         [bool]$ProxyIncluded,
-        [string]$FrameSelectionNote
+        [string]$FrameSelectionNote,
+        [string[]]$TranslationTargets,
+        [bool]$CommentsIncluded
     )
 
 @"
@@ -1219,25 +1329,21 @@ $SourceVideoName
 Package contents:
 - audio\audio.mp3
 - $FramesFolderName\frame_*.jpg
-- transcript\transcript.srt
-- transcript\transcript.json
+- transcript\transcript.srt / .json / .txt
+- $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { "translations\<lang>\transcript.*" } else { "no translated transcript files were requested" })
+- $(if ($CommentsIncluded) { "comments\comments.txt and comments\comments.json" } else { "no public comments export is included" })
 - frame_index.csv
 $(if ($ProxyIncluded) { "- proxy\review_proxy_1280.mp4" } else { "- proxy video omitted to stay under upload size limits" })
 
 Frame selection:
 $FrameSelectionNote
 
-How to use this in ChatGPT:
-1) Upload this zip file.
-2) Ask ChatGPT to summarize the transcript first.
-3) Ask ChatGPT to review visual events using frame_index.csv + the extracted frame images.
-4) If proxy video is included, ask ChatGPT to cross-check key moments against the proxy.
-5) Ask for:
-   - timeline of major events
-   - notable quotes
-   - action items
-   - risks/issues found in the video
-   - concise executive summary
+Suggested prompts:
+1) Ask for a summary of the original transcript first.
+2) Ask ChatGPT to review visual events using frame_index.csv and the extracted frames.
+3) If translations are included, ask it to compare the translated wording against the original transcript.
+4) If comments are included, ask whether the public reaction adds useful context.
+5) If proxy video is included, ask it to cross-check key moments against the proxy.
 "@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
 }
 
@@ -1290,11 +1396,13 @@ function New-ChatGptZipPackage {
     $framesFolder = Join-Path $ProcessedItem.OutputPath $ProcessedItem.FramesFolderName
     $audioFolder = Join-Path $ProcessedItem.OutputPath "audio"
     $transcriptFolder = Join-Path $ProcessedItem.OutputPath "transcript"
+    $translationsFolder = Join-Path $ProcessedItem.OutputPath "translations"
+    $commentsFolder = Join-Path $ProcessedItem.OutputPath "comments"
     $frameIndexCsv = Join-Path $ProcessedItem.OutputPath "frame_index.csv"
     $proxyVideo = Join-Path $ProcessedItem.OutputPath "proxy\review_proxy_1280.mp4"
     $zipPath = Join-Path $ProcessedItem.OutputPath "chatgpt_review_package.zip"
     $requiredPaths = @($framesFolder, $frameIndexCsv)
-    foreach ($optionalPath in @($audioFolder, $transcriptFolder)) {
+    foreach ($optionalPath in @($audioFolder, $transcriptFolder, $translationsFolder, $commentsFolder)) {
         if (Test-Path -LiteralPath $optionalPath) {
             $requiredPaths += $optionalPath
         }
@@ -1345,6 +1453,12 @@ function New-ChatGptZipPackage {
             if (Test-Path -LiteralPath $transcriptFolder) {
                 Copy-Item -LiteralPath $transcriptFolder -Destination (Join-Path $stagingRoot "transcript") -Recurse -Force
             }
+            if (Test-Path -LiteralPath $translationsFolder) {
+                Copy-Item -LiteralPath $translationsFolder -Destination (Join-Path $stagingRoot "translations") -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $commentsFolder) {
+                Copy-Item -LiteralPath $commentsFolder -Destination (Join-Path $stagingRoot "comments") -Recurse -Force
+            }
 
             $selectedFrames = @()
             for ($i = 0; $i -lt $allFrames.Count; $i += $samplingStep) {
@@ -1388,7 +1502,9 @@ function New-ChatGptZipPackage {
                 -SourceVideoName $ProcessedItem.SourceVideoName `
                 -FramesFolderName $ProcessedItem.FramesFolderName `
                 -ProxyIncluded:$includeProxy `
-                -FrameSelectionNote $frameSelectionNote
+                -FrameSelectionNote $frameSelectionNote `
+                -TranslationTargets $ProcessedItem.TranslationTargets `
+                -CommentsIncluded:(Test-Path -LiteralPath $commentsFolder)
 
             [System.IO.Compression.ZipFile]::CreateFromDirectory(
                 $stagingRoot,
@@ -1442,32 +1558,758 @@ function New-MasterReadme {
     $lines = @()
     $lines += "CODEX_MASTER_README"
     $lines += ""
-    $lines += "Purpose:"
-    $lines += "This root contains one Codex-ready review package per processed source video."
+    $lines += "This folder contains one Video Mangler package per processed source video."
     $lines += ""
-    $lines += "Root:"
+    $lines += "Output root:"
     $lines += $OutputRoot
     $lines += ""
     $lines += "Selected frame interval:"
     $lines += "$FrameIntervalSeconds seconds"
     $lines += ""
-    $lines += "Each video folder contains:"
-    $lines += "- raw\                       original source video (optional)"
+    $lines += "Typical package contents:"
     $lines += "- proxy\review_proxy_1280.mp4"
     $lines += "- $(Get-FramesFolderName -Value $FrameIntervalSeconds)\frame_000001.jpg ..."
-    $lines += "- audio\audio.mp3 (if source has audio)"
-    $lines += "- transcript\transcript.srt (if source has audio)"
-    $lines += "- transcript\transcript.json (if source has audio)"
+    $lines += "- audio\audio.mp3 when the source has audio"
+    $lines += "- transcript\transcript.srt / .json / .txt"
+    $lines += "- translations\<lang>\transcript.* when requested"
+    $lines += "- comments\comments.* when available and requested"
     $lines += "- frame_index.csv"
     $lines += "- README_FOR_CODEX.txt"
     $lines += "- script_run.log"
     $lines += ""
-    $lines += "Processed video folders:"
+    $lines += "Processed packages:"
     foreach ($item in $ProcessedItems) {
         $lines += "- $($item.OutputFolderName)  <=  $($item.SourceVideoName)"
     }
 
     $lines | Set-Content -LiteralPath $MasterReadmePath -Encoding UTF8
+}
+
+function Get-TranslationTargets {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+
+    return @(
+        $Value -split '[,\s]+' |
+            ForEach-Object { $_.Trim().ToLowerInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+}
+
+function Get-InteractiveTranslationProvider {
+    param([string]$DefaultValue = "Auto")
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Translation provider" -ForegroundColor Cyan
+        Write-Host "Video Mangler always transcribes the original spoken source first." -ForegroundColor Cyan
+        Write-Host "That source-derived transcript is the preferred base for translation." -ForegroundColor Cyan
+        Write-Host "  1. Auto   best available per target (default)" -ForegroundColor Cyan
+        Write-Host "  2. OpenAI highest quality, sends transcript text to OpenAI" -ForegroundColor Cyan
+        Write-Host "  3. Local  free fallback using local tools on this PC" -ForegroundColor Cyan
+
+        $choice = Read-Host "Press Enter for Auto, or type 1, 2, or 3"
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            return $DefaultValue
+        }
+
+        switch ($choice.Trim()) {
+            "1" { return "Auto" }
+            "2" { return "OpenAI" }
+            "3" { return "Local" }
+            default {
+                Write-Host "Please enter 1, 2, 3, or just press Enter for Auto." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+function Convert-ToSrtTimestamp {
+    param([double]$Seconds)
+
+    $totalMs = [int][math]::Round($Seconds * 1000)
+    $hours = [math]::Floor($totalMs / 3600000)
+    $totalMs = $totalMs % 3600000
+    $minutes = [math]::Floor($totalMs / 60000)
+    $totalMs = $totalMs % 60000
+    $secondsPart = [math]::Floor($totalMs / 1000)
+    $millis = $totalMs % 1000
+    return ("{0:00}:{1:00}:{2:00},{3:000}" -f $hours, $minutes, $secondsPart, $millis)
+}
+
+function Write-TranscriptArtifactsFromSegments {
+    param(
+        [string]$OutputFolder,
+        [array]$Segments,
+        [string]$Language,
+        [string]$JsonName,
+        [string]$SrtName,
+        [string]$TextName,
+        [string]$Task = "translate",
+        [string]$SourceLanguage = ""
+    )
+
+    Ensure-Directory $OutputFolder
+
+    $jsonPath = Join-Path $OutputFolder $JsonName
+    $srtPath = Join-Path $OutputFolder $SrtName
+    $textPath = Join-Path $OutputFolder $TextName
+
+    $jsonPayload = [PSCustomObject]@{
+        language        = $Language
+        source_language = $SourceLanguage
+        task            = $Task
+        text            = (($Segments | ForEach-Object { $_.text }) -join " ").Trim()
+        segments        = @(
+            $Segments | ForEach-Object {
+                [PSCustomObject]@{
+                    id    = $_.id
+                    start = $_.start
+                    end   = $_.end
+                    text  = $_.text
+                }
+            }
+        )
+    }
+
+    $jsonPayload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+
+    $srtBuilder = New-Object System.Text.StringBuilder
+    $textBuilder = New-Object System.Text.StringBuilder
+    $index = 1
+    foreach ($segment in $Segments) {
+        $text = [string]$segment.text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        [void]$srtBuilder.AppendLine($index)
+        [void]$srtBuilder.AppendLine(("{0} --> {1}" -f (Convert-ToSrtTimestamp -Seconds $segment.start), (Convert-ToSrtTimestamp -Seconds $segment.end)))
+        [void]$srtBuilder.AppendLine($text.Trim())
+        [void]$srtBuilder.AppendLine("")
+        [void]$textBuilder.AppendLine($text.Trim())
+        $index += 1
+    }
+
+    $srtBuilder.ToString() | Set-Content -LiteralPath $srtPath -Encoding UTF8
+    $textBuilder.ToString() | Set-Content -LiteralPath $textPath -Encoding UTF8
+
+    return [PSCustomObject]@{
+        JsonPath = $jsonPath
+        SrtPath  = $srtPath
+        TextPath = $textPath
+    }
+}
+
+function Get-OpenAiApiKey {
+    param([switch]$Required)
+
+    $apiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY")
+    if ($Required -and [string]::IsNullOrWhiteSpace($apiKey)) {
+        throw "OpenAI translation needs OPENAI_API_KEY. Set the key first, or use -TranslationProvider Auto or Local for a free fallback."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        return $null
+    }
+
+    return $apiKey
+}
+
+function Test-OpenAiTranslationAvailable {
+    return -not [string]::IsNullOrWhiteSpace((Get-OpenAiApiKey))
+}
+
+function Test-WhisperModelSupportsTranslation {
+    param([string]$ModelName)
+
+    if ([string]::IsNullOrWhiteSpace($ModelName)) {
+        return $true
+    }
+
+    return -not $ModelName.Trim().ToLowerInvariant().EndsWith(".en")
+}
+
+function Get-ArgosInstallCommandHints {
+    param(
+        [string]$SourceLanguageCode,
+        [string]$TargetLanguageCode
+    )
+
+    $pairs = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($SourceLanguageCode) -and -not [string]::IsNullOrWhiteSpace($TargetLanguageCode) -and ($SourceLanguageCode -ne $TargetLanguageCode)) {
+        [void]$pairs.Add(("translate-{0}_{1}" -f $SourceLanguageCode, $TargetLanguageCode))
+        if ($SourceLanguageCode -ne "en" -and $TargetLanguageCode -ne "en") {
+            [void]$pairs.Add(("translate-{0}_{1}" -f $SourceLanguageCode, "en"))
+            [void]$pairs.Add(("translate-{0}_{1}" -f "en", $TargetLanguageCode))
+        }
+    }
+
+    $commands = New-Object System.Collections.Generic.List[string]
+    [void]$commands.Add("py -m pip install argostranslate")
+    [void]$commands.Add("argospm update")
+    foreach ($pair in ($pairs | Select-Object -Unique)) {
+        [void]$commands.Add(("argospm install {0}" -f $pair))
+    }
+
+    return @($commands | Select-Object -Unique)
+}
+
+function Invoke-ArgosProbe {
+    param(
+        [string]$PythonCommand,
+        [string]$SourceLanguageCode,
+        [string]$TargetLanguageCode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $tempPy = Join-Path $env:TEMP ("argos_probe_" + [guid]::NewGuid().ToString() + ".py")
+    $pyCode = @'
+import json
+import sys
+
+from_code = sys.argv[1]
+to_code = sys.argv[2]
+result = {
+    "module_installed": False,
+    "can_translate": False,
+    "installed_languages": [],
+    "error": ""
+}
+
+try:
+    import argostranslate.translate
+    result["module_installed"] = True
+    languages = argostranslate.translate.get_installed_languages()
+    codes = set()
+    for language in languages:
+        code = getattr(language, "code", "")
+        if code:
+            codes.add(code)
+    result["installed_languages"] = sorted(codes)
+
+    try:
+        translation = argostranslate.translate.get_translation_from_codes(from_code, to_code)
+        result["can_translate"] = translation is not None
+    except Exception as ex:
+        result["error"] = str(ex)
+except Exception as ex:
+    result["error"] = str(ex)
+
+print(json.dumps(result), flush=True)
+'@
+
+    Set-Content -LiteralPath $tempPy -Value $pyCode -Encoding UTF8
+
+    try {
+        $result = Invoke-ExternalStreaming `
+            -FilePath $PythonCommand `
+            -Arguments @($tempPy, $SourceLanguageCode, $TargetLanguageCode) `
+            -StepName ("Argos probe ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+            -IgnoreExitCode `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds 300
+
+        $parsedJsonLine = ($result.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") } | Select-Object -Last 1)
+        if (-not $parsedJsonLine) {
+            return [PSCustomObject]@{
+                ModuleInstalled    = $false
+                CanTranslate       = $false
+                InstalledLanguages = @()
+                Error              = "Argos probe did not return a parsable result."
+            }
+        }
+
+        $parsed = $parsedJsonLine | ConvertFrom-Json
+        return [PSCustomObject]@{
+            ModuleInstalled    = [bool]$parsed.module_installed
+            CanTranslate       = [bool]$parsed.can_translate
+            InstalledLanguages = @($parsed.installed_languages)
+            Error              = [string]$parsed.error
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPy) {
+            Remove-Item -LiteralPath $tempPy -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Install-ArgosTranslationSupport {
+    param(
+        [string]$PythonCommand,
+        [string]$SourceLanguageCode,
+        [string]$TargetLanguageCode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $probe = Invoke-ArgosProbe `
+        -PythonCommand $PythonCommand `
+        -SourceLanguageCode $SourceLanguageCode `
+        -TargetLanguageCode $TargetLanguageCode `
+        -HeartbeatSeconds $HeartbeatSeconds
+
+    if (-not $probe.ModuleInstalled) {
+        $pipResult = Invoke-ExternalStreaming `
+            -FilePath $PythonCommand `
+            -Arguments @("-m", "pip", "install", "argostranslate") `
+            -StepName "Install Argos Translate" `
+            -IgnoreExitCode `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds 1800
+
+        if ($pipResult.ExitCode -ne 0) {
+            throw "Could not install Argos Translate with pip. See script_run.log for the exact pip error."
+        }
+    }
+
+    $tempPy = Join-Path $env:TEMP ("argos_install_" + [guid]::NewGuid().ToString() + ".py")
+    $pyCode = @'
+import json
+import sys
+import traceback
+
+from_code = sys.argv[1]
+to_code = sys.argv[2]
+
+result = {
+    "success": False,
+    "attempted_pairs": [],
+    "installed_pairs": [],
+    "error": ""
+}
+
+def log(msg):
+    print(msg, flush=True)
+
+try:
+    import argostranslate.package
+    import argostranslate.translate
+except Exception:
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(10)
+
+def add_pair(pairs, seen, source_code, target_code):
+    if not source_code or not target_code or source_code == target_code:
+        return
+    key = (source_code, target_code)
+    if key in seen:
+        return
+    seen.add(key)
+    pairs.append(key)
+
+def install_pair(available_packages, source_code, target_code):
+    package_to_install = next(
+        (
+            package
+            for package in available_packages
+            if getattr(package, "from_code", "") == source_code and getattr(package, "to_code", "") == target_code
+        ),
+        None,
+    )
+    if package_to_install is None:
+        raise RuntimeError(f"No Argos package index entry found for {source_code}->{target_code}")
+
+    download_path = package_to_install.download()
+    argostranslate.package.install_from_path(download_path)
+
+try:
+    pairs = []
+    seen = set()
+    add_pair(pairs, seen, from_code, to_code)
+    if from_code != "en" and to_code != "en":
+        add_pair(pairs, seen, from_code, "en")
+        add_pair(pairs, seen, "en", to_code)
+
+    log("[PY] Updating Argos package index...")
+    argostranslate.package.update_package_index()
+    available_packages = argostranslate.package.get_available_packages()
+
+    for source_code, target_code in pairs:
+        result["attempted_pairs"].append({"from": source_code, "to": target_code})
+        try:
+            log(f"[PY] Installing Argos package {source_code}->{target_code}...")
+            install_pair(available_packages, source_code, target_code)
+            result["installed_pairs"].append({"from": source_code, "to": target_code})
+        except Exception as ex:
+            log(f"[PY] Install note for {source_code}->{target_code}: {ex}")
+
+    try:
+        translation = argostranslate.translate.get_translation_from_codes(from_code, to_code)
+        result["success"] = translation is not None
+        if not result["success"]:
+            result["error"] = f"Argos still cannot translate {from_code}->{to_code} after installation."
+    except Exception as ex:
+        result["error"] = str(ex)
+
+    print(json.dumps(result), flush=True)
+except Exception:
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(20)
+'@
+
+    Set-Content -LiteralPath $tempPy -Value $pyCode -Encoding UTF8
+
+    try {
+        $result = Invoke-ExternalStreaming `
+            -FilePath $PythonCommand `
+            -Arguments @($tempPy, $SourceLanguageCode, $TargetLanguageCode) `
+            -StepName ("Install Argos language support ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+            -IgnoreExitCode `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds 3600
+
+        if ($result.ExitCode -ne 0) {
+            throw "Argos package installation failed. See script_run.log for the exact Python error."
+        }
+
+        $parsedJsonLine = ($result.StdOut -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") } | Select-Object -Last 1)
+        if (-not $parsedJsonLine) {
+            throw "Argos package installation did not return a parsable result. See script_run.log."
+        }
+
+        $parsed = $parsedJsonLine | ConvertFrom-Json
+        if (-not [bool]$parsed.success) {
+            $errorMessage = [string]$parsed.error
+            if ([string]::IsNullOrWhiteSpace($errorMessage)) {
+                $errorMessage = "Argos did not report a usable translation route after installation."
+            }
+
+            throw $errorMessage
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPy) {
+            Remove-Item -LiteralPath $tempPy -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Ensure-ArgosTranslationSupport {
+    param(
+        [string]$PythonCommand,
+        [string]$SourceLanguageCode,
+        [string]$TargetLanguageCode,
+        [bool]$InteractiveMode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $sourceCode = [string]$SourceLanguageCode
+    $targetCode = [string]$TargetLanguageCode
+
+    if ([string]::IsNullOrWhiteSpace($sourceCode) -or $sourceCode -eq "unknown") {
+        throw "Local translation needs a known source language code. Try -TranslationProvider OpenAI, or rerun with -Language if you know the source language."
+    }
+
+    $probe = Invoke-ArgosProbe `
+        -PythonCommand $PythonCommand `
+        -SourceLanguageCode $sourceCode `
+        -TargetLanguageCode $targetCode `
+        -HeartbeatSeconds $HeartbeatSeconds
+
+    if ($probe.CanTranslate) {
+        return "ready"
+    }
+
+    $sourceDisplayName = Get-LanguageDisplayName -Code $sourceCode
+    $targetDisplayName = Get-LanguageDisplayName -Code $targetCode
+    $commandHints = @(Get-ArgosInstallCommandHints -SourceLanguageCode $sourceCode -TargetLanguageCode $targetCode)
+
+    $messageLines = @()
+    if (-not $probe.ModuleInstalled) {
+        $messageLines += "Local translation is missing Argos Translate."
+    }
+    else {
+        $messageLines += ("Local translation does not have the needed Argos language package for {0} -> {1} yet." -f $sourceDisplayName, $targetDisplayName)
+    }
+    $messageLines += ("This unlocks a free local translation path for {0} -> {1} without needing an OpenAI account." -f $sourceDisplayName, $targetDisplayName)
+    $messageLines += "OpenAI is usually smoother, but Local keeps the translated transcript on this PC."
+    $messageLines += "Suggested install commands:"
+    foreach ($command in $commandHints) {
+        $messageLines += ("  {0}" -f $command)
+    }
+
+    if (-not $InteractiveMode) {
+        throw ($messageLines -join "`n")
+    }
+
+    Write-Host ""
+    foreach ($line in $messageLines) {
+        Write-Host $line -ForegroundColor Yellow
+    }
+    Write-Host ""
+
+    while ($true) {
+        $choice = Read-Host "Type I to install now, S to skip this translation, or C to cancel"
+        switch ($choice.Trim().ToLowerInvariant()) {
+            "i" {
+                Install-ArgosTranslationSupport `
+                    -PythonCommand $PythonCommand `
+                    -SourceLanguageCode $sourceCode `
+                    -TargetLanguageCode $targetCode `
+                    -HeartbeatSeconds $HeartbeatSeconds
+                return "installed"
+            }
+            "s" {
+                return "skip"
+            }
+            "c" {
+                throw "User canceled while preparing local translation support."
+            }
+            default {
+                Write-Host "Please type I, S, or C." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+function Invoke-OpenAiSegmentTranslation {
+    param(
+        [array]$Segments,
+        [string]$SourceLanguage,
+        [string]$TargetLanguage,
+        [string]$Model,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $apiKey = Get-OpenAiApiKey -Required
+    $headers = @{
+        Authorization = "Bearer $apiKey"
+        "Content-Type" = "application/json"
+    }
+
+    $translatedSegments = @()
+    $lastProgress = Get-Date
+    $segmentIndex = 0
+    foreach ($segment in $Segments) {
+        $segmentIndex += 1
+        $text = [string]$segment.text
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            $translatedSegments += [PSCustomObject]@{
+                id    = $segment.id
+                start = $segment.start
+                end   = $segment.end
+                text  = ""
+            }
+            continue
+        }
+
+        if (((Get-Date) - $lastProgress).TotalSeconds -ge $HeartbeatSeconds) {
+            Write-Log ("OpenAI translation still working... {0}/{1} segments translated" -f $segmentIndex, $Segments.Count)
+            $lastProgress = Get-Date
+        }
+
+        $userPrompt = if ([string]::IsNullOrWhiteSpace($SourceLanguage)) {
+            "Translate this spoken transcript segment into $TargetLanguage. Return only the translated text.`n`n$text"
+        }
+        else {
+            "Translate this spoken transcript segment from $SourceLanguage into $TargetLanguage. Return only the translated text.`n`n$text"
+        }
+
+        $body = @{
+            model = $Model
+            messages = @(
+                @{
+                    role = "system"
+                    content = "You translate transcript segments. Return only the translated text with no commentary, labels, or quotes."
+                },
+                @{
+                    role = "user"
+                    content = $userPrompt
+                }
+            )
+        } | ConvertTo-Json -Depth 6
+
+        try {
+            $response = Invoke-RestMethod -Method Post -Uri "https://api.openai.com/v1/chat/completions" -Headers $headers -Body $body
+        }
+        catch {
+            throw "OpenAI translation failed for language '$TargetLanguage'. $($_.Exception.Message)"
+        }
+
+        $translatedText = [string]$response.choices[0].message.content
+        $translatedSegments += [PSCustomObject]@{
+            id    = $segment.id
+            start = $segment.start
+            end   = $segment.end
+            text  = $translatedText.Trim()
+        }
+    }
+
+    return $translatedSegments
+}
+
+function Invoke-ArgosSegmentTranslation {
+    param(
+        [string]$PythonCommand,
+        [array]$Segments,
+        [string]$SourceLanguageCode,
+        [string]$TargetLanguageCode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $tempPy = Join-Path $env:TEMP ("argos_translate_" + [guid]::NewGuid().ToString() + ".py")
+    $tempInputJson = Join-Path $env:TEMP ("argos_translate_input_" + [guid]::NewGuid().ToString() + ".json")
+    $tempOutputJson = Join-Path $env:TEMP ("argos_translate_output_" + [guid]::NewGuid().ToString() + ".json")
+
+    $segmentsPayload = [PSCustomObject]@{
+        segments = @(
+            $Segments | ForEach-Object {
+                [PSCustomObject]@{
+                    id    = $_.id
+                    start = $_.start
+                    end   = $_.end
+                    text  = $_.text
+                }
+            }
+        )
+    }
+    $segmentsPayload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tempInputJson -Encoding UTF8
+
+    $pyCode = @'
+import json
+import sys
+import traceback
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+from_code = sys.argv[3]
+to_code = sys.argv[4]
+
+def log(msg):
+    print(msg, flush=True)
+
+try:
+    import argostranslate.translate
+except Exception:
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(10)
+
+try:
+    with open(input_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    translation = argostranslate.translate.get_translation_from_codes(from_code, to_code)
+    segments = payload.get("segments") or []
+    translated_segments = []
+
+    for index, segment in enumerate(segments, start=1):
+        text = (segment.get("text") or "").strip()
+        translated_text = translation.translate(text) if text else ""
+        translated_segments.append({
+            "id": segment.get("id"),
+            "start": segment.get("start"),
+            "end": segment.get("end"),
+            "text": translated_text.strip()
+        })
+
+        if index == 1 or index % 25 == 0 or index == len(segments):
+            log(f"[PY] Argos translation still working... {index}/{len(segments)} segments translated")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump({"segments": translated_segments}, f, ensure_ascii=False, indent=2)
+
+    print(json.dumps({
+        "output_path": output_path,
+        "segments_count": len(translated_segments)
+    }), flush=True)
+except Exception:
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(20)
+'@
+
+    Set-Content -LiteralPath $tempPy -Value $pyCode -Encoding UTF8
+
+    try {
+        $result = Invoke-ExternalStreaming `
+            -FilePath $PythonCommand `
+            -Arguments @($tempPy, $tempInputJson, $tempOutputJson, $SourceLanguageCode, $TargetLanguageCode) `
+            -StepName ("Argos translation ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+            -IgnoreExitCode `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds 3600
+
+        if ($result.ExitCode -ne 0) {
+            throw "Argos translation failed. See script_run.log for the exact Python error."
+        }
+
+        if (-not (Test-Path -LiteralPath $tempOutputJson)) {
+            throw "Argos translation did not produce an output file."
+        }
+
+        $payload = Get-Content -LiteralPath $tempOutputJson -Raw | ConvertFrom-Json
+        return @(
+            $payload.segments | ForEach-Object {
+                [PSCustomObject]@{
+                    id    = $_.id
+                    start = [double]$_.start
+                    end   = [double]$_.end
+                    text  = [string]$_.text
+                }
+            }
+        )
+    }
+    finally {
+        foreach ($tempPath in @($tempPy, $tempInputJson, $tempOutputJson)) {
+            if (Test-Path -LiteralPath $tempPath) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Get-LanguageDisplayName {
+    param([string]$Code)
+
+    if ([string]::IsNullOrWhiteSpace($Code)) {
+        return ""
+    }
+
+    switch ($Code.Trim().ToLowerInvariant()) {
+        "en" { return "English" }
+        "es" { return "Spanish" }
+        "fr" { return "French" }
+        "de" { return "German" }
+        "it" { return "Italian" }
+        "pt" { return "Portuguese" }
+        "ja" { return "Japanese" }
+        "ko" { return "Korean" }
+        "zh" { return "Chinese" }
+        "ar" { return "Arabic" }
+        "ru" { return "Russian" }
+        default { return $Code.Trim() }
+    }
+}
+
+function Get-TranscriptSegments {
+    param([string]$TranscriptJsonPath)
+
+    if (-not (Test-Path -LiteralPath $TranscriptJsonPath)) {
+        throw "Transcript JSON not found: $TranscriptJsonPath"
+    }
+
+    $payload = Get-Content -LiteralPath $TranscriptJsonPath -Raw | ConvertFrom-Json
+    $segments = @()
+    $index = 0
+    foreach ($segment in @($payload.segments)) {
+        $segments += [PSCustomObject]@{
+            id    = if ($null -ne $segment.id) { [int]$segment.id } else { $index }
+            start = [double]$segment.start
+            end   = [double]$segment.end
+            text  = [string]$segment.text
+        }
+        $index += 1
+    }
+
+    return [PSCustomObject]@{
+        Language       = [string]$payload.language
+        SourceLanguage = [string]$payload.source_language
+        Segments       = $segments
+    }
 }
 
 function Add-SummaryRow {
@@ -1481,8 +2323,15 @@ function Add-SummaryRow {
         [string]$AudioFile,
         [string]$TranscriptSrt,
         [string]$TranscriptJson,
+        [string]$TranscriptText,
         [string]$RawCopied,
         [string]$AudioPresent,
+        [string]$DetectedLanguage,
+        [string]$TranslationTargets,
+        [string]$TranslationProvider,
+        [string]$CommentsText,
+        [string]$CommentsJson,
+        [string]$CommentsSummary,
         [string]$ProxyMode,
         [string]$FrameMode,
         [string]$WhisperMode,
@@ -1500,8 +2349,15 @@ function Add-SummaryRow {
         audio_file             = $AudioFile
         transcript_srt         = $TranscriptSrt
         transcript_json        = $TranscriptJson
+        transcript_txt         = $TranscriptText
         raw_copied             = $RawCopied
         audio_present          = $AudioPresent
+        detected_language      = $DetectedLanguage
+        translation_targets    = $TranslationTargets
+        translation_provider   = $TranslationProvider
+        comments_text          = $CommentsText
+        comments_json          = $CommentsJson
+        comments_summary       = $CommentsSummary
         proxy_mode             = $ProxyMode
         frame_mode             = $FrameMode
         whisper_mode           = $WhisperMode
@@ -1524,6 +2380,11 @@ function Invoke-PythonWhisperTranscript {
         [string]$LanguageCode,
         [string]$FFmpegExe,
         [bool]$PreferGpu,
+        [ValidateSet("transcribe","translate")]
+        [string]$Task = "transcribe",
+        [string]$JsonName = "transcript.json",
+        [string]$SrtName = "transcript.srt",
+        [string]$TextName = "transcript.txt",
         [int]$HeartbeatSeconds = 10
     )
 
@@ -1548,6 +2409,10 @@ model_name = sys.argv[3]
 language_code = sys.argv[4]
 ffmpeg_dir = sys.argv[5]
 prefer_gpu = sys.argv[6].lower() == "true"
+task_name = sys.argv[7]
+json_name = sys.argv[8]
+srt_name = sys.argv[9]
+text_name = sys.argv[10]
 
 os.makedirs(output_dir, exist_ok=True)
 
@@ -1597,10 +2462,11 @@ def run_transcription(device_name):
     fp16 = device_name == "cuda"
     log(f"[PY] Loading model '{model_name}' on device '{device_name}'...")
     model = whisper.load_model(model_name, device=device_name)
-    log(f"[PY] Starting transcription on {device_name}...")
+    log(f"[PY] Starting {task_name} on {device_name}...")
     result = model.transcribe(
         audio_path,
         language=language_code if language_code else None,
+        task=task_name,
         verbose=True,
         fp16=fp16
     )
@@ -1631,11 +2497,19 @@ try:
 
     log("[PY] Writing transcript files...")
 
-    srt_path = os.path.join(output_dir, "transcript.srt")
-    json_path = os.path.join(output_dir, "transcript.json")
+    srt_path = os.path.join(output_dir, srt_name)
+    json_path = os.path.join(output_dir, json_name)
+    text_path = os.path.join(output_dir, text_name)
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
+
+    with open(text_path, "w", encoding="utf-8") as f:
+        segments = result.get("segments") or []
+        for seg in segments:
+            text = (seg.get("text") or "").strip()
+            if text:
+                f.write(text + "\n")
 
     with open(srt_path, "w", encoding="utf-8") as f:
         segments = result.get("segments") or []
@@ -1652,6 +2526,8 @@ try:
         "fp16": fp16,
         "json_path": json_path,
         "srt_path": srt_path,
+        "text_path": text_path,
+        "language": result.get("language", ""),
         "gpu_error": gpu_error
     }), flush=True)
 
@@ -1675,7 +2551,11 @@ finally:
                 $ModelName,
                 $LanguageCode,
                 $ffmpegDir,
-                $PreferGpu.ToString()
+                $PreferGpu.ToString(),
+                $Task,
+                $JsonName,
+                $SrtName,
+                $TextName
             ) `
             -StepName "Python Whisper transcription" `
             -IgnoreExitCode `
@@ -1699,6 +2579,8 @@ finally:
             Fp16     = [bool]$parsed.fp16
             JsonPath = [string]$parsed.json_path
             SrtPath  = [string]$parsed.srt_path
+            TextPath = [string]$parsed.text_path
+            Language = [string]$parsed.language
             GpuError = [string]$parsed.gpu_error
         }
     }
@@ -2125,10 +3007,15 @@ function Process-Video {
         [string]$PythonCommand,
         [string]$ModelName,
         [string]$LanguageCode,
+        [string[]]$TranslationTargets,
+        [string]$SourceInfoJsonPath,
         [bool]$DoCopyRaw,
         [string]$SummaryCsv,
         [bool]$CanUseFfmpegGpu,
         [bool]$CanUseWhisperGpu,
+        [bool]$InteractiveMode,
+        [string]$TranslationProvider,
+        [string]$OpenAiModel,
         [double]$FrameIntervalSeconds,
         [int]$HeartbeatSeconds = 10
     )
@@ -2148,22 +3035,22 @@ function Process-Video {
     $framesFolder = Join-Path $videoOutputRoot $framesFolderName
     $audioFolder = Join-Path $videoOutputRoot "audio"
     $transcriptFolder = Join-Path $videoOutputRoot "transcript"
+    $translationsFolder = Join-Path $videoOutputRoot "translations"
+    $commentsFolder = Join-Path $videoOutputRoot "comments"
 
     $proxyVideo = Join-Path $proxyFolder "review_proxy_1280.mp4"
     $audioFile = Join-Path $audioFolder "audio.mp3"
     $transcriptSrt = Join-Path $transcriptFolder "transcript.srt"
     $transcriptJson = Join-Path $transcriptFolder "transcript.json"
+    $transcriptText = Join-Path $transcriptFolder "transcript.txt"
     $frameIndexCsv = Join-Path $videoOutputRoot "frame_index.csv"
     $readmeFile = Join-Path $videoOutputRoot "README_FOR_CODEX.txt"
     $rawVideoPath = Join-Path $rawFolder $videoItem.Name
     $logFile = Join-Path $videoOutputRoot "script_run.log"
 
     Ensure-Directory $videoOutputRoot
-    Ensure-Directory $rawFolder
     Ensure-Directory $proxyFolder
     Ensure-Directory $framesFolder
-    Ensure-Directory $audioFolder
-    Ensure-Directory $transcriptFolder
 
     $script:CurrentLogFile = $logFile
     "==== Script run started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -LiteralPath $logFile -Encoding UTF8
@@ -2194,6 +3081,7 @@ function Process-Video {
 
     if ($DoCopyRaw) {
         Invoke-PhaseAction -Name "Raw" -Detail $videoItem.Name -Action {
+            Ensure-Directory $rawFolder
             if (-not (Test-Path -LiteralPath $rawVideoPath)) {
                 Write-Log "Copying raw video..."
                 Copy-Item -LiteralPath $videoItem.FullName -Destination $rawVideoPath -Force
@@ -2228,56 +3116,67 @@ function Process-Video {
 
     if ($hasAudio) {
         Invoke-PhaseAction -Name "Audio" -Detail $videoItem.Name -Action {
+            Ensure-Directory $audioFolder
             $null = Export-AudioMp3 -FFmpegExe $FFmpegExe -InputVideo $videoItem.FullName -AudioFile $audioFile -HeartbeatSeconds $HeartbeatSeconds
         } | Out-Null
 
-        $whisperMode = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
-            if ((Test-Path -LiteralPath $transcriptSrt) -and (Test-Path -LiteralPath $transcriptJson)) {
+        $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
+            Ensure-Directory $transcriptFolder
+            if ((Test-Path -LiteralPath $transcriptSrt) -and (Test-Path -LiteralPath $transcriptJson) -and (Test-Path -LiteralPath $transcriptText)) {
                 Write-Log "Transcript files already exist. Skipping Whisper transcription."
-                return "SKIPPED_EXISTING"
+                return [PSCustomObject]@{
+                    Device   = "existing"
+                    JsonPath = $transcriptJson
+                    SrtPath  = $transcriptSrt
+                    TextPath = $transcriptText
+                    Language = ""
+                    GpuError = ""
+                }
             }
-            else {
-                $phaseWhisperMode = "CPU"
-                if ($CanUseWhisperGpu) {
-                    Write-Log "Generating transcript with Whisper on GPU if available..."
-                    $phaseWhisperMode = "GPU_CUDA"
-                }
-                else {
-                    Write-Log "Generating transcript with Whisper on CPU..."
-                }
 
-                $transcriptResult = Invoke-PythonWhisperTranscript `
-                    -PythonCommand $PythonCommand `
-                    -AudioPath $audioFile `
-                    -TranscriptFolder $transcriptFolder `
-                    -ModelName $ModelName `
-                    -LanguageCode $LanguageCode `
-                    -FFmpegExe $FFmpegExe `
-                    -PreferGpu $CanUseWhisperGpu `
-                    -HeartbeatSeconds $HeartbeatSeconds
+            Write-Log ("Generating transcript with Whisper on {0}..." -f $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
 
-                if (-not (Test-Path -LiteralPath $transcriptSrt)) {
-                    throw "Expected SRT not found: $transcriptSrt"
-                }
+            $phaseTranscriptResult = Invoke-PythonWhisperTranscript `
+                -PythonCommand $PythonCommand `
+                -AudioPath $audioFile `
+                -TranscriptFolder $transcriptFolder `
+                -ModelName $ModelName `
+                -LanguageCode $LanguageCode `
+                -FFmpegExe $FFmpegExe `
+                -PreferGpu $CanUseWhisperGpu `
+                -Task "transcribe" `
+                -JsonName "transcript.json" `
+                -SrtName "transcript.srt" `
+                -TextName "transcript.txt" `
+                -HeartbeatSeconds $HeartbeatSeconds
 
-                if (-not (Test-Path -LiteralPath $transcriptJson)) {
-                    throw "Expected JSON not found: $transcriptJson"
-                }
-
-                if ($transcriptResult.Device -eq "cuda") {
-                    $phaseWhisperMode = "GPU_CUDA"
-                }
-                else {
-                    $phaseWhisperMode = "CPU"
-                }
-
-                if ($transcriptResult.GpuError) {
-                    Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
-                }
-
-                Write-Log "Whisper transcript completed using device: $($transcriptResult.Device)"
-                return $phaseWhisperMode
+            if (-not (Test-Path -LiteralPath $transcriptSrt)) {
+                throw "Expected SRT not found: $transcriptSrt"
             }
+
+            if (-not (Test-Path -LiteralPath $transcriptJson)) {
+                throw "Expected JSON not found: $transcriptJson"
+            }
+
+            if (-not (Test-Path -LiteralPath $transcriptText)) {
+                throw "Expected transcript text file not found: $transcriptText"
+            }
+
+            return $phaseTranscriptResult
+        }
+
+        if ($transcriptResult.Device -eq "cuda") {
+            $whisperMode = "GPU_CUDA"
+        }
+        elseif ($transcriptResult.Device -eq "existing") {
+            $whisperMode = "SKIPPED_EXISTING"
+        }
+        else {
+            $whisperMode = "CPU"
+        }
+
+        if ($transcriptResult.GpuError) {
+            Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
         }
     }
     else {
@@ -2286,8 +3185,222 @@ function Process-Video {
         $audioFile = ""
         $transcriptSrt = ""
         $transcriptJson = ""
+        $transcriptText = ""
         Write-PhaseResult -Name "Audio" -Status "PASS" -Detail "Skipped because source has no audio"
         Write-PhaseResult -Name "Transcript" -Status "PASS" -Detail "Skipped because source has no audio"
+    }
+
+    $detectedLanguage = ""
+    $completedTargets = New-Object System.Collections.Generic.List[string]
+    $translationProviderDetails = New-Object System.Collections.Generic.List[string]
+    $commentsTextPath = ""
+    $commentsJsonPath = ""
+    $commentsSummary = ""
+
+    if ($hasAudio -and (Test-Path -LiteralPath $transcriptJson)) {
+        $transcriptData = Get-TranscriptSegments -TranscriptJsonPath $transcriptJson
+        if (-not $transcriptData.Segments -or $transcriptData.Segments.Count -eq 0) {
+            throw "Transcript generation completed but no segments were found."
+        }
+
+        $detectedLanguage = if ($transcriptResult -and -not [string]::IsNullOrWhiteSpace($transcriptResult.Language)) {
+            $transcriptResult.Language
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($transcriptData.Language)) {
+            $transcriptData.Language
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($LanguageCode)) {
+            $LanguageCode
+        }
+        else {
+            "unknown"
+        }
+
+        Write-Log "Detected source language: $detectedLanguage"
+
+        $normalizedTargets = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($TranslationProvider -eq "OpenAI" -and $normalizedTargets.Count -gt 0 -and -not (Test-OpenAiTranslationAvailable)) {
+            throw "OpenAI translation was selected, but OPENAI_API_KEY is not set. Set the key first, or use -TranslationProvider Auto or Local."
+        }
+
+        foreach ($targetLanguage in $normalizedTargets) {
+            $providerUsed = $null
+            if ($targetLanguage -eq $detectedLanguage) {
+                $providerUsed = "Original transcript copy"
+            }
+            elseif ($TranslationProvider -eq "OpenAI") {
+                $providerUsed = "OpenAI"
+            }
+            elseif ($TranslationProvider -eq "Local") {
+                if ($targetLanguage -eq "en") {
+                    if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
+                        throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -TranslationProvider OpenAI."
+                    }
+                    $providerUsed = "Local (Whisper audio translation)"
+                }
+                else {
+                    $argosStatus = Ensure-ArgosTranslationSupport `
+                        -PythonCommand $PythonCommand `
+                        -SourceLanguageCode $detectedLanguage `
+                        -TargetLanguageCode $targetLanguage `
+                        -InteractiveMode:$InteractiveMode `
+                        -HeartbeatSeconds $HeartbeatSeconds
+                    if ($argosStatus -eq "skip") {
+                        Write-Log ("Skipping translation target '{0}' because local Argos support was not installed." -f $targetLanguage) "WARN"
+                        continue
+                    }
+                    $providerUsed = "Local (Argos Translate)"
+                }
+            }
+            else {
+                if (Test-OpenAiTranslationAvailable) {
+                    $providerUsed = "OpenAI"
+                }
+                elseif ($targetLanguage -eq "en") {
+                    if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
+                        throw "Auto translation fell back to Local, but the selected Whisper model is English-only. Pick a multilingual model like 'base' or 'small', or set OPENAI_API_KEY."
+                    }
+                    $providerUsed = "Local (Whisper audio translation)"
+                }
+                else {
+                    $argosStatus = Ensure-ArgosTranslationSupport `
+                        -PythonCommand $PythonCommand `
+                        -SourceLanguageCode $detectedLanguage `
+                        -TargetLanguageCode $targetLanguage `
+                        -InteractiveMode:$InteractiveMode `
+                        -HeartbeatSeconds $HeartbeatSeconds
+                    if ($argosStatus -eq "skip") {
+                        Write-Log ("Skipping translation target '{0}' because local Argos support was not installed." -f $targetLanguage) "WARN"
+                        continue
+                    }
+                    $providerUsed = "Local (Argos Translate)"
+                }
+            }
+
+            Write-Log ("Translation provider for {0}: {1}" -f $targetLanguage, $providerUsed)
+
+            $translationFolder = Join-Path $translationsFolder $targetLanguage
+            Ensure-Directory $translationsFolder
+            Ensure-Directory $translationFolder
+
+            Invoke-PhaseAction -Name "Translation" -Detail ("{0} -> {1}" -f $videoItem.Name, $targetLanguage) -Action {
+                if ($providerUsed -eq "Original transcript copy") {
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $transcriptData.Segments `
+                        -Language $detectedLanguage `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "copy" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+                    return
+                }
+
+                if ($providerUsed -eq "Local (Whisper audio translation)") {
+                    $tempJsonName = "transcript_whisper_translate.json"
+                    $tempSrtName = "transcript_whisper_translate.srt"
+                    $tempTextName = "transcript_whisper_translate.txt"
+                    $translateResult = Invoke-PythonWhisperTranscript `
+                        -PythonCommand $PythonCommand `
+                        -AudioPath $audioFile `
+                        -TranscriptFolder $translationFolder `
+                        -ModelName $ModelName `
+                        -LanguageCode $LanguageCode `
+                        -FFmpegExe $FFmpegExe `
+                        -PreferGpu $CanUseWhisperGpu `
+                        -Task "translate" `
+                        -JsonName $tempJsonName `
+                        -SrtName $tempSrtName `
+                        -TextName $tempTextName `
+                        -HeartbeatSeconds $HeartbeatSeconds
+
+                    $translatedData = Get-TranscriptSegments -TranscriptJsonPath $translateResult.JsonPath
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $translatedData.Segments `
+                        -Language "en" `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "translate" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+
+                    foreach ($tempPath in @(
+                        (Join-Path $translationFolder $tempJsonName),
+                        (Join-Path $translationFolder $tempSrtName),
+                        (Join-Path $translationFolder $tempTextName)
+                    )) {
+                        if (Test-Path -LiteralPath $tempPath) {
+                            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    return
+                }
+
+                if ($providerUsed -eq "Local (Argos Translate)") {
+                    $translatedSegments = Invoke-ArgosSegmentTranslation `
+                        -PythonCommand $PythonCommand `
+                        -Segments $transcriptData.Segments `
+                        -SourceLanguageCode $detectedLanguage `
+                        -TargetLanguageCode $targetLanguage `
+                        -HeartbeatSeconds $HeartbeatSeconds
+
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $translatedSegments `
+                        -Language $targetLanguage `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "translate" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+                    return
+                }
+
+                $targetDisplayName = Get-LanguageDisplayName -Code $targetLanguage
+                $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
+                $translatedSegments = Invoke-OpenAiSegmentTranslation `
+                    -Segments $transcriptData.Segments `
+                    -SourceLanguage $sourceDisplayName `
+                    -TargetLanguage $targetDisplayName `
+                    -Model $OpenAiModel `
+                    -HeartbeatSeconds $HeartbeatSeconds
+
+                $null = Write-TranscriptArtifactsFromSegments `
+                    -OutputFolder $translationFolder `
+                    -Segments $translatedSegments `
+                    -Language $targetLanguage `
+                    -SourceLanguage $detectedLanguage `
+                    -Task "translate" `
+                    -JsonName "transcript.json" `
+                    -SrtName "transcript.srt" `
+                    -TextName "transcript.txt"
+            } | Out-Null
+
+            [void]$completedTargets.Add($targetLanguage)
+            [void]$translationProviderDetails.Add(("{0}={1}" -f $targetLanguage, $providerUsed))
+        }
+    }
+    elseif ($TranslationTargets.Count -gt 0) {
+        Write-Log "Translation was requested, but this source has no readable audio stream. Skipping translated transcript output." "WARN"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SourceInfoJsonPath) -and (Test-Path -LiteralPath $SourceInfoJsonPath)) {
+        $commentArtifacts = Invoke-PhaseAction -Name "Comments" -Detail $videoItem.Name -Action {
+            Export-CommentsArtifactsFromInfoJson -InfoJsonPath $SourceInfoJsonPath -CommentsFolder $commentsFolder
+        }
+
+        if ($commentArtifacts) {
+            $commentsTextPath = $commentArtifacts.CommentsTextPath
+            $commentsJsonPath = $commentArtifacts.CommentsJsonPath
+            $commentsSummary = ("{0} public comments exported" -f $commentArtifacts.CommentCount)
+            Write-Log $commentsSummary
+        }
+        else {
+            $commentsSummary = "requested, but no public comments were returned by yt-dlp"
+            Write-Log $commentsSummary "WARN"
+        }
     }
 
     $frameCount = Invoke-PhaseAction -Name "Index" -Detail $videoItem.Name -Action {
@@ -2310,7 +3423,11 @@ function Process-Video {
             -VideoFileName $videoItem.Name `
             -RawPresent $rawPresent `
             -AudioPresent $audioPresentText `
-            -FrameIntervalSeconds $FrameIntervalSeconds
+            -FrameIntervalSeconds $FrameIntervalSeconds `
+            -DetectedLanguage $detectedLanguage `
+            -TranslationTargets @($completedTargets) `
+            -TranslationProviderDetails $(if ($translationProviderDetails.Count -gt 0) { $translationProviderDetails -join "; " } else { "none" }) `
+            -CommentsSummary $commentsSummary
     } | Out-Null
 
     Add-SummaryRow `
@@ -2323,8 +3440,15 @@ function Process-Video {
         -AudioFile $audioFile `
         -TranscriptSrt $transcriptSrt `
         -TranscriptJson $transcriptJson `
+        -TranscriptText $transcriptText `
         -RawCopied $rawPresent `
         -AudioPresent $audioPresentText `
+        -DetectedLanguage $detectedLanguage `
+        -TranslationTargets ((@($completedTargets)) -join ", ") `
+        -TranslationProvider $(if ($translationProviderDetails.Count -gt 0) { $translationProviderDetails -join "; " } else { "none" }) `
+        -CommentsText $commentsTextPath `
+        -CommentsJson $commentsJsonPath `
+        -CommentsSummary $commentsSummary `
         -ProxyMode $proxyMode `
         -FrameMode $frameMode `
         -WhisperMode $whisperMode `
@@ -2339,6 +3463,10 @@ function Process-Video {
         ProxyMode        = $proxyMode
         FrameMode        = $frameMode
         WhisperMode      = $whisperMode
+        DetectedLanguage = $detectedLanguage
+        TranslationTargets = @($completedTargets)
+        TranslationProvider = $(if ($translationProviderDetails.Count -gt 0) { $translationProviderDetails -join "; " } else { "none" })
+        CommentsSummary  = $commentsSummary
         FramesFolderName = $framesFolderName
     }
 }
@@ -2461,6 +3589,27 @@ if (-not $PSBoundParameters.ContainsKey("OpenOutputInExplorer") -and -not $NoPro
     }
 }
 
+if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
+    $translationInput = Read-Host "Translate the transcript into additional languages? Enter codes like en, es, fr or press Enter for none"
+    $TranslateTo = $translationInput
+}
+
+$translationTargets = Get-TranslationTargets -Value $TranslateTo
+if ($translationTargets.Count -gt 0 -and -not $PSBoundParameters.ContainsKey("TranslationProvider") -and -not $NoPrompt) {
+    $TranslationProvider = Get-InteractiveTranslationProvider -DefaultValue "Auto"
+}
+
+if ($translationTargets.Count -gt 0) {
+    if (-not $PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
+        $originalModel = $WhisperModel
+        $WhisperModel = $WhisperModel -replace '\.en$', ''
+        Write-Host ("Translation was requested, so Video Mangler switched Whisper from '{0}' to '{1}' to work from the original spoken source." -f $originalModel, $WhisperModel) -ForegroundColor Yellow
+    }
+    elseif ($PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
+        throw "Translation needs a multilingual Whisper model. The selected model '$WhisperModel' is English-only. Use a model like 'base' or 'small' instead."
+    }
+}
+
 if ([double]::IsNaN($FrameIntervalSeconds)) {
     if ($NoPrompt) {
         $FrameIntervalSeconds = 0.5
@@ -2477,17 +3626,31 @@ $script:CurrentLogFile = $bootstrapLog
 "==== Bootstrap started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -Path $bootstrapLog -Encoding UTF8
 Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
 Write-Log "Output folder root: $OutputFolder"
+if ($translationTargets.Count -gt 0) {
+    Write-Log ("Translation targets selected: {0}" -f ($translationTargets -join ", "))
+    Write-Log ("Requested translation provider: {0}" -f $TranslationProvider)
+}
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
 $summaryCsv = Join-Path $OutputFolder "PROCESSING_SUMMARY.csv"
 $downloadedInputPaths = @()
 $downloadedInputCount = 0
 $downloadedInputKinds = @()
+$sourceInfoJsonByVideoPath = @{}
 
-$videos = @()
+try {
+    $videos = @()
 
-if ($remoteInputSources.Count -gt 0) {
+    if ($remoteInputSources.Count -gt 0) {
     $downloadCacheFolder = $InputFolder
+    $doIncludeComments = $IncludeComments.IsPresent
+    if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
+        $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N)"
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $doIncludeComments = $value.Trim() -match '^(y|yes)$'
+        }
+    }
+
     $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
     Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
 
@@ -2498,12 +3661,22 @@ if ($remoteInputSources.Count -gt 0) {
                 -DownloadFolder $downloadCacheFolder `
                 -YtDlpInvoker $ytDlpInvoker `
                 -FFmpegExe $FFmpegPath `
+                -IncludeComments:$doIncludeComments `
                 -HeartbeatSeconds $HeartbeatSeconds
         }
 
         $downloadedInputPaths += $downloadResult.DownloadRoot
         $downloadedInputKinds += $downloadResult.SourceKind
         $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
+        $infoJsonMap = @{}
+        if ($null -ne $downloadResult.PSObject.Properties['InfoJsonByMediaPath'] -and $downloadResult.InfoJsonByMediaPath) {
+            $infoJsonMap = $downloadResult.InfoJsonByMediaPath
+        }
+        foreach ($downloadedPath in @($downloadResult.DownloadedPaths)) {
+            if ($infoJsonMap.ContainsKey($downloadedPath)) {
+                $sourceInfoJsonByVideoPath[$downloadedPath] = $infoJsonMap[$downloadedPath]
+            }
+        }
         $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
     }
 }
@@ -2530,6 +3703,13 @@ else {
 
         if ($manualRemoteSources.Count -gt 0) {
             $downloadCacheFolder = $InputFolder
+            $doIncludeComments = $IncludeComments.IsPresent
+            if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
+                $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N)"
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    $doIncludeComments = $value.Trim() -match '^(y|yes)$'
+                }
+            }
             $ytDlpInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
             Write-Log "Downloading remote input with $($ytDlpInvoker.DisplayName)"
 
@@ -2545,12 +3725,22 @@ else {
                         -DownloadFolder $downloadCacheFolder `
                         -YtDlpInvoker $ytDlpInvoker `
                         -FFmpegExe $FFmpegPath `
+                        -IncludeComments:$doIncludeComments `
                         -HeartbeatSeconds $HeartbeatSeconds
                 }
 
                 $downloadedInputPaths += $downloadResult.DownloadRoot
                 $downloadedInputKinds += $downloadResult.SourceKind
                 $downloadedInputCount += @($downloadResult.DownloadedPaths).Count
+                $infoJsonMap = @{}
+                if ($null -ne $downloadResult.PSObject.Properties['InfoJsonByMediaPath'] -and $downloadResult.InfoJsonByMediaPath) {
+                    $infoJsonMap = $downloadResult.InfoJsonByMediaPath
+                }
+                foreach ($downloadedPath in @($downloadResult.DownloadedPaths)) {
+                    if ($infoJsonMap.ContainsKey($downloadedPath)) {
+                        $sourceInfoJsonByVideoPath[$downloadedPath] = $infoJsonMap[$downloadedPath]
+                    }
+                }
                 $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
             }
 
@@ -2639,6 +3829,9 @@ if ($downloadedInputPaths.Count -gt 0) {
     Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
 }
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
+Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
+Write-Host ("Translation provider:            {0}" -f $TranslationProvider)
+Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
 Write-Host ""
 Write-Host "Videos to process:"
 $videos | ForEach-Object { Write-Host " - $($_.FullName)" }
@@ -2700,10 +3893,15 @@ foreach ($video in $videos) {
             -PythonCommand $PythonExe `
             -ModelName $WhisperModel `
             -LanguageCode $Language `
+            -TranslationTargets $translationTargets `
+            -SourceInfoJsonPath $(if ($sourceInfoJsonByVideoPath.ContainsKey($video.FullName)) { $sourceInfoJsonByVideoPath[$video.FullName] } else { "" }) `
             -DoCopyRaw:$doCopyRaw `
             -SummaryCsv $summaryCsv `
             -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
+            -InteractiveMode:$(-not $NoPrompt) `
+            -TranslationProvider $TranslationProvider `
+            -OpenAiModel $OpenAiModel `
             -FrameIntervalSeconds $FrameIntervalSeconds `
             -HeartbeatSeconds $HeartbeatSeconds
 
@@ -2756,6 +3954,12 @@ foreach ($item in $processedItems) {
     Write-Host ("  Proxy:   {0}" -f $item.ProxyMode)
     Write-Host ("  Frames:  {0}" -f $item.FrameMode)
     Write-Host ("  Whisper: {0}" -f $item.WhisperMode)
+    Write-Host ("  Lang:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($item.DetectedLanguage)) { "n/a" } else { $item.DetectedLanguage }))
+    Write-Host ("  Xlate:   {0}" -f $(if ($item.TranslationTargets.Count -gt 0) { $item.TranslationTargets -join ", " } else { "none" }))
+    Write-Host ("  Provider:{0}" -f $(if ([string]::IsNullOrWhiteSpace($item.TranslationProvider) -or $item.TranslationProvider -eq "none") { " none" } else { " $($item.TranslationProvider)" }))
+    if (-not [string]::IsNullOrWhiteSpace($item.CommentsSummary)) {
+        Write-Host ("  Comments:{0}" -f " $($item.CommentsSummary)")
+    }
 }
 
 foreach ($zip in $chatGptPackages) {
@@ -2776,6 +3980,20 @@ if ($failedItems.Count -gt 0 -or $processedItems.Count -eq 0) {
 }
 
 Write-Log ("PASS: All {0} video(s) processed successfully. Output root: {1}" -f $processedItems.Count, $OutputFolder)
+}
+finally {
+    if (-not $KeepTempFiles) {
+        foreach ($downloadPath in @($downloadedInputPaths | Select-Object -Unique)) {
+            if (-not [string]::IsNullOrWhiteSpace($downloadPath) -and (Test-Path -LiteralPath $downloadPath)) {
+                Remove-Item -LiteralPath $downloadPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        if (Test-Path -LiteralPath $bootstrapLog) {
+            Remove-Item -LiteralPath $bootstrapLog -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 if ($doOpenOutputInExplorer) {
     try {

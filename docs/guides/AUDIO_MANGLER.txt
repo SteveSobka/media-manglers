@@ -1,0 +1,136 @@
+Audio Mangler
+=============
+
+Who it is for
+-------------
+
+Audio Mangler is for audio-first review. Use it when the spoken content matters
+more than pictures.
+
+Good fits:
+
+- podcasts
+- interviews
+- lectures
+- speeches
+- voice notes
+- multilingual audio that needs both the original transcript and translated
+  versions
+
+What it makes
+-------------
+
+Each completed package is built around the original spoken source and usually
+includes:
+
+- audio\review_audio.mp3
+- transcript\transcript_original.srt
+- transcript\transcript_original.json
+- transcript\transcript_original.txt
+- translations\<lang>\transcript.srt / .json / .txt when requested
+- comments\comments.txt / .json when requested and available from a YouTube
+  source
+- segment_index.csv
+- README_FOR_CODEX.txt
+- script_run.log
+
+Optional extras:
+
+- raw\ original source audio copy
+- chatgpt_review_package.zip
+
+How translation works
+---------------------
+
+Audio Mangler always creates the original-language transcript first.
+
+If you request translation, it then creates translated transcript files from
+that original transcript and source audio. The app is designed to prefer the
+original spoken source, not weak platform auto-translation.
+
+Provider choices:
+
+- Auto: choose the best available path
+- OpenAI: best-quality option when OPENAI_API_KEY is configured
+- Local: free fallback
+
+Local translation paths:
+
+- to English: can use Whisper locally
+- to other target languages: can use Argos Translate when the language packages
+  are installed
+
+If local translation support is missing, the app explains what is missing, what
+it unlocks, and gives you install commands plus an install/skip/cancel choice.
+It does not auto-install dependencies behind your back.
+
+Examples
+--------
+
+LibriVox page:
+
+  https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2
+
+Direct MP3:
+
+  https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3
+
+Multilingual sample MP3:
+
+  https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3
+
+Open-source YouTube video for audio-only review:
+
+  https://www.youtube.com/watch?v=R6MlUcmOul8
+
+Common commands
+---------------
+
+Run the script:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1'
+
+Show the version:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Version
+
+Translate to English with automatic provider selection:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -TranslateTo en
+
+Translate to English and Spanish with the local path when available:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -TranslateTo en,es -TranslationProvider Local
+
+Request YouTube comments when available:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -IncludeComments
+
+Keep temporary processing files for troubleshooting:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -KeepTempFiles
+
+Validation
+----------
+
+Smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+
+Translation smoke test:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1 -TranslateTo en -TranslationProvider Local
+
+Validator:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
+
+Notes
+-----
+
+- OpenAI translation is optional.
+- Local transcription stays on your machine.
+- Local translation stays on your machine after its dependencies are installed.
+- OpenAI translation sends transcript text to OpenAI.
+- Temporary helper files and staging folders are cleaned up by default unless
+  you use -KeepTempFiles.
