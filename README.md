@@ -164,6 +164,8 @@ Validation only:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 `
   -OutputRoot .\test-output\smoke-YYYYMMDD-HHMMSS `
-  -VideoPath C:\Videos\clip.mp4 `
+  -PackageFolderName tears_of_steel_720p `
   -FrameIntervalSeconds 0.5
 ```
+
+`smoke-YYYYMMDD-HHMMSS` is a placeholder pattern. The validator will resolve it to the latest `smoke-*` folder under `.\test-output`.

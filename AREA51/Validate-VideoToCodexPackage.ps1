@@ -13,6 +13,42 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Resolve-OutputRootPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    if (Test-Path -LiteralPath $Path) {
+        return (Resolve-Path -LiteralPath $Path).ProviderPath
+    }
+
+    if ($Path -notmatch 'YYYYMMDD-HHMMSS') {
+        return $Path
+    }
+
+    $parent = Split-Path -Path $Path -Parent
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        $parent = "."
+    }
+
+    if (-not (Test-Path -LiteralPath $parent)) {
+        return $Path
+    }
+
+    $latestSmoke = Get-ChildItem -LiteralPath $parent -Directory |
+        Where-Object { $_.Name -like 'smoke-*' } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+
+    if ($latestSmoke) {
+        return $latestSmoke.FullName
+    }
+
+    return $Path
+}
+
 function Get-FrameIntervalLabel {
     param([double]$Value)
 
@@ -59,6 +95,8 @@ function Test-VideoHasAudio {
     $output = & $ffprobeExe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 $VideoPath
     return ($output -match 'audio')
 }
+
+$OutputRoot = Resolve-OutputRootPath -Path $OutputRoot
 
 if (-not (Test-Path -LiteralPath $OutputRoot)) {
     throw "Output root not found: $OutputRoot"
@@ -131,5 +169,6 @@ Assert-File -Path $summaryCsv -Label "processing summary"
 Assert-File -Path $masterReadme -Label "master readme"
 
 Write-Host "PASS validation completed." -ForegroundColor Green
+Write-Host ("Output root:  {0}" -f $OutputRoot)
 Write-Host ("Package root: {0}" -f $packageRoot)
 Write-Host ("Frames found: {0}" -f $frames.Count)
