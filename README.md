@@ -7,6 +7,12 @@ Media Manglers is a small Windows-focused media review toolkit with two standalo
 
 The project started as a practical script collection and has grown into a public toolset for people who need to inspect, summarize, translate, and hand off media without juggling five different utilities. Some of the development work was done collaboratively with AI, but the goal here is simple: useful tools that normal people can run.
 
+## Why This Project Exists
+
+Media Manglers started from a real sim-racing workflow problem. High-frame-rate video moves too quickly for ordinary AI review to catch enough detail on its own, so I needed a way to break media into review-friendly artifacts and then point AI at specific moments, frames, and spoken details. That is what led to `Video Mangler`.
+
+`Audio Mangler` grew from the same idea on the audio side: better transcript-first and translation-first workflows built from the original source instead of whatever a platform happened to provide. PowerShell was an intentional choice so the scripts stay easy to inspect and run directly without hiding the logic behind a compiled app, even though packaged executables are available. When the machine can help, the tools use available GPU or CPU acceleration to speed up processing. The optional YouTube comments export came from the same practical need too, because comments are awkward to search in the browser but much easier to review once they are exported to plain text or JSON.
+
 ## Which App Is Which?
 
 ### Video Mangler
