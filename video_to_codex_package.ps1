@@ -758,34 +758,43 @@ function Get-InteractiveInputSource {
         $downloadChoice = Read-Host "Do you want to download from YouTube or another supported video URL? (y/N)"
 
         if (-not [string]::IsNullOrWhiteSpace($downloadChoice) -and $downloadChoice.Trim() -match '^(y|yes)$') {
-            Write-Host "Paste the first video or playlist URL. After each entry, the script will ask whether you want to add another." -ForegroundColor Cyan
+            Write-Host "Paste text containing one or more video or playlist URLs." -ForegroundColor Cyan
+            Write-Host "Press Enter on two blank lines in a row when the paste is complete." -ForegroundColor Cyan
+
             $remoteInputs = New-Object System.Collections.Generic.List[string]
+            $capturedLines = New-Object System.Collections.Generic.List[string]
+            $blankLineCount = 0
             $lineNumber = 1
+
             while ($true) {
-                $prompt = "URL $lineNumber"
+                $prompt = if ($lineNumber -eq 1) { "Paste line 1" } else { "Next line" }
                 $remoteInput = Read-Host $prompt
+
                 if ([string]::IsNullOrWhiteSpace($remoteInput)) {
-                    Write-Host "Please enter at least one full http/https URL." -ForegroundColor Yellow
-                    continue
-                }
+                    $blankLineCount += 1
 
-                $parsedUrls = @(Get-HttpUrlsFromText -Value $remoteInput)
-                if ($parsedUrls.Count -eq 0) {
-                    Write-Host "Please enter a full http/https URL." -ForegroundColor Yellow
-                    continue
-                }
-
-                foreach ($parsedUrl in $parsedUrls) {
-                    if (-not $remoteInputs.Contains($parsedUrl)) {
-                        [void]$remoteInputs.Add($parsedUrl)
+                    if ($blankLineCount -ge 2) {
+                        break
                     }
+
+                    [void]$capturedLines.Add("")
+                    continue
                 }
 
+                $blankLineCount = 0
+                [void]$capturedLines.Add($remoteInput)
                 $lineNumber += 1
+            }
 
-                $addAnother = Read-Host "Add another remote URL? (y/N)"
-                if ([string]::IsNullOrWhiteSpace($addAnother) -or $addAnother.Trim() -notmatch '^(y|yes)$') {
-                    break
+            $parsedUrls = @(Get-HttpUrlsFromText -Value ($capturedLines -join "`n"))
+            if ($parsedUrls.Count -eq 0) {
+                Write-Host "No valid http/https URLs were found in that pasted text." -ForegroundColor Yellow
+                continue
+            }
+
+            foreach ($parsedUrl in $parsedUrls) {
+                if (-not $remoteInputs.Contains($parsedUrl)) {
+                    [void]$remoteInputs.Add($parsedUrl)
                 }
             }
 
