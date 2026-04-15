@@ -38,7 +38,6 @@ $validator = Join-Path $PSScriptRoot "Validate-VideoToCodexPackage.ps1"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outputRoot = Join-Path $repoRoot ("test-output\smoke-{0}" -f $timestamp)
 $usingRemoteSample = $false
-$remotePackageFolderName = $null
 
 if (-not (Test-Path -LiteralPath $videoScript)) {
     throw "Main script not found: $videoScript"
@@ -81,7 +80,6 @@ elseif ($mediaFiles.Count -gt 0) {
 else {
     $usingRemoteSample = $true
     $inputTarget = $RemoteSampleUrl
-    $remotePackageFolderName = [System.IO.Path]::GetFileNameWithoutExtension(([System.Uri]$RemoteSampleUrl).AbsolutePath)
 }
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
@@ -140,7 +138,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if ($usingRemoteSample) {
-    & $validator -OutputRoot $outputRoot -PackageFolderName $remotePackageFolderName -FrameIntervalSeconds $FrameIntervalSeconds
+    & $validator -OutputRoot $outputRoot -FrameIntervalSeconds $FrameIntervalSeconds
 }
 else {
     foreach ($file in $selectedFiles) {
