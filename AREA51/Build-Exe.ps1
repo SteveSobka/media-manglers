@@ -4,6 +4,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $inputFile = Join-Path $repoRoot "video_to_codex_package.ps1"
 $distFolder = Join-Path $repoRoot "dist"
 $outputFile = Join-Path $distFolder "video_to_codex_package.exe"
+$iconFile = Join-Path $repoRoot "assets\video_to_codex_package.ico"
 $modulePath = Join-Path $HOME "Documents\PowerShell\Modules\ps2exe\1.0.17\ps2exe.psm1"
 
 if (-not (Test-Path -LiteralPath $inputFile)) {
@@ -14,9 +15,13 @@ if (-not (Test-Path -LiteralPath $modulePath)) {
     throw "ps2exe module not found at: $modulePath"
 }
 
+if (-not (Test-Path -LiteralPath $iconFile)) {
+    throw "Icon file not found: $iconFile"
+}
+
 New-Item -ItemType Directory -Path $distFolder -Force | Out-Null
 
 Import-Module $modulePath -Force
-Invoke-ps2exe -inputFile $inputFile -outputFile $outputFile
+Invoke-ps2exe -inputFile $inputFile -outputFile $outputFile -iconFile $iconFile
 
 Write-Host ("Wrote executable: {0}" -f $outputFile) -ForegroundColor Green
