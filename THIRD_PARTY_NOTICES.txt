@@ -8,10 +8,32 @@ Repository code license
 
 The code in this repository is licensed under the MIT License. See LICENSE.
 
+NASA and Wikimedia Commons sample media
+---------------------------------------
+
+The README and smoke-test flow reference a short public NASA balloon video that is also mirrored on Wikimedia Commons. That media file is not redistributed inside this repository unless explicitly stated elsewhere.
+
+Referenced source page:
+
+- Wikimedia Commons file page: https://commons.wikimedia.org/wiki/File%3ANASA%27s_Scientific_Balloon_Program_%28SVS14429_NASA_Balloon_Program_YT%29.webm
+- NASA source page: https://svs.gsfc.nasa.gov/14429
+- NASA source video: https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
+
+Summary:
+
+- The Wikimedia Commons file page describes this video as public domain in the United States because it was created solely by NASA.
+- Wikimedia Commons also notes that NASA logos, insignia, and emblems remain restricted.
+
+Practical rule for this repo:
+
+- Treat the repository code license and the sample media license as separate things.
+- If you redistribute NASA or Wikimedia-hosted sample media, follow the source-page terms and any agency restrictions called out there.
+- Do not assume every NASA-related asset is unrestricted just because one referenced video is public domain.
+
 Blender open movie sample media
 -------------------------------
 
-The README and test scripts reference public sample media from Blender open movie projects. Those media files are not redistributed inside this repository unless explicitly stated elsewhere.
+The README also references public sample media from Blender open movie projects. Those media files are not redistributed inside this repository unless explicitly stated elsewhere.
 
 Referenced projects include:
 

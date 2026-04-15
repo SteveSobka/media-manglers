@@ -76,7 +76,7 @@ Quoted path:
 Single public remote video:
 
 ```text
-https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
 ```
 
 Open-source YouTube video:
@@ -88,7 +88,7 @@ https://www.youtube.com/watch?v=R6MlUcmOul8
 Multiple public URLs in one paste:
 
 ```text
-https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
 https://download.blender.org/demo/movies/Sintel.2010.720p.mkv
 ```
 
@@ -164,9 +164,9 @@ The build also creates a structured release package zip under `dist\release\`.
 ## License
 
 - Repository code: [MIT](LICENSE)
-- Blender sample media and any other third-party content: see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
+- Sample media and any other third-party content: see [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
 
-This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for Blender open-movie media referenced in the docs or test flow.
+This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for NASA, Wikimedia Commons, Blender, or any other sample media referenced in the docs or test flow.
 
 ## AREA51
 
@@ -178,10 +178,10 @@ Smoke test:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
 ```
 
-If `test_media` is missing or empty, the smoke test falls back to this public Blender sample:
+If `test_media` is missing or empty, the smoke test falls back to this shorter public NASA balloon sample:
 
 ```text
-https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
 ```
 
 Validation only:

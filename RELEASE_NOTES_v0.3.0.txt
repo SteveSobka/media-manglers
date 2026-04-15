@@ -31,5 +31,5 @@ Licensing
 ---------
 
 - Repository code is MIT licensed
-- Blender sample media references remain under their own upstream terms
-- See THIRD_PARTY_NOTICES.txt for Blender attribution and media-license notes
+- Sample media references remain under their own upstream terms
+- See THIRD_PARTY_NOTICES.txt for NASA, Wikimedia Commons, Blender, and other media-license notes

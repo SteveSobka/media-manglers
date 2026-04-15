@@ -1,7 +1,7 @@
 param(
     [string]$TestMediaFolder = (Join-Path $PSScriptRoot "..\test_media"),
     [string]$VideoPath,
-    [string]$RemoteSampleUrl = "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov",
+    [string]$RemoteSampleUrl = "https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm",
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base.en",
     [int]$HeartbeatSeconds = 10,

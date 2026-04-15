@@ -69,7 +69,7 @@ Typical remote examples
 
 Single public remote video:
 
-  https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
 
 Open-source YouTube video:
 
@@ -77,7 +77,7 @@ Open-source YouTube video:
 
 Multiple public URLs in one paste:
 
-  https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
   https://download.blender.org/demo/movies/Sintel.2010.720p.mkv
 
 Public YouTube playlist:
@@ -148,9 +148,9 @@ License
 -------
 
 - Repository code: MIT (see LICENSE)
-- Blender sample media and any other third-party content: see THIRD_PARTY_NOTICES.txt
+- Sample media and any other third-party content: see THIRD_PARTY_NOTICES.txt
 
-This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for Blender open-movie media referenced in the docs or test flow.
+This repository's MIT license applies to the script/tooling code. It does not replace the upstream license terms for NASA, Wikimedia Commons, Blender, or any other sample media referenced in the docs or test flow.
 
 AREA51
 ------
@@ -161,9 +161,9 @@ Smoke test:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
 
-If test_media is missing or empty, the smoke test falls back to this public Blender sample:
+If test_media is missing or empty, the smoke test falls back to this shorter public NASA balloon sample:
 
-  https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
 
 Validation only:
 
