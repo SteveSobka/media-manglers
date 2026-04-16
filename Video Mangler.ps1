@@ -30,6 +30,7 @@ $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Video Mangler"
 $script:FallbackAppVersion = "0.5.0"
+$script:SessionOpenAiApiKey = $null
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -2309,7 +2310,10 @@ function Get-TranslationTargets {
 }
 
 function Get-InteractiveTranslationProvider {
-    param([string]$DefaultValue = "Auto")
+    param(
+        [string]$DefaultValue = "Auto",
+        [ref]$WasExplicitSelection = $null
+    )
 
     while ($true) {
         Write-Host ""
@@ -2322,15 +2326,125 @@ function Get-InteractiveTranslationProvider {
 
         $choice = Read-Host "Press Enter for Auto, or type 1, 2, or 3"
         if ([string]::IsNullOrWhiteSpace($choice)) {
+            if ($WasExplicitSelection) {
+                $WasExplicitSelection.Value = $false
+            }
             return $DefaultValue
         }
 
         switch ($choice.Trim()) {
-            "1" { return "Auto" }
-            "2" { return "OpenAI" }
-            "3" { return "Local" }
+            "1" {
+                if ($WasExplicitSelection) {
+                    $WasExplicitSelection.Value = $true
+                }
+                return "Auto"
+            }
+            "2" {
+                if ($WasExplicitSelection) {
+                    $WasExplicitSelection.Value = $true
+                }
+                return "OpenAI"
+            }
+            "3" {
+                if ($WasExplicitSelection) {
+                    $WasExplicitSelection.Value = $true
+                }
+                return "Local"
+            }
             default {
                 Write-Host "Please enter 1, 2, 3, or just press Enter for Auto." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+function Get-OpenAiSetupInstructionsText {
+    param(
+        [string]$ProviderLabel = "OpenAI translation"
+    )
+
+    $lines = @(
+        ("{0} was selected, but OPENAI_API_KEY is not available." -f $ProviderLabel),
+        ("OPENAI_API_KEY is required so {0} can send transcript text to OpenAI for translation." -f $script:AppName),
+        "Set it for this PowerShell session:",
+        "  `$env:OPENAI_API_KEY = 'your-api-key-here'",
+        "Or set it persistently for future PowerShell windows:",
+        '  setx OPENAI_API_KEY "your-api-key-here"',
+        "Then start a new PowerShell window and rerun with -TranslationProvider OpenAI.",
+        "If you do not want to use OpenAI, rerun with -TranslationProvider Auto or Local."
+    )
+
+    return ($lines -join "`n")
+}
+
+function Read-OpenAiApiKeyForCurrentRun {
+    if ([System.Console]::IsInputRedirected) {
+        $rawValue = Read-Host "Paste OPENAI_API_KEY for this run only"
+        return [string]$rawValue
+    }
+
+    $secureValue = Read-Host "Paste OPENAI_API_KEY for this run only" -AsSecureString
+    if ($null -eq $secureValue) {
+        return ""
+    }
+
+    return [pscredential]::new("openai", $secureValue).GetNetworkCredential().Password
+}
+
+function Get-InteractiveOpenAiRecoveryDecision {
+    while ($true) {
+        Write-Host ""
+        Write-Host "OpenAI translation was selected." -ForegroundColor Yellow
+        Write-Host "OPENAI_API_KEY is required before this run can send transcript text to OpenAI for translation." -ForegroundColor Yellow
+        Write-Host "Choose how to continue:" -ForegroundColor Yellow
+        Write-Host "  1. Paste an API key for this run only" -ForegroundColor Cyan
+        Write-Host "  2. Re-check after setting OPENAI_API_KEY externally" -ForegroundColor Cyan
+        Write-Host "  3. Switch to Auto" -ForegroundColor Cyan
+        Write-Host "  4. Switch to Local" -ForegroundColor Cyan
+        Write-Host "  5. Cancel" -ForegroundColor Cyan
+
+        $choice = Read-Host "Type 1, 2, 3, 4, or 5"
+        switch ($choice.Trim()) {
+            "1" {
+                $pastedKey = [string](Read-OpenAiApiKeyForCurrentRun)
+                if ([string]::IsNullOrWhiteSpace($pastedKey)) {
+                    Write-Host "No API key was pasted. Choose another option or try again." -ForegroundColor Yellow
+                    continue
+                }
+
+                $script:SessionOpenAiApiKey = $pastedKey.Trim()
+                return [PSCustomObject]@{
+                    EffectiveProvider = "OpenAI"
+                    ResolutionNote    = "OpenAI translation was selected. Using an API key pasted for this run only."
+                }
+            }
+            "2" {
+                if (Test-OpenAiTranslationAvailable) {
+                    return [PSCustomObject]@{
+                        EffectiveProvider = "OpenAI"
+                        ResolutionNote    = "OpenAI translation was selected. OPENAI_API_KEY was found after re-check."
+                    }
+                }
+
+                Write-Host "OPENAI_API_KEY still was not found. Set it in another window or choose a different option." -ForegroundColor Yellow
+            }
+            "3" {
+                return [PSCustomObject]@{
+                    EffectiveProvider = "Auto"
+                    ResolutionNote    = "OpenAI translation was selected, but OPENAI_API_KEY is missing. Interactive recovery selected: Auto."
+                }
+            }
+            "4" {
+                return [PSCustomObject]@{
+                    EffectiveProvider = "Local"
+                    ResolutionNote    = "OpenAI translation was selected, but OPENAI_API_KEY is missing. Interactive recovery selected: Local."
+                }
+            }
+            "5" {
+                throw "OpenAI translation was selected, but OPENAI_API_KEY is still not available. Translation was canceled at the provider preflight prompt."
+            }
+            default {
+                Write-Host "Please type 1, 2, 3, 4, or 5." -ForegroundColor Yellow
             }
         }
     }
@@ -2416,20 +2530,74 @@ function Write-TranscriptArtifactsFromSegments {
 function Get-OpenAiApiKey {
     param([switch]$Required)
 
-    $apiKey = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY")
+    $apiKey = [string]$script:SessionOpenAiApiKey
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        foreach ($scope in @(
+                [System.EnvironmentVariableTarget]::Process,
+                [System.EnvironmentVariableTarget]::User,
+                [System.EnvironmentVariableTarget]::Machine)) {
+            $candidate = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", $scope)
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                $apiKey = $candidate
+                break
+            }
+        }
+    }
+
     if ($Required -and [string]::IsNullOrWhiteSpace($apiKey)) {
-        throw "OpenAI translation needs OPENAI_API_KEY. Set the key first, or use -TranslationProvider Auto or Local for a free fallback."
+        throw (Get-OpenAiSetupInstructionsText -ProviderLabel "OpenAI translation")
     }
 
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
         return $null
     }
 
-    return $apiKey
+    return $apiKey.Trim()
 }
 
 function Test-OpenAiTranslationAvailable {
     return -not [string]::IsNullOrWhiteSpace((Get-OpenAiApiKey))
+}
+
+function Resolve-TranslationProviderRequest {
+    param(
+        [string]$RequestedProvider = "Auto",
+        [switch]$WasExplicitlySet,
+        [switch]$InteractiveMode
+    )
+
+    $requestedProviderValue = if ([string]::IsNullOrWhiteSpace($RequestedProvider)) {
+        "Auto"
+    }
+    else {
+        $RequestedProvider.Trim()
+    }
+
+    $selectionSource = if ($WasExplicitlySet) { "explicit" } else { "default" }
+    $effectiveProvider = $requestedProviderValue
+    $resolutionNote = $null
+
+    if ($requestedProviderValue -eq "OpenAI" -and -not (Test-OpenAiTranslationAvailable)) {
+        if (-not $WasExplicitlySet) {
+            $effectiveProvider = "Auto"
+            $resolutionNote = "OpenAI was present without an explicit user override, but OPENAI_API_KEY is missing. Falling back to Auto."
+        }
+        elseif ($InteractiveMode) {
+            $recoveryDecision = Get-InteractiveOpenAiRecoveryDecision
+            $effectiveProvider = $recoveryDecision.EffectiveProvider
+            $resolutionNote = $recoveryDecision.ResolutionNote
+        }
+        else {
+            throw (Get-OpenAiSetupInstructionsText -ProviderLabel "OpenAI translation")
+        }
+    }
+
+    return [PSCustomObject]@{
+        RequestedProvider = $requestedProviderValue
+        EffectiveProvider = $effectiveProvider
+        SelectionSource   = $selectionSource
+        ResolutionNote    = $resolutionNote
+    }
 }
 
 function Test-WhisperModelSupportsTranslation {
@@ -2440,6 +2608,75 @@ function Test-WhisperModelSupportsTranslation {
     }
 
     return -not $ModelName.Trim().ToLowerInvariant().EndsWith(".en")
+}
+
+function Get-ArgosModuleStatus {
+    param(
+        [string]$PythonCommand,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $probe = Invoke-ExternalCapture `
+        -FilePath $PythonCommand `
+        -Arguments @("-c", "import argostranslate.translate") `
+        -StepName "Argos Translate module check" `
+        -IgnoreExitCode `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 120
+
+    return [PSCustomObject]@{
+        ModuleInstalled = ($probe.ExitCode -eq 0)
+        Error           = [string]$probe.StdErr
+    }
+}
+
+function Get-TranslationProviderPreflightNotes {
+    param(
+        [string]$EffectiveProvider,
+        [string[]]$TranslationTargets,
+        [string]$ModelName,
+        [string]$PythonCommand,
+        [bool]$InteractiveMode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $normalizedTargets = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($normalizedTargets.Count -eq 0) {
+        return @()
+    }
+
+    if ($EffectiveProvider -ne "Local") {
+        return @()
+    }
+
+    if (($normalizedTargets -contains "en") -and -not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
+        throw ("Local translation to English needs a multilingual Whisper model. The selected model '{0}' is English-only. Use a model like 'base' or 'small', or rerun with -TranslationProvider Auto or OpenAI." -f $ModelName)
+    }
+
+    $needsArgos = (@($normalizedTargets | Where-Object { $_ -ne "en" })).Count -gt 0
+    if (-not $needsArgos) {
+        return @()
+    }
+
+    $argosStatus = Get-ArgosModuleStatus -PythonCommand $PythonCommand -HeartbeatSeconds $HeartbeatSeconds
+    if ($argosStatus.ModuleInstalled) {
+        return @()
+    }
+
+    $messageLines = @(
+        "Local translation was selected for one or more non-English targets, but Argos Translate is not installed on this PC.",
+        "Argos Translate is required for the Local path when the target language is not English.",
+        "Install it with:",
+        ("  {0} -m pip install argostranslate" -f (Quote-Argument $PythonCommand)),
+        "Once the source language is detected, Media Manglers can then prepare the needed Argos language packages.",
+        "You can also rerun with -TranslationProvider Auto or OpenAI."
+    )
+
+    if (-not $InteractiveMode) {
+        throw ($messageLines -join "`n")
+    }
+
+    return @(($messageLines -join " "))
 }
 
 function Get-ArgosInstallCommandHints {
@@ -3752,6 +3989,9 @@ function Process-Video {
         [bool]$CanUseFfmpegGpu,
         [bool]$CanUseWhisperGpu,
         [bool]$InteractiveMode,
+        [string]$RequestedTranslationProvider,
+        [string]$TranslationProviderSelectionSource,
+        [string]$TranslationProviderResolutionNote,
         [string]$TranslationProvider,
         [string]$OpenAiModel,
         [double]$FrameIntervalSeconds,
@@ -3803,6 +4043,28 @@ function Process-Video {
     Write-Log "Processing video: $($videoItem.FullName)"
     Write-Log "Output folder: $videoOutputRoot"
     Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
+    if ($TranslationTargets.Count -gt 0) {
+        $loggedRequestedProvider = if ([string]::IsNullOrWhiteSpace($RequestedTranslationProvider)) {
+            $TranslationProvider
+        }
+        else {
+            $RequestedTranslationProvider
+        }
+        $loggedSelectionSource = if ([string]::IsNullOrWhiteSpace($TranslationProviderSelectionSource)) {
+            "default"
+        }
+        else {
+            $TranslationProviderSelectionSource
+        }
+
+        Write-Log ("Requested translation provider: {0} ({1})" -f $loggedRequestedProvider, $loggedSelectionSource)
+        if ($TranslationProvider -ne $loggedRequestedProvider) {
+            Write-Log ("Effective translation provider request: {0}" -f $TranslationProvider)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($TranslationProviderResolutionNote)) {
+            Write-Log $TranslationProviderResolutionNote "WARN"
+        }
+    }
     if ($RemoteAudioTrackInfo -and -not [string]::IsNullOrWhiteSpace($RemoteAudioTrackInfo.SummaryLine)) {
         Write-Log $RemoteAudioTrackInfo.SummaryLine
         if (-not [string]::IsNullOrWhiteSpace($RemoteAudioTrackInfo.MismatchWarning)) {
@@ -3964,7 +4226,7 @@ function Process-Video {
 
         $normalizedTargets = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
         if ($TranslationProvider -eq "OpenAI" -and $normalizedTargets.Count -gt 0 -and -not (Test-OpenAiTranslationAvailable)) {
-            throw "OpenAI translation was selected, but OPENAI_API_KEY is not set. Set the key first, or use -TranslationProvider Auto or Local."
+            throw (Get-OpenAiSetupInstructionsText -ProviderLabel "OpenAI translation")
         }
 
         foreach ($targetLanguage in $normalizedTargets) {
@@ -4021,7 +4283,7 @@ function Process-Video {
                 }
             }
 
-            Write-Log ("Translation provider for {0}: {1}" -f $targetLanguage, $providerUsed)
+            Write-Log ("Translation provider for {0}: {1} (mode: {2})" -f $targetLanguage, $providerUsed, $TranslationProvider)
 
             $translationFolder = Join-Path $translationsFolder $targetLanguage
             Ensure-Directory $translationsFolder
@@ -4342,8 +4604,9 @@ if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
 }
 
 $translationTargets = Get-TranslationTargets -Value $TranslateTo
+$translationProviderWasExplicit = $PSBoundParameters.ContainsKey("TranslationProvider")
 if ($translationTargets.Count -gt 0 -and -not $PSBoundParameters.ContainsKey("TranslationProvider") -and -not $NoPrompt) {
-    $TranslationProvider = Get-InteractiveTranslationProvider -DefaultValue "Auto"
+    $TranslationProvider = Get-InteractiveTranslationProvider -DefaultValue "Auto" -WasExplicitSelection ([ref]$translationProviderWasExplicit)
 }
 
 if ($translationTargets.Count -gt 0) {
@@ -4355,6 +4618,31 @@ if ($translationTargets.Count -gt 0) {
     elseif ($PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
         throw "Translation needs a multilingual Whisper model. The selected model '$WhisperModel' is English-only. Use a model like 'base' or 'small' instead."
     }
+}
+
+$translationProviderResolution = [PSCustomObject]@{
+    RequestedProvider = $TranslationProvider
+    EffectiveProvider = $TranslationProvider
+    SelectionSource   = if ($translationProviderWasExplicit) { "explicit" } else { "default" }
+    ResolutionNote    = $null
+}
+if ($translationTargets.Count -gt 0) {
+    $translationProviderResolution = Resolve-TranslationProviderRequest `
+        -RequestedProvider $TranslationProvider `
+        -WasExplicitlySet:$translationProviderWasExplicit `
+        -InteractiveMode:$(-not $NoPrompt)
+    $TranslationProvider = $translationProviderResolution.EffectiveProvider
+}
+
+$translationProviderPreflightNotes = @()
+if ($translationTargets.Count -gt 0) {
+    $translationProviderPreflightNotes = @(Get-TranslationProviderPreflightNotes `
+            -EffectiveProvider $TranslationProvider `
+            -TranslationTargets $translationTargets `
+            -ModelName $WhisperModel `
+            -PythonCommand $PythonExe `
+            -InteractiveMode:$(-not $NoPrompt) `
+            -HeartbeatSeconds $HeartbeatSeconds)
 }
 
 if ([double]::IsNaN($FrameIntervalSeconds)) {
@@ -4375,7 +4663,16 @@ Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
 Write-Log "Output folder root: $OutputFolder"
 if ($translationTargets.Count -gt 0) {
     Write-Log ("Translation targets selected: {0}" -f ($translationTargets -join ", "))
-    Write-Log ("Requested translation provider: {0}" -f $TranslationProvider)
+    Write-Log ("Requested translation provider: {0} ({1})" -f $translationProviderResolution.RequestedProvider, $translationProviderResolution.SelectionSource)
+    if ($TranslationProvider -ne $translationProviderResolution.RequestedProvider) {
+        Write-Log ("Effective translation provider request: {0}" -f $TranslationProvider)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($translationProviderResolution.ResolutionNote)) {
+        Write-Log $translationProviderResolution.ResolutionNote "WARN"
+    }
+    foreach ($preflightNote in $translationProviderPreflightNotes) {
+        Write-Log $preflightNote "WARN"
+    }
 }
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
@@ -4667,6 +4964,9 @@ foreach ($video in $videos) {
             -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
             -InteractiveMode:$(-not $NoPrompt) `
+            -RequestedTranslationProvider $translationProviderResolution.RequestedProvider `
+            -TranslationProviderSelectionSource $translationProviderResolution.SelectionSource `
+            -TranslationProviderResolutionNote $translationProviderResolution.ResolutionNote `
             -TranslationProvider $TranslationProvider `
             -OpenAiModel $OpenAiModel `
             -FrameIntervalSeconds $FrameIntervalSeconds `
