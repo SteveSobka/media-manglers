@@ -71,6 +71,13 @@ That matters most for remote video and YouTube links. If a platform offers weak
 auto-translated audio or captions, Media Manglers is designed to prefer the
 original spoken source instead.
 
+For YouTube links, Video Mangler also probes remote audio-track metadata before
+the final download when that metadata is exposed. If multiple spoken-language
+tracks are available, interactive runs show a track picker and recommend the
+original/source audio when it can be identified. NoPrompt runs try to choose
+that original/source track automatically and log best-effort wording when the
+provider does not confirm it clearly.
+
 Translation providers:
 
 - Auto: choose the best available option

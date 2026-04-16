@@ -464,11 +464,21 @@ function Resolve-YtDlpInvoker {
     throw "Remote video URLs require yt-dlp. Install it with 'winget install yt-dlp.yt-dlp' or 'py -m pip install -U yt-dlp'."
 }
 
+function Test-IsYouTubeUrl {
+    param([string]$SourceUrl)
+
+    if ([string]::IsNullOrWhiteSpace($SourceUrl)) {
+        return $false
+    }
+
+    return $SourceUrl.Trim().ToLowerInvariant() -match '^https?://([a-z0-9-]+\.)?(youtube\.com|youtu\.be)/'
+}
+
 function Get-RemoteSourceKind {
     param([string]$SourceUrl)
 
     $normalized = $SourceUrl.ToLowerInvariant()
-    $isYoutube = $normalized -match '^https?://([a-z0-9-]+\.)?(youtube\.com|youtu\.be)/'
+    $isYoutube = Test-IsYouTubeUrl -SourceUrl $SourceUrl
 
     if ($isYoutube -and (
             $normalized -match 'youtube\.com/playlist\?' -or
@@ -478,6 +488,512 @@ function Get-RemoteSourceKind {
     }
 
     return "video"
+}
+
+function Get-PrimaryLanguageTag {
+    param([string]$LanguageCode)
+
+    if ([string]::IsNullOrWhiteSpace($LanguageCode)) {
+        return ""
+    }
+
+    $normalized = $LanguageCode.Trim().Replace("_", "-")
+    return ($normalized -split '-')[0].ToLowerInvariant()
+}
+
+function Get-RemoteAudioTrackFormatHints {
+    param([psobject]$Format)
+
+    $formatUrl = [string]$Format.url
+    $xtags = ""
+    if (-not [string]::IsNullOrWhiteSpace($formatUrl) -and $formatUrl -match '[?&]xtags=([^&]+)') {
+        $xtags = [System.Uri]::UnescapeDataString($Matches[1])
+    }
+
+    $languageFromXtags = ""
+    if (-not [string]::IsNullOrWhiteSpace($xtags) -and $xtags -match 'lang=([^:;]+)') {
+        $languageFromXtags = $Matches[1].Trim()
+    }
+
+    $audioContentTag = ""
+    if (-not [string]::IsNullOrWhiteSpace($xtags) -and $xtags -match 'acont=([^:;]+)') {
+        $audioContentTag = $Matches[1].Trim().ToLowerInvariant()
+    }
+
+    $languageCode = if (-not [string]::IsNullOrWhiteSpace([string]$Format.language)) {
+        ([string]$Format.language).Trim()
+    }
+    else {
+        $languageFromXtags
+    }
+
+    $languagePreference = 0
+    if ($null -ne $Format.PSObject.Properties['language_preference'] -and $null -ne $Format.language_preference) {
+        $rawPreference = [string]$Format.language_preference
+        if (-not [string]::IsNullOrWhiteSpace($rawPreference)) {
+            try {
+                $languagePreference = [int]$Format.language_preference
+            }
+            catch {
+                $languagePreference = 0
+            }
+        }
+    }
+
+    $formatNote = [string]$Format.format_note
+    $isOriginal = $audioContentTag -like '*original*' -or $formatNote -match '\boriginal\b' -or $languagePreference -ge 10
+    $isDefault = $formatNote -match '\bdefault\b' -or ($languagePreference -ge 5 -and -not $isOriginal)
+    $isDubbed = $audioContentTag -match 'dubbed|translated' -or $formatNote -match '\bdubbed\b|\btranslated\b'
+    $isAudioOnly = ([string]$Format.vcodec).ToLowerInvariant() -eq "none"
+
+    return [PSCustomObject]@{
+        LanguageCode       = $languageCode
+        LanguagePreference = $languagePreference
+        Xtags              = $xtags
+        AudioContentTag    = $audioContentTag
+        IsOriginal         = $isOriginal
+        IsDefault          = $isDefault
+        IsDubbed           = $isDubbed
+        IsAudioOnly        = $isAudioOnly
+        IsMuxed            = (-not $isAudioOnly)
+    }
+}
+
+function Get-RemoteAudioTrackCandidates {
+    param([object[]]$Formats)
+
+    $exactGroups = @{}
+
+    foreach ($format in @($Formats)) {
+        if ($null -eq $format) {
+            continue
+        }
+
+        if (-not $format.PSObject.Properties['acodec']) {
+            continue
+        }
+
+        $audioCodec = [string]$format.acodec
+        if ([string]::IsNullOrWhiteSpace($audioCodec) -or $audioCodec -eq "none") {
+            continue
+        }
+
+        $hints = Get-RemoteAudioTrackFormatHints -Format $format
+        if ([string]::IsNullOrWhiteSpace($hints.LanguageCode)) {
+            continue
+        }
+
+        $languageCode = $hints.LanguageCode.Trim().Replace("_", "-")
+        if (-not $exactGroups.ContainsKey($languageCode)) {
+            $exactGroups[$languageCode] = New-Object System.Collections.Generic.List[object]
+        }
+
+        $exactGroups[$languageCode].Add([PSCustomObject]@{
+            Format = $format
+            Hints  = $hints
+        })
+    }
+
+    if ($exactGroups.Count -eq 0) {
+        return @()
+    }
+
+    $groupInfos = @()
+    foreach ($languageCode in $exactGroups.Keys) {
+        $items = @($exactGroups[$languageCode] | ForEach-Object { $_ })
+        $primaryTag = Get-PrimaryLanguageTag -LanguageCode $languageCode
+        $groupInfos += [PSCustomObject]@{
+            LanguageCode = $languageCode
+            PrimaryTag   = $primaryTag
+            IsOriginal   = (@($items | Where-Object { $_.Hints.IsOriginal })).Count -gt 0
+            IsDefault    = (@($items | Where-Object { $_.Hints.IsDefault })).Count -gt 0
+            Specificity  = (@($languageCode -split '-')).Count
+            ItemCount    = $items.Count
+        }
+    }
+
+    $mergeTargetByCode = @{}
+    foreach ($groupInfo in $groupInfos) {
+        $mergeTargetByCode[$groupInfo.LanguageCode] = $groupInfo.LanguageCode
+    }
+
+    foreach ($primaryGroup in ($groupInfos | Group-Object -Property PrimaryTag)) {
+        $groupCandidates = @($primaryGroup.Group)
+        $canonical = $groupCandidates |
+            Sort-Object `
+                @{ Expression = { if ($_.IsOriginal) { 0 } elseif ($_.IsDefault) { 1 } else { 2 } } }, `
+                @{ Expression = { -1 * $_.Specificity } }, `
+                @{ Expression = { -1 * $_.ItemCount } }, `
+                LanguageCode |
+            Select-Object -First 1
+
+        if ($canonical -and ($canonical.IsOriginal -or $canonical.IsDefault)) {
+            foreach ($groupCandidate in $groupCandidates) {
+                if ($groupCandidate.LanguageCode -ne $canonical.LanguageCode -and -not $groupCandidate.IsOriginal -and -not $groupCandidate.IsDefault) {
+                    $mergeTargetByCode[$groupCandidate.LanguageCode] = $canonical.LanguageCode
+                }
+            }
+        }
+    }
+
+    $mergedGroups = @{}
+    foreach ($languageCode in $exactGroups.Keys) {
+        $mergeTarget = $mergeTargetByCode[$languageCode]
+        if (-not $mergedGroups.ContainsKey($mergeTarget)) {
+            $mergedGroups[$mergeTarget] = New-Object System.Collections.Generic.List[object]
+        }
+
+        foreach ($item in @($exactGroups[$languageCode] | ForEach-Object { $_ })) {
+            $mergedGroups[$mergeTarget].Add($item)
+        }
+    }
+
+    $candidates = @()
+    foreach ($languageCode in $mergedGroups.Keys) {
+        $items = @($mergedGroups[$languageCode] | ForEach-Object { $_ })
+        $representative = $items |
+            Sort-Object `
+                @{ Expression = { if ($_.Hints.IsOriginal) { 0 } elseif ($_.Hints.IsDefault) { 1 } elseif ($_.Hints.IsDubbed) { 2 } else { 3 } } }, `
+                @{ Expression = { if ([string]::IsNullOrWhiteSpace($_.Hints.LanguageCode)) { 0 } else { -1 * (@($_.Hints.LanguageCode -split '-')).Count } } }, `
+                @{ Expression = { if ($_.Hints.IsAudioOnly) { 0 } else { 1 } } } |
+            Select-Object -First 1
+
+        $bestAudioOnly = $items |
+            Where-Object { $_.Hints.IsAudioOnly } |
+            Sort-Object `
+                @{ Expression = { if ($_.Hints.IsOriginal) { 0 } elseif ($_.Hints.IsDefault) { 1 } elseif ($_.Hints.IsDubbed) { 2 } else { 3 } } }, `
+                @{ Expression = { if ($null -ne $_.Format.abr) { -1 * [double]$_.Format.abr } elseif ($null -ne $_.Format.tbr) { -1 * [double]$_.Format.tbr } else { 0 } } }, `
+                @{ Expression = { if ($null -ne $_.Format.asr) { -1 * [double]$_.Format.asr } else { 0 } } } |
+            Select-Object -First 1
+
+        $bestCombined = $items |
+            Where-Object { $_.Hints.IsMuxed } |
+            Sort-Object `
+                @{ Expression = { if ($_.Hints.IsOriginal) { 0 } elseif ($_.Hints.IsDefault) { 1 } elseif ($_.Hints.IsDubbed) { 2 } else { 3 } } }, `
+                @{ Expression = { if ($null -ne $_.Format.height) { -1 * [double]$_.Format.height } else { 0 } } }, `
+                @{ Expression = { if ($null -ne $_.Format.fps) { -1 * [double]$_.Format.fps } else { 0 } } }, `
+                @{ Expression = { if ($null -ne $_.Format.tbr) { -1 * [double]$_.Format.tbr } else { 0 } } } |
+            Select-Object -First 1
+
+        $displayLanguageCode = if ($representative) { [string]$representative.Hints.LanguageCode } else { $languageCode }
+        $displayName = Get-LanguageDisplayName -Code $displayLanguageCode
+        if ([string]::IsNullOrWhiteSpace($displayName)) {
+            $displayName = $displayLanguageCode
+        }
+
+        $candidateItems = @($items)
+        $candidates += [PSCustomObject]@{
+            LanguageCode      = $displayLanguageCode
+            PrimaryLanguage   = Get-PrimaryLanguageTag -LanguageCode $displayLanguageCode
+            DisplayName       = $displayName
+            IsOriginal        = (@($candidateItems | Where-Object { $_.Hints.IsOriginal })).Count -gt 0
+            IsDefault         = (@($candidateItems | Where-Object { $_.Hints.IsDefault })).Count -gt 0
+            IsDubbed          = (@($candidateItems | Where-Object { $_.Hints.IsDubbed })).Count -gt 0
+            AudioFormatId     = if ($bestAudioOnly) { [string]$bestAudioOnly.Format.format_id } else { "" }
+            CombinedFormatId  = if ($bestCombined) { [string]$bestCombined.Format.format_id } else { "" }
+            AvailableFormats  = @($candidateItems | ForEach-Object { [string]$_.Format.format_id } | Select-Object -Unique)
+        }
+    }
+
+    $sortedCandidates = @(
+        $candidates |
+            Sort-Object `
+                @{ Expression = { if ($_.IsOriginal) { 0 } elseif ($_.IsDefault) { 1 } else { 2 } } }, `
+                DisplayName,
+                LanguageCode
+    )
+
+    $originalCandidate = $sortedCandidates | Where-Object { $_.IsOriginal } | Select-Object -First 1
+    $hasConfirmedOriginal = $null -ne $originalCandidate
+    $originalPrimaryLanguage = if ($hasConfirmedOriginal) { $originalCandidate.PrimaryLanguage } else { "" }
+
+    foreach ($candidate in $sortedCandidates) {
+        $promptSuffix = ""
+        $summarySuffix = ""
+
+        if ($candidate.IsOriginal) {
+            $promptSuffix = "original/source audio"
+            $summarySuffix = "original/source"
+        }
+        elseif ($candidate.IsDubbed -or ($hasConfirmedOriginal -and $candidate.PrimaryLanguage -ne $originalPrimaryLanguage)) {
+            $promptSuffix = "dubbed / translated"
+            $summarySuffix = "dubbed/translated"
+        }
+        elseif ($candidate.IsDefault -and -not $hasConfirmedOriginal) {
+            $promptSuffix = "provider default"
+            $summarySuffix = "provider default; original/source could not be confirmed from provider metadata"
+        }
+        elseif ($hasConfirmedOriginal) {
+            $promptSuffix = "alternate language track"
+            $summarySuffix = "alternate language track"
+        }
+        else {
+            $promptSuffix = "best effort"
+            $summarySuffix = "best-effort; original/source could not be confirmed from provider metadata"
+        }
+
+        $selectorParts = New-Object System.Collections.Generic.List[string]
+        if (-not [string]::IsNullOrWhiteSpace($candidate.AudioFormatId)) {
+            $selectorParts.Add(("bv*+{0}" -f $candidate.AudioFormatId))
+        }
+        if (-not [string]::IsNullOrWhiteSpace($candidate.CombinedFormatId)) {
+            $selectorParts.Add($candidate.CombinedFormatId)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($candidate.LanguageCode)) {
+            $selectorParts.Add(("bv*+ba[language={0}]" -f $candidate.LanguageCode))
+            $selectorParts.Add(("b[language={0}]" -f $candidate.LanguageCode))
+        }
+        $selectorParts.Add("bv*+ba/b")
+
+        $candidate | Add-Member -NotePropertyName PromptLabel -NotePropertyValue ("{0} ({1})" -f $candidate.DisplayName, $promptSuffix) -Force
+        $candidate | Add-Member -NotePropertyName SummaryValue -NotePropertyValue ("{0} ({1})" -f $candidate.DisplayName, $summarySuffix) -Force
+        $candidate | Add-Member -NotePropertyName FormatSelector -NotePropertyValue (($selectorParts | Select-Object -Unique) -join "/") -Force
+    }
+
+    return $sortedCandidates
+}
+
+function Get-YouTubeAudioTrackProbe {
+    param(
+        [string]$SourceUrl,
+        [psobject]$YtDlpInvoker
+    )
+
+    try {
+        $probeResult = Invoke-ExternalCapture `
+            -FilePath $YtDlpInvoker.FilePath `
+            -Arguments ($YtDlpInvoker.Arguments + @("-J", "--no-warnings", "--no-playlist", $SourceUrl)) `
+            -StepName "yt-dlp audio-track probe" `
+            -TimeoutSeconds 180
+
+        $payload = $probeResult.StdOut | ConvertFrom-Json
+        $trackCandidates = @(Get-RemoteAudioTrackCandidates -Formats @($payload.formats))
+
+        return [PSCustomObject]@{
+            ProbeOk         = $true
+            Title           = [string]$payload.title
+            TrackCandidates = $trackCandidates
+        }
+    }
+    catch {
+        Write-Log ("Unable to probe YouTube audio-track metadata before download: {0}" -f $_.Exception.Message) "WARN"
+        return [PSCustomObject]@{
+            ProbeOk         = $false
+            Title           = ""
+            TrackCandidates = @()
+            Error           = $_.Exception.Message
+        }
+    }
+}
+
+function Select-YouTubeAudioTrackRequest {
+    param(
+        [psobject]$ProbeResult,
+        [bool]$InteractiveMode
+    )
+
+    $trackCandidates = @()
+    if ($ProbeResult -and $ProbeResult.TrackCandidates) {
+        $trackCandidates = @($ProbeResult.TrackCandidates)
+    }
+
+    $recommendedTrack = $trackCandidates | Where-Object { $_.IsOriginal } | Select-Object -First 1
+
+    if ($trackCandidates.Count -le 1) {
+        if ($recommendedTrack) {
+            return [PSCustomObject]@{
+                Mode          = "explicit"
+                RequestedTrack = $recommendedTrack
+                LogLine       = ("Remote audio track request: {0} (auto-selected from provider metadata before download)" -f $recommendedTrack.SummaryValue)
+            }
+        }
+
+        if ($trackCandidates.Count -eq 1) {
+            return [PSCustomObject]@{
+                Mode          = "auto"
+                RequestedTrack = $null
+                LogLine       = ("Remote audio track selection: best-effort; provider exposed one labeled track ({0}), but original/source could not be confirmed before download" -f $trackCandidates[0].DisplayName)
+            }
+        }
+
+        return [PSCustomObject]@{
+            Mode          = "auto"
+            RequestedTrack = $null
+            LogLine       = "Remote audio track selection: best-effort; provider did not expose usable multi-track metadata before download"
+        }
+    }
+
+    if (-not $InteractiveMode) {
+        if ($recommendedTrack) {
+            return [PSCustomObject]@{
+                Mode          = "explicit"
+                RequestedTrack = $recommendedTrack
+                LogLine       = ("Remote audio track request: {0} (auto-selected from provider metadata before download)" -f $recommendedTrack.SummaryValue)
+            }
+        }
+
+        return [PSCustomObject]@{
+            Mode          = "auto"
+            RequestedTrack = $null
+            LogLine       = "Remote audio track selection: best-effort; original/source track could not be confirmed from provider metadata before download"
+        }
+    }
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "This video appears to offer multiple audio tracks." -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Available audio tracks:" -ForegroundColor Cyan
+
+        $optionIndex = 1
+        foreach ($trackCandidate in $trackCandidates) {
+            $line = "{0}. {1}" -f $optionIndex, $trackCandidate.PromptLabel
+            if ($recommendedTrack -and $trackCandidate.LanguageCode -eq $recommendedTrack.LanguageCode) {
+                $line += "   [recommended]"
+            }
+            Write-Host $line -ForegroundColor Cyan
+            $optionIndex += 1
+        }
+
+        $autoChoice = $optionIndex
+        $cancelChoice = $optionIndex + 1
+        Write-Host ("{0}. Auto pick best available" -f $autoChoice) -ForegroundColor Cyan
+        Write-Host ("{0}. Cancel" -f $cancelChoice) -ForegroundColor Cyan
+        Write-Host ""
+
+        if ($recommendedTrack) {
+            Write-Host "For transcript and translation quality, the original/source audio is usually the best choice." -ForegroundColor Cyan
+        }
+        else {
+            Write-Host "Provider metadata did not clearly identify the original/source audio track, so Auto remains available." -ForegroundColor Yellow
+        }
+
+        $choice = Read-Host ("Enter 1-{0}. Press Enter for {1}" -f $cancelChoice, $(if ($recommendedTrack) { "the recommended track" } else { "Auto" }))
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            if ($recommendedTrack) {
+                return [PSCustomObject]@{
+                    Mode          = "explicit"
+                    RequestedTrack = $recommendedTrack
+                    LogLine       = ("Remote audio track request: {0} (chosen interactively)" -f $recommendedTrack.SummaryValue)
+                }
+            }
+
+            return [PSCustomObject]@{
+                Mode          = "auto"
+                RequestedTrack = $null
+                LogLine       = "Remote audio track request: Auto pick best available"
+            }
+        }
+
+        $parsedChoice = 0
+        if (-not [int]::TryParse($choice.Trim(), [ref]$parsedChoice)) {
+            Write-Host "Please enter one of the numbers shown in the list." -ForegroundColor Yellow
+            continue
+        }
+
+        if ($parsedChoice -ge 1 -and $parsedChoice -le $trackCandidates.Count) {
+            $selectedTrack = $trackCandidates[$parsedChoice - 1]
+            return [PSCustomObject]@{
+                Mode          = "explicit"
+                RequestedTrack = $selectedTrack
+                LogLine       = ("Remote audio track request: {0} (chosen interactively)" -f $selectedTrack.SummaryValue)
+            }
+        }
+
+        if ($parsedChoice -eq $autoChoice) {
+            return [PSCustomObject]@{
+                Mode          = "auto"
+                RequestedTrack = $null
+                LogLine       = "Remote audio track request: Auto pick best available"
+            }
+        }
+
+        if ($parsedChoice -eq $cancelChoice) {
+            throw "User canceled remote audio-track selection."
+        }
+
+        Write-Host "Please enter one of the numbers shown in the list." -ForegroundColor Yellow
+    }
+}
+
+function Get-RemoteAudioTrackInfoFromInfoJson {
+    param(
+        [string]$InfoJsonPath,
+        [psobject[]]$ProbeTrackCandidates,
+        [psobject]$RequestedTrack
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InfoJsonPath) -or -not (Test-Path -LiteralPath $InfoJsonPath)) {
+        return $null
+    }
+
+    try {
+        $payload = Get-Content -LiteralPath $InfoJsonPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        Write-Log ("Unable to parse yt-dlp info JSON for audio-track details: {0}" -f $_.Exception.Message) "WARN"
+        return $null
+    }
+
+    $selectedFormats = New-Object System.Collections.Generic.List[object]
+    foreach ($selectedFormat in @($payload.requested_formats)) {
+        if ($null -ne $selectedFormat) {
+            $selectedFormats.Add($selectedFormat)
+        }
+    }
+
+    if ($selectedFormats.Count -eq 0) {
+        foreach ($requestedDownload in @($payload.requested_downloads)) {
+            foreach ($selectedFormat in @($requestedDownload.requested_formats)) {
+                if ($null -ne $selectedFormat) {
+                    $selectedFormats.Add($selectedFormat)
+                }
+            }
+        }
+    }
+
+    if ($selectedFormats.Count -eq 0 -and $payload.PSObject.Properties['acodec'] -and [string]$payload.acodec -ne "none") {
+        $selectedFormats.Add($payload)
+    }
+
+    $selectedCandidates = @(Get-RemoteAudioTrackCandidates -Formats @($selectedFormats | ForEach-Object { $_ }))
+    if ($selectedCandidates.Count -eq 0) {
+        return $null
+    }
+
+    $selectedTrack = $selectedCandidates | Select-Object -First 1
+    $referenceCandidates = if ($ProbeTrackCandidates -and @($ProbeTrackCandidates).Count -gt 0) { @($ProbeTrackCandidates) } else { $selectedCandidates }
+    $referenceOriginal = $referenceCandidates | Where-Object { $_.IsOriginal } | Select-Object -First 1
+    $hasConfirmedOriginal = $null -ne $referenceOriginal
+
+    $summaryValue = $selectedTrack.SummaryValue
+    if ($selectedTrack.IsOriginal) {
+        $summaryValue = ("{0} (original/source)" -f $selectedTrack.DisplayName)
+    }
+    elseif ($selectedTrack.IsDubbed -or ($hasConfirmedOriginal -and $selectedTrack.PrimaryLanguage -ne $referenceOriginal.PrimaryLanguage)) {
+        $summaryValue = ("{0} (dubbed/translated)" -f $selectedTrack.DisplayName)
+    }
+    elseif ($selectedTrack.IsDefault -and -not $hasConfirmedOriginal) {
+        $summaryValue = ("{0} (provider default; original/source could not be confirmed from provider metadata)" -f $selectedTrack.DisplayName)
+    }
+    elseif (-not $hasConfirmedOriginal) {
+        $summaryValue = ("{0} (best-effort; original/source could not be confirmed from provider metadata)" -f $selectedTrack.DisplayName)
+    }
+
+    $mismatchWarning = ""
+    if ($RequestedTrack -and -not [string]::IsNullOrWhiteSpace($RequestedTrack.LanguageCode)) {
+        if ($RequestedTrack.LanguageCode -ne $selectedTrack.LanguageCode) {
+            $mismatchWarning = ("Requested remote audio track: {0}; provider actually delivered: {1}" -f $RequestedTrack.SummaryValue, $summaryValue)
+        }
+    }
+
+    return [PSCustomObject]@{
+        LanguageCode     = $selectedTrack.LanguageCode
+        DisplayName      = $selectedTrack.DisplayName
+        SummaryValue     = $summaryValue
+        SummaryLine      = ("Remote audio track selected: {0}" -f $summaryValue)
+        MismatchWarning  = $mismatchWarning
+    }
 }
 
 function Quote-Argument {
@@ -677,6 +1193,7 @@ function Invoke-RemoteVideoDownload {
         [psobject]$YtDlpInvoker,
         [string]$FFmpegExe,
         [switch]$IncludeComments,
+        [bool]$InteractiveMode,
         [int]$HeartbeatSeconds = 30
     )
 
@@ -694,12 +1211,35 @@ function Invoke-RemoteVideoDownload {
         "%(title).120B [%(id)s].%(ext)s"
     }
 
+    $remoteAudioProbe = $null
+    $remoteAudioRequest = $null
+
     $ffmpegLocation = if ([string]::IsNullOrWhiteSpace($FFmpegExe)) { $null } else { Split-Path -Path $FFmpegExe -Parent }
     $formatArguments = @(
         "--format", "bv*+ba/b",
         "--merge-output-format", "mp4",
         "--format-sort", "res,fps,hdr,vcodec,acodec,ext"
     )
+
+    if ((Test-IsYouTubeUrl -SourceUrl $SourceUrl) -and $sourceKind -eq "video") {
+        $remoteAudioProbe = Get-YouTubeAudioTrackProbe -SourceUrl $SourceUrl -YtDlpInvoker $YtDlpInvoker
+        $remoteAudioRequest = Select-YouTubeAudioTrackRequest -ProbeResult $remoteAudioProbe -InteractiveMode $InteractiveMode
+        if ($remoteAudioRequest -and -not [string]::IsNullOrWhiteSpace($remoteAudioRequest.LogLine)) {
+            Write-Log $remoteAudioRequest.LogLine
+        }
+
+        if ($remoteAudioRequest -and $remoteAudioRequest.Mode -eq "explicit" -and $remoteAudioRequest.RequestedTrack) {
+            $formatArguments = @(
+                "--format", $remoteAudioRequest.RequestedTrack.FormatSelector,
+                "--merge-output-format", "mp4",
+                "--format-sort", "res,fps,hdr,vcodec,acodec,ext"
+            )
+        }
+    }
+    elseif ((Test-IsYouTubeUrl -SourceUrl $SourceUrl) -and $sourceKind -eq "playlist") {
+        Write-Log "YouTube playlist detected. Audio-track prompts are skipped for playlist downloads; using best-effort per-entry selection from provider metadata." "WARN"
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($ffmpegLocation)) {
         $formatArguments += @("--ffmpeg-location", $ffmpegLocation)
     }
@@ -718,7 +1258,7 @@ function Invoke-RemoteVideoDownload {
             "--print", "after_move:filepath",
             "-P", $sessionFolder,
             "-o", $outputTemplate
-        ) + $(if ($IncludeComments) { @("--write-info-json", "--write-comments") } else { @() }) + $formatArguments + $playlistArguments + @($SourceUrl)) `
+        ) + @("--write-info-json") + $(if ($IncludeComments) { @("--write-comments") } else { @() }) + $formatArguments + $playlistArguments + @($SourceUrl)) `
         -StepName ("yt-dlp download ({0})" -f $sourceKind) `
         -IgnoreExitCode:$($sourceKind -eq "playlist") `
         -HeartbeatSeconds $HeartbeatSeconds `
@@ -762,19 +1302,34 @@ function Invoke-RemoteVideoDownload {
     Write-Log ("Remote {0} downloaded. Items: {1}. Cache folder: {2}" -f $sourceKind, $downloadedPaths.Count, $sessionFolder)
 
     $infoJsonByMediaPath = @{}
+    $remoteAudioTrackInfoByMediaPath = @{}
     foreach ($downloadedPath in $downloadedPaths) {
         $basePath = Join-Path ([System.IO.Path]::GetDirectoryName($downloadedPath)) ([System.IO.Path]::GetFileNameWithoutExtension($downloadedPath))
         $infoJsonPath = "$basePath.info.json"
         if (Test-Path -LiteralPath $infoJsonPath) {
             $infoJsonByMediaPath[$downloadedPath] = $infoJsonPath
+
+            $remoteAudioTrackInfo = Get-RemoteAudioTrackInfoFromInfoJson `
+                -InfoJsonPath $infoJsonPath `
+                -ProbeTrackCandidates $(if ($remoteAudioProbe) { $remoteAudioProbe.TrackCandidates } else { @() }) `
+                -RequestedTrack $(if ($remoteAudioRequest) { $remoteAudioRequest.RequestedTrack } else { $null })
+
+            if ($remoteAudioTrackInfo) {
+                $remoteAudioTrackInfoByMediaPath[$downloadedPath] = $remoteAudioTrackInfo
+                Write-Log $remoteAudioTrackInfo.SummaryLine
+                if (-not [string]::IsNullOrWhiteSpace($remoteAudioTrackInfo.MismatchWarning)) {
+                    Write-Log $remoteAudioTrackInfo.MismatchWarning "WARN"
+                }
+            }
         }
     }
 
     return [PSCustomObject]@{
-        SourceKind    = $sourceKind
-        DownloadRoot  = $sessionFolder
-        DownloadedPaths = $downloadedPaths
-        InfoJsonByMediaPath = $infoJsonByMediaPath
+        SourceKind               = $sourceKind
+        DownloadRoot             = $sessionFolder
+        DownloadedPaths          = $downloadedPaths
+        InfoJsonByMediaPath      = $infoJsonByMediaPath
+        RemoteAudioTrackByMediaPath = $remoteAudioTrackInfoByMediaPath
     }
 }
 
@@ -1267,7 +1822,8 @@ function New-CodexReadme {
         [string]$DetectedLanguage,
         [string[]]$TranslationTargets,
         [string]$TranslationProviderDetails,
-        [string]$CommentsSummary
+        [string]$CommentsSummary,
+        [string]$RemoteAudioTrackSummary
     )
 
     $framesFolderName = Get-FramesFolderName -Value $FrameIntervalSeconds
@@ -1303,6 +1859,7 @@ Notes:
 - Raw video present: $RawPresent
 - Audio present in source: $AudioPresent
 - Detected source language: $(if ([string]::IsNullOrWhiteSpace($DetectedLanguage)) { "not available" } else { $DetectedLanguage })
+- Remote audio track selected: $(if ([string]::IsNullOrWhiteSpace($RemoteAudioTrackSummary)) { "not applicable (local source or provider metadata unavailable)" } else { $RemoteAudioTrackSummary })
 - Translation targets: $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { $TranslationTargets -join ", " } else { "none" })
 - Translation path used: $(if ([string]::IsNullOrWhiteSpace($TranslationProviderDetails)) { "none" } else { $TranslationProviderDetails })
 - Comments: $(if ([string]::IsNullOrWhiteSpace($CommentsSummary)) { "not included" } else { $CommentsSummary })
@@ -2269,7 +2826,18 @@ function Get-LanguageDisplayName {
         return ""
     }
 
-    switch ($Code.Trim().ToLowerInvariant()) {
+    $normalized = $Code.Trim().Replace("_", "-")
+
+    try {
+        $culture = [System.Globalization.CultureInfo]::GetCultureInfo($normalized)
+        if ($culture -and -not [string]::IsNullOrWhiteSpace($culture.EnglishName) -and $culture.EnglishName -notmatch '^Unknown language') {
+            return $culture.EnglishName
+        }
+    }
+    catch {
+    }
+
+    switch ((Get-PrimaryLanguageTag -LanguageCode $normalized)) {
         "en" { return "English" }
         "es" { return "Spanish" }
         "fr" { return "French" }
@@ -2281,7 +2849,22 @@ function Get-LanguageDisplayName {
         "zh" { return "Chinese" }
         "ar" { return "Arabic" }
         "ru" { return "Russian" }
-        default { return $Code.Trim() }
+        "uk" { return "Ukrainian" }
+        "hi" { return "Hindi" }
+        "tr" { return "Turkish" }
+        "pl" { return "Polish" }
+        "nl" { return "Dutch" }
+        "id" { return "Indonesian" }
+        "vi" { return "Vietnamese" }
+        "th" { return "Thai" }
+        "tl" { return "Filipino" }
+        "ur" { return "Urdu" }
+        "hu" { return "Hungarian" }
+        "cs" { return "Czech" }
+        "ro" { return "Romanian" }
+        "sv" { return "Swedish" }
+        "yue" { return "Cantonese" }
+        default { return $normalized }
     }
 }
 
@@ -2332,6 +2915,7 @@ function Add-SummaryRow {
         [string]$CommentsText,
         [string]$CommentsJson,
         [string]$CommentsSummary,
+        [string]$RemoteAudioTrack,
         [string]$ProxyMode,
         [string]$FrameMode,
         [string]$WhisperMode,
@@ -2358,6 +2942,7 @@ function Add-SummaryRow {
         comments_text          = $CommentsText
         comments_json          = $CommentsJson
         comments_summary       = $CommentsSummary
+        remote_audio_track     = $RemoteAudioTrack
         proxy_mode             = $ProxyMode
         frame_mode             = $FrameMode
         whisper_mode           = $WhisperMode
@@ -3009,7 +3594,9 @@ function Process-Video {
         [string]$LanguageCode,
         [string[]]$TranslationTargets,
         [string]$SourceInfoJsonPath,
+        [psobject]$RemoteAudioTrackInfo,
         [bool]$DoCopyRaw,
+        [bool]$CommentsRequested,
         [string]$SummaryCsv,
         [bool]$CanUseFfmpegGpu,
         [bool]$CanUseWhisperGpu,
@@ -3065,6 +3652,12 @@ function Process-Video {
     Write-Log "Processing video: $($videoItem.FullName)"
     Write-Log "Output folder: $videoOutputRoot"
     Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
+    if ($RemoteAudioTrackInfo -and -not [string]::IsNullOrWhiteSpace($RemoteAudioTrackInfo.SummaryLine)) {
+        Write-Log $RemoteAudioTrackInfo.SummaryLine
+        if (-not [string]::IsNullOrWhiteSpace($RemoteAudioTrackInfo.MismatchWarning)) {
+            Write-Log $RemoteAudioTrackInfo.MismatchWarning "WARN"
+        }
+    }
 
     $preflightResult = Invoke-PhaseAction -Name "Preflight" -Detail $videoItem.Name -Action {
         $phaseHasAudio = Test-VideoHasAudio -FFprobeExe $FFprobeExe -VideoPath $videoItem.FullName
@@ -3386,7 +3979,7 @@ function Process-Video {
         Write-Log "Translation was requested, but this source has no readable audio stream. Skipping translated transcript output." "WARN"
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($SourceInfoJsonPath) -and (Test-Path -LiteralPath $SourceInfoJsonPath)) {
+    if ($CommentsRequested -and -not [string]::IsNullOrWhiteSpace($SourceInfoJsonPath) -and (Test-Path -LiteralPath $SourceInfoJsonPath)) {
         $commentArtifacts = Invoke-PhaseAction -Name "Comments" -Detail $videoItem.Name -Action {
             Export-CommentsArtifactsFromInfoJson -InfoJsonPath $SourceInfoJsonPath -CommentsFolder $commentsFolder
         }
@@ -3427,7 +4020,8 @@ function Process-Video {
             -DetectedLanguage $detectedLanguage `
             -TranslationTargets @($completedTargets) `
             -TranslationProviderDetails $(if ($translationProviderDetails.Count -gt 0) { $translationProviderDetails -join "; " } else { "none" }) `
-            -CommentsSummary $commentsSummary
+            -CommentsSummary $commentsSummary `
+            -RemoteAudioTrackSummary $(if ($RemoteAudioTrackInfo) { $RemoteAudioTrackInfo.SummaryValue } else { "" })
     } | Out-Null
 
     Add-SummaryRow `
@@ -3449,6 +4043,7 @@ function Process-Video {
         -CommentsText $commentsTextPath `
         -CommentsJson $commentsJsonPath `
         -CommentsSummary $commentsSummary `
+        -RemoteAudioTrack $(if ($RemoteAudioTrackInfo) { $RemoteAudioTrackInfo.SummaryValue } else { "" }) `
         -ProxyMode $proxyMode `
         -FrameMode $frameMode `
         -WhisperMode $whisperMode `
@@ -3467,6 +4062,7 @@ function Process-Video {
         TranslationTargets = @($completedTargets)
         TranslationProvider = $(if ($translationProviderDetails.Count -gt 0) { $translationProviderDetails -join "; " } else { "none" })
         CommentsSummary  = $commentsSummary
+        RemoteAudioTrack = $(if ($RemoteAudioTrackInfo) { $RemoteAudioTrackInfo.SummaryValue } else { "" })
         FramesFolderName = $framesFolderName
     }
 }
@@ -3637,6 +4233,8 @@ $downloadedInputPaths = @()
 $downloadedInputCount = 0
 $downloadedInputKinds = @()
 $sourceInfoJsonByVideoPath = @{}
+$remoteAudioTrackByVideoPath = @{}
+$doIncludeComments = $IncludeComments.IsPresent
 
 try {
     $videos = @()
@@ -3662,6 +4260,7 @@ try {
                 -YtDlpInvoker $ytDlpInvoker `
                 -FFmpegExe $FFmpegPath `
                 -IncludeComments:$doIncludeComments `
+                -InteractiveMode:$(-not $NoPrompt) `
                 -HeartbeatSeconds $HeartbeatSeconds
         }
 
@@ -3672,9 +4271,16 @@ try {
         if ($null -ne $downloadResult.PSObject.Properties['InfoJsonByMediaPath'] -and $downloadResult.InfoJsonByMediaPath) {
             $infoJsonMap = $downloadResult.InfoJsonByMediaPath
         }
+        $remoteAudioMap = @{}
+        if ($null -ne $downloadResult.PSObject.Properties['RemoteAudioTrackByMediaPath'] -and $downloadResult.RemoteAudioTrackByMediaPath) {
+            $remoteAudioMap = $downloadResult.RemoteAudioTrackByMediaPath
+        }
         foreach ($downloadedPath in @($downloadResult.DownloadedPaths)) {
             if ($infoJsonMap.ContainsKey($downloadedPath)) {
                 $sourceInfoJsonByVideoPath[$downloadedPath] = $infoJsonMap[$downloadedPath]
+            }
+            if ($remoteAudioMap.ContainsKey($downloadedPath)) {
+                $remoteAudioTrackByVideoPath[$downloadedPath] = $remoteAudioMap[$downloadedPath]
             }
         }
         $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
@@ -3726,6 +4332,7 @@ else {
                         -YtDlpInvoker $ytDlpInvoker `
                         -FFmpegExe $FFmpegPath `
                         -IncludeComments:$doIncludeComments `
+                        -InteractiveMode:$(-not $NoPrompt) `
                         -HeartbeatSeconds $HeartbeatSeconds
                 }
 
@@ -3736,9 +4343,16 @@ else {
                 if ($null -ne $downloadResult.PSObject.Properties['InfoJsonByMediaPath'] -and $downloadResult.InfoJsonByMediaPath) {
                     $infoJsonMap = $downloadResult.InfoJsonByMediaPath
                 }
+                $remoteAudioMap = @{}
+                if ($null -ne $downloadResult.PSObject.Properties['RemoteAudioTrackByMediaPath'] -and $downloadResult.RemoteAudioTrackByMediaPath) {
+                    $remoteAudioMap = $downloadResult.RemoteAudioTrackByMediaPath
+                }
                 foreach ($downloadedPath in @($downloadResult.DownloadedPaths)) {
                     if ($infoJsonMap.ContainsKey($downloadedPath)) {
                         $sourceInfoJsonByVideoPath[$downloadedPath] = $infoJsonMap[$downloadedPath]
+                    }
+                    if ($remoteAudioMap.ContainsKey($downloadedPath)) {
+                        $remoteAudioTrackByVideoPath[$downloadedPath] = $remoteAudioMap[$downloadedPath]
                     }
                 }
                 $videos += @($downloadResult.DownloadedPaths | ForEach-Object { Get-Item -LiteralPath $_ })
@@ -3895,7 +4509,9 @@ foreach ($video in $videos) {
             -LanguageCode $Language `
             -TranslationTargets $translationTargets `
             -SourceInfoJsonPath $(if ($sourceInfoJsonByVideoPath.ContainsKey($video.FullName)) { $sourceInfoJsonByVideoPath[$video.FullName] } else { "" }) `
+            -RemoteAudioTrackInfo $(if ($remoteAudioTrackByVideoPath.ContainsKey($video.FullName)) { $remoteAudioTrackByVideoPath[$video.FullName] } else { $null }) `
             -DoCopyRaw:$doCopyRaw `
+            -CommentsRequested:$doIncludeComments `
             -SummaryCsv $summaryCsv `
             -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
