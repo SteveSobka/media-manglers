@@ -2,27 +2,39 @@
 
 Media Manglers started as a practical way to break video and audio into pieces that AI can review more accurately.
 
-I originally built it for a sim-racing project, where high-frame-rate footage moves too fast for broad, generic AI video review to catch the details I actually cared about. Instead of handing AI one giant video and hoping for the best, I wanted a way to extract the frames, audio, transcripts, translations, comments, and other artifacts needed to review specific moments more deliberately.
+I originally built it for sim racing. High-frame-rate footage moves fast, and generic AI video review kept missing the details I actually cared about. When I wanted to understand a braking zone, a side-by-side corner entry, or the difference between one lap and another, handing AI one giant video file usually produced broad summaries instead of useful review.
 
-That is what Media Manglers does.
+I am not a traditional programmer, and that is part of the story here. I built this collaboratively with AI, using a lot of iteration, testing, re-explaining, and course-correcting until the outputs matched the workflow I needed. What mattered was solving a real problem (collaborating with AI to review video footage).
+
+Instead of treating media like one giant blob, Media Manglers turns it into a review package: proxy media, extracted frames, audio, transcripts, optional translations, comments exports, and optional upload-ready bundles for AI review.
+
+It started as a personal tool, but the workflow turned out to be useful for anyone who needs to inspect, summarize, translate, and hand off media without juggling five different utilities.
+
+That is what this project does: it turns messy, fast-moving media into something you can review on purpose.
 
 ## Why This Project Exists
 
-This project started with a real sim-racing workflow problem. I needed AI to help review driving footage and help me reason about what was happening on screen, but ordinary AI review kept missing important details in high-frame-rate video because key moments happen too quickly. Handing over a normal video file usually produced broad summaries when what I actually needed was a way to guide the review toward exact moments, frames, and spoken details.
+In sim racing, the difference between a strong lap and an average one can be a couple tenths of a second. Those tenths live in details: braking points, turn-in timing, car placement, steering corrections, and what is happening from one moment to the next. Early AI video review was not very good at understanding that kind of footage when I handed it a normal video and asked it to tell me what happened.
 
-That is what led to `Video Mangler`. It breaks a video into review-friendly artifacts such as proxy media, extracted frames, transcripts, translated transcripts, comments exports, and ChatGPT-ready packages so the analysis can be directed instead of guessed.
+So I needed a better way to show AI what mattered.
 
-`Audio Mangler` grew from the same need on the spoken-content side: transcript-first and source-audio-first workflows that stay anchored to the original recording, with optional translation from the original spoken source instead of weak platform auto-translation.
+That led to `Video Mangler`. It breaks video into review-friendly artifacts so analysis can be directed instead of guessed.
 
-I chose PowerShell on purpose. The scripts stay easy to inspect and easy to run directly, so the logic is visible instead of hidden behind a compiled black box, even though packaged executables are available. When the machine supports it, the tools use available GPU and CPU acceleration paths to speed up processing.
+The same idea expanded into spoken-content workflows. Sometimes the pictures matter as much as the words. Sometimes the words are the main event. That is where `Audio Mangler` came from: a transcript-first, source-audio-first workflow that stays anchored to the original recording, with optional translated outputs created from the original spoken source.
 
-YouTube comments turned out to be part of the same workflow. They are often useful, but searching them in the browser is awkward and limited. Exporting them to text or JSON makes them much easier to review, search, and include in an AI workflow.
+YouTube comments turned out to be part of the same workflow too. They are often useful context, but reviewing them in the browser is awkward. Exporting them to text or JSON makes them much easier to search, review, and include in an AI workflow.
 
-The project started as a practical script collection and has grown into a public toolset for people who need to inspect, summarize, translate, and hand off media without juggling five different utilities. Some of the development work was done collaboratively with AI, but the goal here is simple: useful tools that normal people can run.
+## A Note On How It Was Built
 
-Media Manglers has two standalone apps:
+Most of this project was built collaboratively with AI. That is part of the story as I am a geek, but not a traditional software developer. AI gave me a way to turn a very specific workflow problem into something real. The standard I care about is simple: does the tool solve a real problem, is the logic inspectable, and are the outputs useful? That is the bar I am trying to meet here.
 
-- `Video Mangler` turns videos into review packages with a proxy file, extracted frames, audio, transcripts, optional translated transcripts, and an optional ChatGPT upload zip.
+That is also why I chose PowerShell on purpose. The scripts stay easy to inspect and easy to run directly, so the logic is visible instead of hidden behind a compiled black box, even though packaged executables are available.
+
+## What Media Manglers Includes
+
+Media Manglers currently has two standalone apps:
+
+- `Video Mangler` turns video into review packages with a proxy file, extracted frames, audio, transcripts, optional translated transcripts, comments exports, and an optional ChatGPT upload zip.
 - `Audio Mangler` does the same kind of packaging for audio-first work, with a cleaner transcript-centered flow and optional translated outputs.
 
 ## Which App Is Which?
@@ -34,6 +46,7 @@ Use `Video Mangler` when the pictures matter as much as the words.
 It is built for:
 
 - video review
+- sim-racing footage and other fast-moving analysis
 - interview or talk breakdowns
 - extracting stills on a time interval
 - turning a remote or local video into something easier to review and share
@@ -55,6 +68,7 @@ It is built for:
 - You want to translate from the original spoken source, not from bad platform auto-translation.
 - You want to keep a local path available instead of being forced into a paid API.
 - You want review-friendly outputs for your own work, a client handoff, or an LLM upload.
+- You want something inspectable instead of a black box.
 
 ## Download
 
@@ -65,9 +79,8 @@ Most people should start with the latest GitHub release:
 Release assets usually include:
 
 - `Video-Mangler.exe`
-- `Video-Mangler-v0.5.0.zip`
 - `Audio-Mangler.exe`
-- `Audio-Mangler-v0.5.0.zip`
+- versioned zip bundles with the app, docs, release notes, version file, license, and notices
 
 What to pick:
 
