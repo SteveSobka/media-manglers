@@ -4,3 +4,5 @@ test-output/
 test_media/
 /*.mkv
 dist/release/
+dist/archive/
+dist/staging/

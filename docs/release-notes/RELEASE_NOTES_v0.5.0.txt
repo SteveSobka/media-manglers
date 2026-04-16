@@ -69,6 +69,13 @@ Cleanup and validation
 - Added KeepTempFiles support so troubleshooting artifacts are opt-in
 - Added cleanup for temporary helper scripts, staging folders, transient
   download folders, and zip build scratch space
+- Updated the executable packaging flow so release builds keep only the current
+  live executables plus the current release zips in dist\ and dist\release\
+- Older local release zips, unpacked release folders, and other leftover
+  packaging artifacts now move into dist\archive\release\ instead of piling up
+  in the live release folder
+- Added KeepPackageStaging so package staging retention is available when
+  troubleshooting but does not accumulate by default
 - Updated smoke tests with KeepTestOutput support and translation-related
   parameters
 - Expanded validators to check translated transcript outputs, transcript text
