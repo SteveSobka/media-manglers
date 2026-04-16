@@ -30,6 +30,7 @@ $script:CurrentLogFile = $null
 $script:AppName = "Audio Mangler"
 $script:FallbackAppVersion = "0.5.0"
 $script:SessionOpenAiApiKey = $null
+$script:OpenAiTestModeLogged = $false
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -1379,7 +1380,11 @@ function New-CodexReadme {
         [string]$DetectedLanguage,
         [string[]]$TranslationTargets,
         [string]$TranslationProviderDetails,
-        [string]$CommentsSummary
+        [string]$CommentsSummary,
+        [string]$PackageStatus = "SUCCESS",
+        [string]$TranslationStatus = "",
+        [string]$TranslationNotes = "",
+        [string]$NextSteps = ""
     )
 
 @"
@@ -1405,9 +1410,13 @@ A good review order:
 5. Check comments\ if public source comments were included for extra context.
 
 Notes:
+- Package status: $(if ($PackageStatus -eq "PARTIAL_SUCCESS") { "partial success" } else { "success" })
 - Detected source language: $DetectedLanguage
 - Translation targets: $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { $TranslationTargets -join ", " } else { "none" })
+- Translation status: $(if ([string]::IsNullOrWhiteSpace($TranslationStatus)) { "not requested" } else { $TranslationStatus })
 - Translation path used: $(if ([string]::IsNullOrWhiteSpace($TranslationProviderDetails)) { "none" } else { $TranslationProviderDetails })
+- Translation notes: $(if ([string]::IsNullOrWhiteSpace($TranslationNotes)) { "none" } else { $TranslationNotes })
+- Next steps: $(if ([string]::IsNullOrWhiteSpace($NextSteps)) { "none" } else { $NextSteps })
 - Comments: $(if ([string]::IsNullOrWhiteSpace($CommentsSummary)) { "not included" } else { $CommentsSummary })
 - Raw audio present: $RawPresent
 "@ | Set-Content -LiteralPath $ReadmePath -Encoding UTF8
@@ -1621,7 +1630,8 @@ function New-MasterReadme {
     $lines += ""
     $lines += "Processed packages:"
     foreach ($item in $ProcessedItems) {
-        $lines += "- $($item.OutputFolderName)  <=  $($item.SourceAudioName)"
+        $packageSuffix = if ($item.PackageStatus -eq "PARTIAL_SUCCESS") { " (partial success)" } else { "" }
+        $lines += "- $($item.OutputFolderName)  <=  $($item.SourceAudioName)$packageSuffix"
     }
 
     $lines | Set-Content -LiteralPath $MasterReadmePath -Encoding UTF8
@@ -1645,7 +1655,11 @@ function Add-SummaryRow {
         [string]$CommentsText,
         [string]$CommentsJson,
         [string]$CommentsSummary,
-        [string]$WhisperMode
+        [string]$WhisperMode,
+        [string]$PackageStatus,
+        [string]$TranslationStatus,
+        [string]$TranslationNotes,
+        [string]$NextSteps
     )
 
     $row = [PSCustomObject]@{
@@ -1661,6 +1675,10 @@ function Add-SummaryRow {
         detected_language        = $DetectedLanguage
         translation_targets      = $TranslationTargets
         translation_provider     = $TranslationProvider
+        package_status           = $PackageStatus
+        translation_status       = $TranslationStatus
+        translation_notes        = $TranslationNotes
+        next_steps               = $NextSteps
         comments_text            = $CommentsText
         comments_json            = $CommentsJson
         comments_summary         = $CommentsSummary
@@ -2891,8 +2909,322 @@ function Get-InteractiveOpenAiRecoveryDecision {
     }
 }
 
+function Get-OpenAiTestMode {
+    $rawMode = [string][Environment]::GetEnvironmentVariable("MM_TEST_OPENAI_MODE", [System.EnvironmentVariableTarget]::Process)
+    if ([string]::IsNullOrWhiteSpace($rawMode)) {
+        return ""
+    }
+
+    $normalized = $rawMode.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_")
+    switch ($normalized) {
+        "success"            { return "success" }
+        "401"                { return "unauthorized" }
+        "unauthorized"       { return "unauthorized" }
+        "invalid_key"        { return "unauthorized" }
+        "403"                { return "unauthorized" }
+        "permission"         { return "unauthorized" }
+        "429"                { return "rate_limit" }
+        "rate_limit"         { return "rate_limit" }
+        "quota"              { return "quota" }
+        "insufficient_quota" { return "quota" }
+        "500"                { return "server_error" }
+        "server_error"       { return "server_error" }
+        "timeout"            { return "timeout" }
+        "network"            { return "network" }
+        default {
+            throw "Unsupported MM_TEST_OPENAI_MODE value '$rawMode'. Use success, unauthorized, rate_limit, quota, server_error, timeout, or network."
+        }
+    }
+}
+
+function Get-OpenAiErrorResponseText {
+    param([System.Exception]$Exception)
+
+    if ($null -eq $Exception) {
+        return ""
+    }
+
+    $response = $Exception.Response
+    if ($null -eq $response) {
+        return ""
+    }
+
+    try {
+        if ($response.Content -and $response.Content -is [System.Net.Http.HttpContent]) {
+            return [string]$response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        }
+    }
+    catch {
+    }
+
+    try {
+        $stream = $response.GetResponseStream()
+        if ($null -eq $stream) {
+            return ""
+        }
+
+        try {
+            $reader = New-Object System.IO.StreamReader($stream)
+            return [string]$reader.ReadToEnd()
+        }
+        finally {
+            if ($reader) {
+                $reader.Dispose()
+            }
+            $stream.Dispose()
+        }
+    }
+    catch {
+        return ""
+    }
+}
+
+function Get-OpenAiFailureDetails {
+    param([System.Exception]$Exception)
+
+    if ($null -eq $Exception) {
+        return $null
+    }
+
+    if ($Exception.Data -and $Exception.Data.Contains("OpenAiFailureCategory")) {
+        return [PSCustomObject]@{
+            Category          = [string]$Exception.Data["OpenAiFailureCategory"]
+            Recoverable       = [bool]$Exception.Data["OpenAiRecoverable"]
+            StatusCode        = [int]$Exception.Data["OpenAiStatusCode"]
+            ErrorCode         = [string]$Exception.Data["OpenAiErrorCode"]
+            UserMessage       = [string]$Exception.Data["OpenAiUserMessage"]
+            NextStep          = [string]$Exception.Data["OpenAiNextStep"]
+            ShowSetupGuidance = [bool]$Exception.Data["OpenAiShowSetupGuidance"]
+        }
+    }
+
+    $statusCode = 0
+    $response = $Exception.Response
+    if ($response) {
+        try {
+            if ($response.StatusCode) {
+                $statusCode = [int]$response.StatusCode
+            }
+        }
+        catch {
+            $statusCode = 0
+        }
+    }
+
+    $responseBody = Get-OpenAiErrorResponseText -Exception $Exception
+    $serviceMessage = ""
+    $errorCode = ""
+    if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+        try {
+            $parsed = $responseBody | ConvertFrom-Json
+            if ($parsed.error) {
+                $serviceMessage = [string]$parsed.error.message
+                $errorCode = [string]$parsed.error.code
+            }
+        }
+        catch {
+        }
+    }
+
+    $combinedMessage = @([string]$Exception.Message, $serviceMessage) -join " "
+    $category = "Unknown"
+    $recoverable = $false
+    $userMessage = if ([string]::IsNullOrWhiteSpace($Exception.Message)) { "The OpenAI request failed." } else { [string]$Exception.Message }
+    $nextStep = "Check script_run.log for more detail, then try again or rerun with -TranslationProvider Local."
+    $showSetupGuidance = $false
+
+    if (($statusCode -eq 401) -or (($statusCode -eq 403) -and ($combinedMessage -notmatch '(?i)quota|billing|credit|balance')) -or ($combinedMessage -match '(?i)unauthorized|invalid api key|incorrect api key|forbidden|permission')) {
+        $category = "Unauthorized"
+        $recoverable = $true
+        if ($statusCode -eq 403) {
+            $userMessage = "OpenAI rejected the request because this API key or project is not allowed to call Chat Completions."
+        }
+        else {
+            $userMessage = "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project."
+        }
+        $nextStep = "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions."
+        $showSetupGuidance = $true
+    }
+    elseif (($statusCode -eq 429) -and ($combinedMessage -match '(?i)quota|billing|credit|balance|insufficient_quota')) {
+        $category = "Quota"
+        $recoverable = $true
+        $userMessage = "OpenAI rejected the request because the project appears to be out of quota or blocked by billing."
+        $nextStep = "Check OpenAI project billing and quota, or rerun with -TranslationProvider Local."
+    }
+    elseif ($statusCode -eq 429) {
+        $category = "RateLimit"
+        $recoverable = $true
+        $userMessage = "OpenAI rate-limited the translation request (429 Too Many Requests)."
+        $nextStep = "Wait a moment and retry, or rerun with -TranslationProvider Local."
+    }
+    elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
+        $category = "ServerError"
+        $recoverable = $true
+        $userMessage = ("OpenAI returned a server error ({0})." -f $statusCode)
+        $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+    }
+    elseif ($combinedMessage -match '(?i)timed out|timeout|operation has timed out') {
+        $category = "Timeout"
+        $recoverable = $true
+        $userMessage = "The OpenAI request timed out before translation completed."
+        $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+    }
+    elseif ($combinedMessage -match '(?i)no such host is known|name or service not known|could not resolve|unable to connect|connection.*failed|connection.*closed|network') {
+        $category = "Network"
+        $recoverable = $true
+        $userMessage = "The OpenAI request failed before a response came back from the service."
+        $nextStep = "Check the network connection, then retry or rerun with -TranslationProvider Local."
+    }
+    elseif ($statusCode -gt 0) {
+        $userMessage = ("OpenAI returned HTTP {0}." -f $statusCode)
+    }
+
+    return [PSCustomObject]@{
+        Category          = $category
+        Recoverable       = $recoverable
+        StatusCode        = $statusCode
+        ErrorCode         = $errorCode
+        UserMessage       = $userMessage
+        NextStep          = $nextStep
+        ShowSetupGuidance = $showSetupGuidance
+    }
+}
+
+function New-OpenAiTranslationException {
+    param(
+        [string]$TargetLanguage,
+        [string]$FailureCategory,
+        [string]$UserMessage,
+        [string]$NextStep,
+        [int]$StatusCode = 0,
+        [string]$ErrorCode = "",
+        [bool]$Recoverable = $false,
+        [bool]$ShowSetupGuidance = $false,
+        [System.Exception]$InnerException = $null
+    )
+
+    $message = "OpenAI translation failed for language '$TargetLanguage'. $UserMessage"
+    $exception = if ($InnerException) {
+        New-Object System.Exception($message, $InnerException)
+    }
+    else {
+        New-Object System.Exception($message)
+    }
+
+    $exception.Data["OpenAiFailureCategory"] = $FailureCategory
+    $exception.Data["OpenAiRecoverable"] = $Recoverable
+    $exception.Data["OpenAiStatusCode"] = $StatusCode
+    $exception.Data["OpenAiErrorCode"] = $ErrorCode
+    $exception.Data["OpenAiUserMessage"] = $UserMessage
+    $exception.Data["OpenAiNextStep"] = $NextStep
+    $exception.Data["OpenAiShowSetupGuidance"] = $ShowSetupGuidance
+    return $exception
+}
+
+function Get-InteractiveOpenAiRuntimeRecoveryDecision {
+    param(
+        [string]$TargetLanguage,
+        [PSCustomObject]$FailureDetails,
+        [bool]$CanUseLocalFallback,
+        [string]$LocalFallbackNote = ""
+    )
+
+    while ($true) {
+        Write-Host ""
+        Write-Host ("OpenAI translation for '{0}' hit a recoverable problem." -f $TargetLanguage) -ForegroundColor Yellow
+        Write-Host $FailureDetails.UserMessage -ForegroundColor Yellow
+        if (-not [string]::IsNullOrWhiteSpace($LocalFallbackNote)) {
+            Write-Host $LocalFallbackNote -ForegroundColor DarkYellow
+        }
+        if ($FailureDetails.ShowSetupGuidance) {
+            foreach ($line in (Get-OpenAiSetupInstructionLines -ProviderLabel "OpenAI translation" -Audience "Interactive")) {
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    Write-Host ""
+                    continue
+                }
+
+                if ($line.StartsWith("  ")) {
+                    Write-Host $line -ForegroundColor DarkYellow
+                    continue
+                }
+
+                Write-Host $line -ForegroundColor Yellow
+            }
+        }
+
+        Write-Host "Choose how to continue:" -ForegroundColor Yellow
+        Write-Host "  1. Retry OpenAI for this target" -ForegroundColor Cyan
+        if ($CanUseLocalFallback) {
+            Write-Host "  2. Switch remaining translation targets to Local" -ForegroundColor Cyan
+            Write-Host "  3. Stop translating and keep the completed outputs" -ForegroundColor Cyan
+            Write-Host "  4. Cancel this package" -ForegroundColor Cyan
+        }
+        else {
+            Write-Host "  2. Stop translating and keep the completed outputs" -ForegroundColor Cyan
+            Write-Host "  3. Cancel this package" -ForegroundColor Cyan
+        }
+
+        $choice = if ($CanUseLocalFallback) {
+            Read-Host "Type 1, 2, 3, or 4"
+        }
+        else {
+            Read-Host "Type 1, 2, or 3"
+        }
+
+        switch ($choice.Trim()) {
+            "1" {
+                return [PSCustomObject]@{
+                    Action         = "Retry"
+                    ResolutionNote = ("OpenAI translation for '{0}' was retried after an interactive recovery prompt." -f $TargetLanguage)
+                }
+            }
+            "2" {
+                if ($CanUseLocalFallback) {
+                    return [PSCustomObject]@{
+                        Action         = "UseLocal"
+                        ResolutionNote = ("OpenAI translation for '{0}' hit a recoverable problem. Interactive recovery switched the remaining translation targets to Local." -f $TargetLanguage)
+                    }
+                }
+
+                return [PSCustomObject]@{
+                    Action         = "Stop"
+                    ResolutionNote = ("OpenAI translation for '{0}' hit a recoverable problem. Interactive recovery kept the completed outputs and stopped further translation work." -f $TargetLanguage)
+                }
+            }
+            "3" {
+                if ($CanUseLocalFallback) {
+                    return [PSCustomObject]@{
+                        Action         = "Stop"
+                        ResolutionNote = ("OpenAI translation for '{0}' hit a recoverable problem. Interactive recovery kept the completed outputs and stopped further translation work." -f $TargetLanguage)
+                    }
+                }
+
+                throw "User canceled the package after an OpenAI translation failure."
+            }
+            "4" {
+                if ($CanUseLocalFallback) {
+                    throw "User canceled the package after an OpenAI translation failure."
+                }
+            }
+            default {
+                if ($CanUseLocalFallback) {
+                    Write-Host "Please type 1, 2, 3, or 4." -ForegroundColor Yellow
+                }
+                else {
+                    Write-Host "Please type 1, 2, or 3." -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+}
+
 function Get-OpenAiApiKey {
     param([switch]$Required)
+
+    $testMode = Get-OpenAiTestMode
+    if (-not [string]::IsNullOrWhiteSpace($testMode)) {
+        return "__MM_TEST_OPENAI_MODE__"
+    }
 
     $apiKey = [string]$script:SessionOpenAiApiKey
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
@@ -2921,6 +3253,10 @@ function Get-OpenAiApiKey {
 }
 
 function Test-OpenAiTranslationAvailable {
+    if (-not [string]::IsNullOrWhiteSpace((Get-OpenAiTestMode))) {
+        return $true
+    }
+
     return -not [string]::IsNullOrWhiteSpace((Get-OpenAiApiKey))
 }
 
@@ -3378,6 +3714,90 @@ function Ensure-ArgosTranslationSupport {
     }
 }
 
+function Resolve-TranslationTargetProvider {
+    param(
+        [string]$TranslationMode,
+        [string]$TargetLanguage,
+        [string]$DetectedLanguage,
+        [string]$ModelName,
+        [string]$PythonCommand,
+        [bool]$InteractiveMode,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    if ($TargetLanguage -eq $DetectedLanguage) {
+        return [PSCustomObject]@{
+            Action = "ready"
+            Provider = "Original transcript copy"
+            Note = ""
+        }
+    }
+
+    if ($TranslationMode -eq "OpenAI") {
+        return [PSCustomObject]@{
+            Action = "ready"
+            Provider = "OpenAI"
+            Note = ""
+        }
+    }
+
+    if ($TranslationMode -eq "Local") {
+        if ($TargetLanguage -eq "en") {
+            if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
+                throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -TranslationProvider OpenAI."
+            }
+
+            return [PSCustomObject]@{
+                Action = "ready"
+                Provider = "Local (Whisper audio translation)"
+                Note = ""
+            }
+        }
+
+        $argosStatus = Ensure-ArgosTranslationSupport `
+            -PythonCommand $PythonCommand `
+            -SourceLanguageCode $DetectedLanguage `
+            -TargetLanguageCode $TargetLanguage `
+            -InteractiveMode:$InteractiveMode `
+            -HeartbeatSeconds $HeartbeatSeconds
+
+        if ($argosStatus -eq "skip") {
+            return [PSCustomObject]@{
+                Action = "skip"
+                Provider = "Local (Argos Translate)"
+                Note = ("Skipping translation target '{0}' because local Argos support was not installed." -f $TargetLanguage)
+            }
+        }
+
+        return [PSCustomObject]@{
+            Action = "ready"
+            Provider = "Local (Argos Translate)"
+            Note = ""
+        }
+    }
+
+    if ($TranslationMode -eq "Auto") {
+        if (Test-OpenAiTranslationAvailable) {
+            return [PSCustomObject]@{
+                Action = "ready"
+                Provider = "OpenAI"
+                Note = ""
+            }
+        }
+
+        return Resolve-TranslationTargetProvider `
+            -TranslationMode "Local" `
+            -TargetLanguage $TargetLanguage `
+            -DetectedLanguage $DetectedLanguage `
+            -ModelName $ModelName `
+            -PythonCommand $PythonCommand `
+            -InteractiveMode:$InteractiveMode `
+            -HeartbeatSeconds $HeartbeatSeconds
+    }
+
+    throw "Unsupported translation mode '$TranslationMode'."
+}
+
 function Invoke-OpenAiSegmentTranslation {
     param(
         [array]$Segments,
@@ -3388,6 +3808,12 @@ function Invoke-OpenAiSegmentTranslation {
     )
 
     $apiKey = Get-OpenAiApiKey -Required
+    $testMode = Get-OpenAiTestMode
+    if (-not [string]::IsNullOrWhiteSpace($testMode) -and -not $script:OpenAiTestModeLogged) {
+        Write-Log ("MM_TEST_OPENAI_MODE='{0}' active. OpenAI translation calls are being simulated for this run." -f $testMode) "WARN"
+        $script:OpenAiTestModeLogged = $true
+    }
+
     $headers = @{
         Authorization = "Bearer $apiKey"
         "Content-Type" = "application/json"
@@ -3436,13 +3862,90 @@ function Invoke-OpenAiSegmentTranslation {
         } | ConvertTo-Json -Depth 6
 
         try {
-            $response = Invoke-RestMethod -Method Post -Uri "https://api.openai.com/v1/chat/completions" -Headers $headers -Body $body
+            if ($testMode -eq "success") {
+                $translatedText = ("[MM_TEST_OPENAI_SUCCESS:{0}] {1}" -f $TargetLanguage, $text).Trim()
+            }
+            elseif ($testMode -eq "unauthorized") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "Unauthorized" `
+                        -UserMessage "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project." `
+                        -NextStep "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions." `
+                        -StatusCode 401 `
+                        -Recoverable:$true `
+                        -ShowSetupGuidance:$true)
+            }
+            elseif ($testMode -eq "rate_limit") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "RateLimit" `
+                        -UserMessage "OpenAI rate-limited the translation request (429 Too Many Requests)." `
+                        -NextStep "Wait a moment and retry, or rerun with -TranslationProvider Local." `
+                        -StatusCode 429 `
+                        -Recoverable:$true)
+            }
+            elseif ($testMode -eq "quota") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "Quota" `
+                        -UserMessage "OpenAI rejected the request because the project appears to be out of quota or blocked by billing." `
+                        -NextStep "Check OpenAI project billing and quota, or rerun with -TranslationProvider Local." `
+                        -StatusCode 429 `
+                        -ErrorCode "insufficient_quota" `
+                        -Recoverable:$true)
+            }
+            elseif ($testMode -eq "server_error") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "ServerError" `
+                        -UserMessage "OpenAI returned a server error (500)." `
+                        -NextStep "Retry later, or rerun with -TranslationProvider Local." `
+                        -StatusCode 500 `
+                        -Recoverable:$true)
+            }
+            elseif ($testMode -eq "timeout") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "Timeout" `
+                        -UserMessage "The OpenAI request timed out before translation completed." `
+                        -NextStep "Retry later, or rerun with -TranslationProvider Local." `
+                        -Recoverable:$true)
+            }
+            elseif ($testMode -eq "network") {
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "Network" `
+                        -UserMessage "The OpenAI request failed before a response came back from the service." `
+                        -NextStep "Check the network connection, then retry or rerun with -TranslationProvider Local." `
+                        -Recoverable:$true)
+            }
+            else {
+                $response = Invoke-RestMethod -Method Post -Uri "https://api.openai.com/v1/chat/completions" -Headers $headers -Body $body
+                $translatedText = [string]$response.choices[0].message.content
+            }
         }
         catch {
+            $failureDetails = Get-OpenAiFailureDetails -Exception $_.Exception
+            if ($failureDetails) {
+                if ($_.Exception.Data -and $_.Exception.Data.Contains("OpenAiFailureCategory")) {
+                    throw $_.Exception
+                }
+
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory $failureDetails.Category `
+                        -UserMessage $failureDetails.UserMessage `
+                        -NextStep $failureDetails.NextStep `
+                        -StatusCode $failureDetails.StatusCode `
+                        -ErrorCode $failureDetails.ErrorCode `
+                        -Recoverable:$failureDetails.Recoverable `
+                        -ShowSetupGuidance:$failureDetails.ShowSetupGuidance `
+                        -InnerException $_.Exception)
+            }
+
             throw "OpenAI translation failed for language '$TargetLanguage'. $($_.Exception.Message)"
         }
 
-        $translatedText = [string]$response.choices[0].message.content
         $translatedSegments += [PSCustomObject]@{
             id    = $segment.id
             start = $segment.start
@@ -3990,7 +4493,14 @@ function Process-Audio {
     $normalizedTargets = @($TranslationTargets | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     $completedTargets = New-Object System.Collections.Generic.List[string]
     $translationProviderDetails = New-Object System.Collections.Generic.List[string]
+    $translationRecoveryNotes = New-Object System.Collections.Generic.List[string]
+    $translationFailureNotes = New-Object System.Collections.Generic.List[string]
+    $translationNextSteps = New-Object System.Collections.Generic.List[string]
     $requestedProvider = [string]$TranslationProvider
+    $activeTranslationMode = [string]$TranslationProvider
+    $packageStatus = "SUCCESS"
+    $shouldFailRun = $false
+    $translationStopRequested = $false
 
     if ($requestedProvider -eq "OpenAI" -and -not (Test-OpenAiTranslationAvailable)) {
         Show-OpenAiSetupGuidance -ProviderLabel "OpenAI translation"
@@ -3998,170 +4508,236 @@ function Process-Audio {
     }
 
     foreach ($targetLanguage in $normalizedTargets) {
-        $providerUsed = $null
-        if ($targetLanguage -eq $detectedLanguage) {
-            $providerUsed = "Original transcript copy"
-        }
-        elseif ($requestedProvider -eq "OpenAI") {
-            $providerUsed = "OpenAI"
-        }
-        elseif ($requestedProvider -eq "Local") {
-            if ($targetLanguage -eq "en") {
-                if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-                    throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -TranslationProvider OpenAI."
-                }
-
-                $providerUsed = "Local (Whisper audio translation)"
-            }
-            else {
-                $argosStatus = Ensure-ArgosTranslationSupport `
-                    -PythonCommand $PythonCommand `
-                    -SourceLanguageCode $detectedLanguage `
-                    -TargetLanguageCode $targetLanguage `
-                    -InteractiveMode:$InteractiveMode `
-                    -HeartbeatSeconds $HeartbeatSeconds
-
-                if ($argosStatus -eq "skip") {
-                    Write-Log ("Skipping translation target '{0}' because local Argos support was not installed." -f $targetLanguage) "WARN"
-                    continue
-                }
-
-                $providerUsed = "Local (Argos Translate)"
-            }
-        }
-        else {
-            if (Test-OpenAiTranslationAvailable) {
-                $providerUsed = "OpenAI"
-            }
-            elseif ($targetLanguage -eq "en") {
-                if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-                    throw "Auto translation fell back to Local, but the selected Whisper model is English-only. Pick a multilingual model like 'base' or 'small', or set OPENAI_API_KEY."
-                }
-
-                $providerUsed = "Local (Whisper audio translation)"
-            }
-            else {
-                $argosStatus = Ensure-ArgosTranslationSupport `
-                    -PythonCommand $PythonCommand `
-                    -SourceLanguageCode $detectedLanguage `
-                    -TargetLanguageCode $targetLanguage `
-                    -InteractiveMode:$InteractiveMode `
-                    -HeartbeatSeconds $HeartbeatSeconds
-
-                if ($argosStatus -eq "skip") {
-                    Write-Log ("Skipping translation target '{0}' because local Argos support was not installed." -f $targetLanguage) "WARN"
-                    continue
-                }
-
-                $providerUsed = "Local (Argos Translate)"
-            }
+        if ($translationStopRequested) {
+            break
         }
 
-        Write-Log ("Translation provider for {0}: {1} (mode: {2})" -f $targetLanguage, $providerUsed, $TranslationProvider)
+        $phaseDetail = ("{0} -> {1}" -f $audioItem.Name, $targetLanguage)
+        Write-Phase -Name "Translation" -Detail $phaseDetail
 
+        $providerUsed = ""
+        $translationPhaseCompleted = $false
+        $pendingOpenAiFallbackDetails = $null
         $translationFolder = Join-Path $translationsFolder $targetLanguage
-        Ensure-Directory $translationsFolder
-        Ensure-Directory $translationFolder
 
-        Invoke-PhaseAction -Name "Translation" -Detail ("{0} -> {1}" -f $audioItem.Name, $targetLanguage) -Action {
-            if ($providerUsed -eq "Original transcript copy") {
-                Write-Log "Target language matches detected source language. Reusing the original transcript."
-                $null = Write-TranscriptArtifactsFromSegments `
-                    -OutputFolder $translationFolder `
-                    -Segments $transcriptData.Segments `
-                    -Language $detectedLanguage `
-                    -SourceLanguage $detectedLanguage `
-                    -Task "copy" `
-                    -JsonName "transcript.json" `
-                    -SrtName "transcript.srt" `
-                    -TextName "transcript.txt"
-                return
-            }
-
-            if ($providerUsed -eq "Local (Whisper audio translation)") {
-                $tempJsonName = "transcript_whisper_translate.json"
-                $tempSrtName = "transcript_whisper_translate.srt"
-                $tempTextName = "transcript_whisper_translate.txt"
-                $translateResult = Invoke-PythonWhisperTranscript `
-                    -PythonCommand $PythonCommand `
-                    -AudioPath $reviewAudioPath `
-                    -TranscriptFolder $translationFolder `
+        while (-not $translationPhaseCompleted) {
+            try {
+                $providerPlan = Resolve-TranslationTargetProvider `
+                    -TranslationMode $activeTranslationMode `
+                    -TargetLanguage $targetLanguage `
+                    -DetectedLanguage $detectedLanguage `
                     -ModelName $ModelName `
-                    -LanguageCode $LanguageCode `
-                    -FFmpegExe $FFmpegExe `
-                    -PreferGpu $CanUseWhisperGpu `
-                    -Task "translate" `
-                    -JsonName $tempJsonName `
-                    -SrtName $tempSrtName `
-                    -TextName $tempTextName `
+                    -PythonCommand $PythonCommand `
+                    -InteractiveMode:$InteractiveMode `
                     -HeartbeatSeconds $HeartbeatSeconds
 
-                $translatedData = Get-TranscriptSegments -TranscriptJsonPath $translateResult.JsonPath
-                $null = Write-TranscriptArtifactsFromSegments `
-                    -OutputFolder $translationFolder `
-                    -Segments $translatedData.Segments `
-                    -Language "en" `
-                    -SourceLanguage $detectedLanguage `
-                    -Task "translate" `
-                    -JsonName "transcript.json" `
-                    -SrtName "transcript.srt" `
-                    -TextName "transcript.txt"
+                if ($providerPlan.Action -eq "skip") {
+                    Write-Log $providerPlan.Note "WARN"
+                    $packageStatus = "PARTIAL_SUCCESS"
+                    if ($pendingOpenAiFallbackDetails) {
+                        [void]$translationFailureNotes.Add(("{0}: {1} Local fallback was skipped. {2}" -f $targetLanguage, $pendingOpenAiFallbackDetails.UserMessage, $providerPlan.Note))
+                        [void]$translationNextSteps.Add($pendingOpenAiFallbackDetails.NextStep)
+                        $pendingOpenAiFallbackDetails = $null
+                    }
+                    else {
+                        [void]$translationFailureNotes.Add($providerPlan.Note)
+                        [void]$translationNextSteps.Add(("Install local translation support or rerun with -TranslationProvider OpenAI for target '{0}'." -f $targetLanguage))
+                    }
 
-                foreach ($tempPath in @(
-                    (Join-Path $translationFolder $tempJsonName),
-                    (Join-Path $translationFolder $tempSrtName),
-                    (Join-Path $translationFolder $tempTextName)
-                )) {
-                    if (Test-Path -LiteralPath $tempPath) {
-                        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                    Write-PhaseResult -Name "Translation" -Status "PASS" -Detail ("{0} (skipped)" -f $phaseDetail)
+                    $translationPhaseCompleted = $true
+                    break
+                }
+
+                $providerUsed = $providerPlan.Provider
+                Write-Log ("Translation provider for {0}: {1} (mode: {2})" -f $targetLanguage, $providerUsed, $activeTranslationMode)
+
+                Ensure-Directory $translationsFolder
+                Ensure-Directory $translationFolder
+
+                if ($providerUsed -eq "Original transcript copy") {
+                    Write-Log "Target language matches detected source language. Reusing the original transcript."
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $transcriptData.Segments `
+                        -Language $detectedLanguage `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "copy" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+                }
+                elseif ($providerUsed -eq "Local (Whisper audio translation)") {
+                    $tempJsonName = "transcript_whisper_translate.json"
+                    $tempSrtName = "transcript_whisper_translate.srt"
+                    $tempTextName = "transcript_whisper_translate.txt"
+                    $translateResult = Invoke-PythonWhisperTranscript `
+                        -PythonCommand $PythonCommand `
+                        -AudioPath $reviewAudioPath `
+                        -TranscriptFolder $translationFolder `
+                        -ModelName $ModelName `
+                        -LanguageCode $LanguageCode `
+                        -FFmpegExe $FFmpegExe `
+                        -PreferGpu $CanUseWhisperGpu `
+                        -Task "translate" `
+                        -JsonName $tempJsonName `
+                        -SrtName $tempSrtName `
+                        -TextName $tempTextName `
+                        -HeartbeatSeconds $HeartbeatSeconds
+
+                    $translatedData = Get-TranscriptSegments -TranscriptJsonPath $translateResult.JsonPath
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $translatedData.Segments `
+                        -Language "en" `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "translate" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+
+                    foreach ($tempPath in @(
+                        (Join-Path $translationFolder $tempJsonName),
+                        (Join-Path $translationFolder $tempSrtName),
+                        (Join-Path $translationFolder $tempTextName)
+                    )) {
+                        if (Test-Path -LiteralPath $tempPath) {
+                            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+                        }
                     }
                 }
+                elseif ($providerUsed -eq "Local (Argos Translate)") {
+                    $translatedSegments = Invoke-ArgosSegmentTranslation `
+                        -PythonCommand $PythonCommand `
+                        -Segments $transcriptData.Segments `
+                        -SourceLanguageCode $detectedLanguage `
+                        -TargetLanguageCode $targetLanguage `
+                        -HeartbeatSeconds $HeartbeatSeconds
 
-                return
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $translatedSegments `
+                        -Language $targetLanguage `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "translate" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+                }
+                else {
+                    $targetDisplayName = Get-LanguageDisplayName -Code $targetLanguage
+                    $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
+                    $translatedSegments = Invoke-OpenAiSegmentTranslation `
+                        -Segments $transcriptData.Segments `
+                        -SourceLanguage $sourceDisplayName `
+                        -TargetLanguage $targetDisplayName `
+                        -Model $OpenAiModel `
+                        -HeartbeatSeconds $HeartbeatSeconds
+
+                    $null = Write-TranscriptArtifactsFromSegments `
+                        -OutputFolder $translationFolder `
+                        -Segments $translatedSegments `
+                        -Language $targetLanguage `
+                        -SourceLanguage $detectedLanguage `
+                        -Task "translate" `
+                        -JsonName "transcript.json" `
+                        -SrtName "transcript.srt" `
+                        -TextName "transcript.txt"
+                }
+
+                [void]$completedTargets.Add($targetLanguage)
+                [void]$translationProviderDetails.Add(("{0}={1}" -f $targetLanguage, $providerUsed))
+                if ($pendingOpenAiFallbackDetails) {
+                    [void]$translationRecoveryNotes.Add(("{0}: {1} Fell back to {2}." -f $targetLanguage, $pendingOpenAiFallbackDetails.UserMessage, $providerUsed))
+                    $pendingOpenAiFallbackDetails = $null
+                }
+
+                Write-PhaseResult -Name "Translation" -Status "PASS" -Detail $phaseDetail
+                $translationPhaseCompleted = $true
             }
+            catch {
+                $failureDetails = if ($providerUsed -eq "OpenAI") { Get-OpenAiFailureDetails -Exception $_.Exception } else { $null }
+                if ($providerUsed -eq "OpenAI" -and $failureDetails -and $failureDetails.Recoverable) {
+                    if ($activeTranslationMode -eq "Auto") {
+                        Write-Log ("OpenAI translation for '{0}' hit a recoverable problem. {1}" -f $targetLanguage, $failureDetails.UserMessage) "WARN"
+                        $activeTranslationMode = "Local"
+                        $pendingOpenAiFallbackDetails = $failureDetails
+                        $providerUsed = ""
+                        continue
+                    }
 
-            if ($providerUsed -eq "Local (Argos Translate)") {
-                $translatedSegments = Invoke-ArgosSegmentTranslation `
-                    -PythonCommand $PythonCommand `
-                    -Segments $transcriptData.Segments `
-                    -SourceLanguageCode $detectedLanguage `
-                    -TargetLanguageCode $targetLanguage `
-                    -HeartbeatSeconds $HeartbeatSeconds
+                    if ($activeTranslationMode -eq "OpenAI" -and $InteractiveMode) {
+                        $canUseLocalFallback = $true
+                        $localFallbackNote = ""
+                        try {
+                            $null = Resolve-TranslationTargetProvider `
+                                -TranslationMode "Local" `
+                                -TargetLanguage $targetLanguage `
+                                -DetectedLanguage $detectedLanguage `
+                                -ModelName $ModelName `
+                                -PythonCommand $PythonCommand `
+                                -InteractiveMode:$InteractiveMode `
+                                -HeartbeatSeconds $HeartbeatSeconds
+                        }
+                        catch {
+                            $canUseLocalFallback = $false
+                            $localFallbackNote = $_.Exception.Message
+                        }
 
-                $null = Write-TranscriptArtifactsFromSegments `
-                    -OutputFolder $translationFolder `
-                    -Segments $translatedSegments `
-                    -Language $targetLanguage `
-                    -SourceLanguage $detectedLanguage `
-                    -Task "translate" `
-                    -JsonName "transcript.json" `
-                    -SrtName "transcript.srt" `
-                    -TextName "transcript.txt"
-                return
+                        $decision = Get-InteractiveOpenAiRuntimeRecoveryDecision `
+                            -TargetLanguage $targetLanguage `
+                            -FailureDetails $failureDetails `
+                            -CanUseLocalFallback:$canUseLocalFallback `
+                            -LocalFallbackNote $localFallbackNote
+                        if (-not [string]::IsNullOrWhiteSpace($decision.ResolutionNote)) {
+                            Write-Log $decision.ResolutionNote "WARN"
+                        }
+
+                        if ($decision.Action -eq "Retry") {
+                            $providerUsed = ""
+                            continue
+                        }
+
+                        if ($decision.Action -eq "UseLocal") {
+                            $activeTranslationMode = "Local"
+                            $pendingOpenAiFallbackDetails = $failureDetails
+                            $providerUsed = ""
+                            continue
+                        }
+
+                        Write-PhaseResult -Name "Translation" -Status "FAIL" -Detail $_.Exception.Message
+                        $packageStatus = "PARTIAL_SUCCESS"
+                        [void]$translationFailureNotes.Add(("{0}: {1}" -f $targetLanguage, $failureDetails.UserMessage))
+                        [void]$translationNextSteps.Add($failureDetails.NextStep)
+                        $translationStopRequested = $true
+                        $translationPhaseCompleted = $true
+                        break
+                    }
+
+                    Write-PhaseResult -Name "Translation" -Status "FAIL" -Detail $_.Exception.Message
+                    $packageStatus = "PARTIAL_SUCCESS"
+                    $shouldFailRun = $true
+                    [void]$translationFailureNotes.Add(("{0}: {1}" -f $targetLanguage, $failureDetails.UserMessage))
+                    [void]$translationNextSteps.Add($failureDetails.NextStep)
+                    $translationStopRequested = $true
+                    $translationPhaseCompleted = $true
+                    break
+                }
+
+                if ($pendingOpenAiFallbackDetails) {
+                    Write-PhaseResult -Name "Translation" -Status "FAIL" -Detail $_.Exception.Message
+                    $packageStatus = "PARTIAL_SUCCESS"
+                    [void]$translationFailureNotes.Add(("{0}: {1} Local fallback could not finish: {2}" -f $targetLanguage, $pendingOpenAiFallbackDetails.UserMessage, $_.Exception.Message))
+                    [void]$translationNextSteps.Add($pendingOpenAiFallbackDetails.NextStep)
+                    $pendingOpenAiFallbackDetails = $null
+                    $translationPhaseCompleted = $true
+                    break
+                }
+
+                Write-PhaseResult -Name "Translation" -Status "FAIL" -Detail $_.Exception.Message
+                throw
             }
-
-            $targetDisplayName = Get-LanguageDisplayName -Code $targetLanguage
-            $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
-            $translatedSegments = Invoke-OpenAiSegmentTranslation `
-                -Segments $transcriptData.Segments `
-                -SourceLanguage $sourceDisplayName `
-                -TargetLanguage $targetDisplayName `
-                -Model $OpenAiModel `
-                -HeartbeatSeconds $HeartbeatSeconds
-
-            $null = Write-TranscriptArtifactsFromSegments `
-                -OutputFolder $translationFolder `
-                -Segments $translatedSegments `
-                -Language $targetLanguage `
-                -SourceLanguage $detectedLanguage `
-                -Task "translate" `
-                -JsonName "transcript.json" `
-                -SrtName "transcript.srt" `
-                -TextName "transcript.txt"
-        } | Out-Null
-
-        [void]$completedTargets.Add($targetLanguage)
-        [void]$translationProviderDetails.Add(("{0}={1}" -f $targetLanguage, $providerUsed))
+        }
     }
 
     $commentsTextPath = ""
@@ -4189,11 +4765,49 @@ function Process-Audio {
     }
 
     $rawPresent = if ($DoCopyRaw) { "Yes" } else { "No" }
+    $missingTranslationTargets = @($normalizedTargets | Where-Object { $completedTargets -notcontains $_ })
     $translationProviderText = if ($completedTargets.Count -eq 0) {
         "none"
     }
     else {
         $translationProviderDetails -join "; "
+    }
+    $translationStatusParts = New-Object System.Collections.Generic.List[string]
+    if ($normalizedTargets.Count -eq 0) {
+        [void]$translationStatusParts.Add("not requested")
+    }
+    else {
+        [void]$translationStatusParts.Add(("completed: {0}" -f $(if ($completedTargets.Count -gt 0) { (@($completedTargets) -join ", ") } else { "none" })))
+        if ($missingTranslationTargets.Count -gt 0) {
+            [void]$translationStatusParts.Add(("not completed: {0}" -f ($missingTranslationTargets -join ", ")))
+        }
+    }
+    $translationStatusText = $translationStatusParts -join "; "
+    $translationNotesParts = @($translationRecoveryNotes) + @($translationFailureNotes)
+    $translationNotesText = if ($translationNotesParts.Count -gt 0) {
+        ($translationNotesParts | Select-Object -Unique) -join " | "
+    }
+    else {
+        ""
+    }
+    $nextStepsText = if ($translationNextSteps.Count -gt 0) {
+        ($translationNextSteps | Select-Object -Unique) -join " | "
+    }
+    else {
+        ""
+    }
+
+    if ($packageStatus -eq "PARTIAL_SUCCESS") {
+        Write-Log ("Package marked as partial success. Translation status: {0}" -f $translationStatusText) "WARN"
+        if (-not [string]::IsNullOrWhiteSpace($translationNotesText)) {
+            Write-Log ("Translation notes: {0}" -f $translationNotesText) "WARN"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($nextStepsText)) {
+            Write-Log ("Next steps: {0}" -f $nextStepsText) "WARN"
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($translationNotesText)) {
+        Write-Log ("Translation recovery notes: {0}" -f $translationNotesText) "WARN"
     }
 
     Invoke-PhaseAction -Name "README" -Detail $audioItem.Name -Action {
@@ -4202,9 +4816,13 @@ function Process-Audio {
             -AudioFileName $audioItem.Name `
             -RawPresent $rawPresent `
             -DetectedLanguage $detectedLanguage `
-            -TranslationTargets @($completedTargets) `
+            -TranslationTargets @($normalizedTargets) `
             -TranslationProviderDetails $translationProviderText `
-            -CommentsSummary $commentsSummary
+            -CommentsSummary $commentsSummary `
+            -PackageStatus $packageStatus `
+            -TranslationStatus $translationStatusText `
+            -TranslationNotes $translationNotesText `
+            -NextSteps $nextStepsText
     } | Out-Null
 
     Add-SummaryRow `
@@ -4219,12 +4837,16 @@ function Process-Audio {
         -SegmentIndexCsv $segmentIndexCsv `
         -RawCopied $rawPresent `
         -DetectedLanguage $detectedLanguage `
-        -TranslationTargets ((@($completedTargets)) -join ", ") `
+        -TranslationTargets ((@($normalizedTargets)) -join ", ") `
         -TranslationProvider $translationProviderText `
         -CommentsText $commentsTextPath `
         -CommentsJson $commentsJsonPath `
         -CommentsSummary $commentsSummary `
-        -WhisperMode $whisperMode
+        -WhisperMode $whisperMode `
+        -PackageStatus $packageStatus `
+        -TranslationStatus $translationStatusText `
+        -TranslationNotes $translationNotesText `
+        -NextSteps $nextStepsText
 
     return [PSCustomObject]@{
         SourceAudioName     = $audioItem.Name
@@ -4237,6 +4859,11 @@ function Process-Audio {
         TranslationTargets  = @($completedTargets)
         TranslationProvider = $translationProviderText
         CommentsSummary     = $commentsSummary
+        PackageStatus       = $packageStatus
+        TranslationStatus   = $translationStatusText
+        TranslationNotes    = $translationNotesText
+        NextSteps           = $nextStepsText
+        ShouldFailRun       = $shouldFailRun
     }
 }
 
@@ -4662,20 +5289,37 @@ try {
     New-MasterReadme -MasterReadmePath $masterReadme -OutputRoot $OutputFolder -ProcessedItems $processedItems
 
     Write-Phase -Name "Final Summary" -Detail "Packaging complete"
-    Write-Host ("Successful packages: {0}" -f $processedItems.Count)
+    $partialItems = @($processedItems | Where-Object { $_.PackageStatus -eq "PARTIAL_SUCCESS" })
+    $blockingPartialItems = @($processedItems | Where-Object { $_.ShouldFailRun })
+    Write-Host ("Successful packages: {0}" -f ($processedItems.Count - $partialItems.Count))
+    Write-Host ("Partial packages:    {0}" -f $partialItems.Count)
     Write-Host ("Failed packages:     {0}" -f $failedItems.Count)
     Write-Host ("Output root:         {0}" -f $OutputFolder)
     Write-Host ("Master README:       {0}" -f $masterReadme)
     Write-Host ("Processing summary:  {0}" -f $summaryCsv)
 
     foreach ($item in $processedItems) {
-        Write-Host ("PASS {0}" -f $item.SourceAudioName) -ForegroundColor Green
+        if ($item.PackageStatus -eq "PARTIAL_SUCCESS") {
+            Write-Host ("PARTIAL {0}" -f $item.SourceAudioName) -ForegroundColor Yellow
+        }
+        else {
+            Write-Host ("PASS {0}" -f $item.SourceAudioName) -ForegroundColor Green
+        }
         Write-Host ("  Output:  {0}" -f $item.OutputPath)
         Write-Host ("  Review:  {0}" -f $item.ReviewAudioMode)
         Write-Host ("  Whisper: {0}" -f $item.WhisperMode)
         Write-Host ("  Lang:    {0}" -f $item.DetectedLanguage)
         Write-Host ("  Xlate:   {0}" -f $(if ($item.TranslationTargets.Count -gt 0) { $item.TranslationTargets -join ", " } else { "none" }))
         Write-Host ("  Provider:{0}" -f $(if ([string]::IsNullOrWhiteSpace($item.TranslationProvider) -or $item.TranslationProvider -eq "none") { " none" } else { " $($item.TranslationProvider)" }))
+        if (-not [string]::IsNullOrWhiteSpace($item.TranslationStatus)) {
+            Write-Host ("  Status:  {0}" -f $item.TranslationStatus)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($item.TranslationNotes)) {
+            Write-Host ("  Notes:   {0}" -f $item.TranslationNotes)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($item.NextSteps)) {
+            Write-Host ("  Next:    {0}" -f $item.NextSteps)
+        }
         if (-not [string]::IsNullOrWhiteSpace($item.CommentsSummary)) {
             Write-Host ("  Comments:{0}" -f " $($item.CommentsSummary)")
         }
@@ -4693,12 +5337,12 @@ try {
         Write-Host ("  Error: {0}" -f $item.Message) -ForegroundColor Red
     }
 
-    if ($failedItems.Count -gt 0 -or $processedItems.Count -eq 0) {
-        Write-Log ("FAIL: Processing completed with {0} failure(s)." -f $failedItems.Count) "ERROR"
-        throw ("Processing completed with {0} failure(s)." -f $failedItems.Count)
+    if ($failedItems.Count -gt 0 -or $blockingPartialItems.Count -gt 0 -or $processedItems.Count -eq 0) {
+        Write-Log ("FAIL: Processing completed with {0} hard failure(s) and {1} partial package(s) requiring attention." -f $failedItems.Count, $blockingPartialItems.Count) "ERROR"
+        throw ("Processing completed with {0} hard failure(s) and {1} partial package(s) requiring attention." -f $failedItems.Count, $blockingPartialItems.Count)
     }
 
-    Write-Log ("PASS: All {0} audio item(s) processed successfully. Output root: {1}" -f $processedItems.Count, $OutputFolder)
+    Write-Log ("PASS: Processed {0} audio item(s). Partial packages: {1}. Output root: {2}" -f $processedItems.Count, $partialItems.Count, $OutputFolder)
 }
 finally {
     if (-not $KeepTempFiles) {
