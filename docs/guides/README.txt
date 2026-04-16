@@ -94,12 +94,55 @@ Missing local translation dependencies are handled with a prompt-install flow.
 The apps explain what is missing, why it helps, and how to install it. They do
 not silently install anything.
 
+OpenAI API key setup
+--------------------
+
+If you want the OpenAI translation path, create a new secret key in your OpenAI
+Platform account on the API Keys page:
+
+  https://platform.openai.com/api-keys
+
+Recommended setup for normal local use:
+
+- Use a user-owned key.
+- If project scoping is available, put Media Manglers in a dedicated project.
+- Prefer Restricted permissions when the UI clearly shows the API access the
+  app needs.
+- Read Only is not enough for translation because the app needs to send
+  transcript text to the OpenAI API.
+- Service accounts are usually for shared automation, servers, CI, or other
+  non-personal bot identities, not normal desktop use.
+- If the permission UI is unclear, safest fallback is a user-owned key inside a
+  dedicated project instead of a broader shared key.
+- OpenAI API usage may incur charges.
+
+Ways to provide the key on Windows:
+
+- Paste it at the prompt for the current run only.
+- Set it for the current PowerShell session:
+
+  $env:OPENAI_API_KEY="sk-..."
+
+- Set it as a persistent Windows user environment variable:
+
+  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+
+After setting the persistent user variable, open a new PowerShell window before
+rerunning the app.
+
+Do not hardcode the key in the script. Do not commit it to GitHub.
+
+Official OpenAI references:
+
+- https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects/
+- https://help.openai.com/en/articles/8867743-assign-api-key-permissions
+
 Privacy and processing
 ----------------------
 
 - Local transcription runs on your machine.
 - Local translation stays on your machine once the needed tools are installed.
-- OpenAI translation sends transcript text to OpenAI.
+- OpenAI translation sends transcript text to the OpenAI API.
 - Remote downloads depend on the source you point the app at.
 
 Optional comments export

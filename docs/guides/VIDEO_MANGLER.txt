@@ -78,6 +78,40 @@ the app explains the issue clearly. When possible, it auto-switches the default
 model from an English-only variant to the matching multilingual one. If you
 explicitly chose an English-only model, it stops and tells you what to change.
 
+OpenAI API key setup
+--------------------
+
+Create the key in your OpenAI Platform account:
+
+  https://platform.openai.com/api-keys
+
+Recommended setup for normal local use:
+
+- Use a user-owned key.
+- If project scoping is available, use a dedicated project for Media Manglers.
+- Prefer Restricted permissions when the UI clearly shows the API access the
+  app needs.
+- Read Only is not enough for translation work.
+- Service accounts are usually for shared automation, servers, CI, or other
+  non-personal bot identities, not normal desktop use.
+- If the permission UI is unclear, safest fallback is a user-owned key inside a
+  dedicated project instead of a broader shared key.
+- OpenAI API usage may incur charges.
+
+Ways to provide the key on Windows:
+
+- Paste it at the prompt for the current run only.
+- Current PowerShell session:
+
+  $env:OPENAI_API_KEY="sk-..."
+
+- Persistent Windows user variable:
+
+  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+
+After setting the persistent user variable, open a new PowerShell window before
+rerunning the app. Do not hardcode the key in the script or commit it to GitHub.
+
 Examples
 --------
 
@@ -145,6 +179,6 @@ Notes
 - OpenAI translation is optional.
 - Local transcription stays on your machine.
 - Local translation stays on your machine after its dependencies are installed.
-- OpenAI translation sends transcript text to OpenAI.
+- OpenAI translation sends transcript text to the OpenAI API.
 - Temporary helper files, staging folders, and transient download folders are
   cleaned up by default unless you use -KeepTempFiles.
