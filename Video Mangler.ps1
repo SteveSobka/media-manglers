@@ -2358,30 +2358,54 @@ function Get-InteractiveTranslationProvider {
     }
 }
 
+function Get-OpenAiSetupInstructionLines {
+    param(
+        [string]$ProviderLabel = "OpenAI translation",
+        [ValidateSet("Interactive", "NonInteractive")]
+        [string]$Audience = "NonInteractive"
+    )
+
+    $lines = @(
+        ("{0} was selected, but no API key is available." -f $ProviderLabel),
+        "",
+        "To use OpenAI translation, create a key in your OpenAI Platform account:",
+        "https://platform.openai.com/api-keys",
+        "",
+        "Recommended setup for normal use:",
+        "- Owned by you",
+        "- Dedicated project",
+        "- Restricted",
+        "- Turn on Request for Chat Completions (/v1/chat/completions)",
+        "- Leave unrelated permissions off or set them to None",
+        "- Read Only will not work",
+        "",
+        "Service accounts are mainly for shared or server automation, not normal personal desktop use.",
+        "OpenAI API usage may cost money.",
+        "",
+        "Use it now:",
+        '  $env:OPENAI_API_KEY="sk-..."',
+        "Save it for later:",
+        '  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")'
+    )
+
+    if ($Audience -eq "Interactive") {
+        $lines += "If you save it for later, open a new PowerShell window before re-checking."
+    }
+    else {
+        $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI."
+        $lines += "Do not hardcode the key or commit it to GitHub."
+        $lines += "If you do not want OpenAI, rerun with -TranslationProvider Auto or Local."
+    }
+
+    return $lines
+}
+
 function Get-OpenAiSetupInstructionsText {
     param(
         [string]$ProviderLabel = "OpenAI translation"
     )
 
-    $lines = @(
-        ("{0} needs OPENAI_API_KEY." -f $ProviderLabel),
-        "Create the key in your OpenAI Platform account: https://platform.openai.com/api-keys",
-        "For normal desktop use, choose Owned by you and use a dedicated project.",
-        "If you use Restricted permissions, turn on Write for Chat Completions (/v1/chat/completions).",
-        "Read Only will not work.",
-        "You can leave Images, Embeddings, Files, Fine-tuning, Vector Stores, Assistants, Batches, and similar extras off.",
-        "Service accounts are mainly for shared or server automation, not normal desktop use.",
-        "OpenAI API usage may cost money.",
-        "PowerShell now:",
-        '  $env:OPENAI_API_KEY="sk-..."',
-        "Save for later:",
-        '  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")',
-        "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI.",
-        "Do not hardcode the key or commit it to GitHub.",
-        "If you do not want OpenAI, rerun with -TranslationProvider Auto or Local."
-    )
-
-    return ($lines -join "`n")
+    return ((Get-OpenAiSetupInstructionLines -ProviderLabel $ProviderLabel -Audience "NonInteractive") -join "`n")
 }
 
 function Show-OpenAiSetupGuidance {
@@ -2390,7 +2414,17 @@ function Show-OpenAiSetupGuidance {
     )
 
     Write-Host ""
-    foreach ($line in ((Get-OpenAiSetupInstructionsText -ProviderLabel $ProviderLabel) -split "`n")) {
+    foreach ($line in (Get-OpenAiSetupInstructionLines -ProviderLabel $ProviderLabel -Audience "NonInteractive")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            Write-Host ""
+            continue
+        }
+
+        if ($line.StartsWith("  ")) {
+            Write-Host $line -ForegroundColor DarkYellow
+            continue
+        }
+
         Write-Host $line -ForegroundColor Yellow
     }
 }
@@ -2414,19 +2448,23 @@ function Get-InteractiveOpenAiRecoveryDecision {
     while ($true) {
         Write-Host ""
         if ($showSetupGuidance) {
-            Write-Host "OpenAI translation was selected." -ForegroundColor Yellow
-            Write-Host "You need an API key from your OpenAI Platform account." -ForegroundColor Yellow
-            Write-Host "Normal setup: Owned by you, dedicated project, Restricted key." -ForegroundColor Yellow
-            Write-Host "Turn on Write for Chat Completions (/v1/chat/completions). Read Only will not work." -ForegroundColor Yellow
-            Write-Host "You can leave Images, Embeddings, Files, Fine-tuning, Vector Stores, Assistants, Batches, and similar extras off." -ForegroundColor Yellow
-            Write-Host "Service accounts are mainly for shared or server automation. OpenAI usage may cost money." -ForegroundColor Yellow
-            Write-Host 'PowerShell now: $env:OPENAI_API_KEY="sk-..."' -ForegroundColor DarkYellow
-            Write-Host 'Save for later: [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")' -ForegroundColor DarkYellow
-            Write-Host "If you save it for later, open a new PowerShell window before re-checking." -ForegroundColor Yellow
+            foreach ($line in (Get-OpenAiSetupInstructionLines -ProviderLabel "OpenAI translation" -Audience "Interactive")) {
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    Write-Host ""
+                    continue
+                }
+
+                if ($line.StartsWith("  ")) {
+                    Write-Host $line -ForegroundColor DarkYellow
+                    continue
+                }
+
+                Write-Host $line -ForegroundColor Yellow
+            }
             $showSetupGuidance = $false
         }
         Write-Host "Choose how to continue:" -ForegroundColor Yellow
-        Write-Host "  1. Paste an API key for this run only" -ForegroundColor Cyan
+        Write-Host "  1. Paste API key for this run only" -ForegroundColor Cyan
         Write-Host "  2. Re-check after setting OPENAI_API_KEY externally" -ForegroundColor Cyan
         Write-Host "  3. Switch to Auto" -ForegroundColor Cyan
         Write-Host "  4. Switch to Local" -ForegroundColor Cyan
@@ -2437,7 +2475,7 @@ function Get-InteractiveOpenAiRecoveryDecision {
             "1" {
                 $pastedKey = [string](Read-OpenAiApiKeyForCurrentRun)
                 if ([string]::IsNullOrWhiteSpace($pastedKey)) {
-                    Write-Host "No API key was pasted. Choose another option or try again." -ForegroundColor Yellow
+                    Write-Host "No API key was pasted. Try again or choose a different option." -ForegroundColor Yellow
                     continue
                 }
 
@@ -2455,7 +2493,7 @@ function Get-InteractiveOpenAiRecoveryDecision {
                     }
                 }
 
-                Write-Host "OPENAI_API_KEY still was not found. Set it in another window or choose a different option." -ForegroundColor Yellow
+                Write-Host "OPENAI_API_KEY still is not set. Set it in another window, then re-check, or choose a different option." -ForegroundColor Yellow
             }
             "3" {
                 return [PSCustomObject]@{

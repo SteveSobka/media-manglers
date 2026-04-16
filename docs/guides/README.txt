@@ -109,21 +109,19 @@ Current OpenAI path in code:
 
 Recommended setup for normal local use:
 
-- Use a user-owned key.
-- If project scoping is available, put Media Manglers in a dedicated project.
-- If the key screen clearly shows endpoint permissions, choose Restricted.
-- On a Restricted key, enable Write for Chat Completions or /v1/chat/completions
-  if the UI shows raw endpoint names.
+- Create the key in your OpenAI Platform account.
+- Choose Owned by you.
+- Put Media Manglers in a dedicated project.
+- Choose Restricted.
+- In the current OpenAI Platform UI, turn on Request for Chat Completions
+  (/v1/chat/completions).
+- Leave unrelated permissions like Images, Embeddings, Files, Fine-tuning,
+  Vector Stores, Assistants, Batches, and similar extras off or set to None
+  unless you actually use them.
 - Read Only is not enough because Media Manglers sends POST
   /v1/chat/completions requests for translation.
-- You do not need unrelated permissions like Images, Embeddings, Files,
-  Fine-tuning, Vector Stores, Assistants, Batches, or other extras for the
-  current translation path.
-- Service accounts are usually for shared automation, servers, CI, or other
+- Service accounts are mainly for shared automation, servers, CI, or other
   non-personal bot identities, not normal desktop use.
-- If the permission UI is unclear, safest fallback is a user-owned key inside a
-  dedicated project with the smallest permission set that still lets Chat
-  Completions work.
 - OpenAI API usage may incur charges.
 
 Ways to provide the key on Windows:
