@@ -63,6 +63,6 @@ Docs and cleanup
 Licensing
 ---------
 
-- Repository code: MIT
+- Repository code: Apache License 2.0
 - Referenced sample media remains under its own upstream terms
 - See THIRD_PARTY_NOTICES.txt for practical licensing notes

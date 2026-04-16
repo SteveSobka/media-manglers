@@ -84,7 +84,7 @@ Cleanup and validation
 Licensing
 ---------
 
-- Repository code: MIT
+- Repository code: Apache License 2.0
 - Referenced media, optional services, and third-party tools remain under their
   own terms
 - See THIRD_PARTY_NOTICES.txt for practical notes

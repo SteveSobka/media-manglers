@@ -156,7 +156,7 @@ Smoke tests:
 License
 -------
 
-- Repository code: MIT
+- Repository code: Apache License 2.0
 - Third-party notices: THIRD_PARTY_NOTICES.txt
 
 The code license applies to the repo itself. Referenced sample media, optional
