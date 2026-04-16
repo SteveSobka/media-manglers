@@ -126,6 +126,21 @@ Rebuild the packaged executables:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
 
+The build keeps the live output layout minimal by default:
+
+- dist\Video Mangler.exe
+- dist\Audio Mangler.exe
+- dist\release\Video-Mangler-v0.5.0.zip
+- dist\release\Audio-Mangler-v0.5.0.zip
+
+Legacy release clutter is moved under dist\archive\release\ instead of being
+left mixed into the live release folder. Temporary packaging folders are also
+removed automatically after a successful build.
+
+If you want to inspect the package staging contents for debugging, opt in:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1 -KeepPackageStaging
+
 Smoke tests:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1

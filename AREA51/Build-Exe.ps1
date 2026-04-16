@@ -1,6 +1,7 @@
 param(
     [ValidateSet("Video", "Audio", "All")]
-    [string]$App = "All"
+    [string]$App = "All",
+    [switch]$KeepPackageStaging
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,11 +9,64 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $distFolder = Join-Path $repoRoot "dist"
 $releaseRoot = Join-Path $distFolder "release"
+$stagingRoot = Join-Path $distFolder "staging"
+$archiveRoot = Join-Path $distFolder "archive"
+$releaseArchiveRoot = Join-Path $archiveRoot "release"
 $versionFile = Join-Path $repoRoot "VERSION"
 $docsRoot = Join-Path $repoRoot "docs"
 $guidesRoot = Join-Path $docsRoot "guides"
 $releaseNotesRoot = Join-Path $docsRoot "release-notes"
 $modulePath = Join-Path $HOME "Documents\PowerShell\Modules\ps2exe\1.0.17\ps2exe.psm1"
+
+function Ensure-Directory {
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and -not (Test-Path -LiteralPath $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Remove-PathIfPresent {
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
+        Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+}
+
+function Remove-DirectoryIfEmpty {
+    param([string]$Path)
+
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
+        $item = Get-Item -LiteralPath $Path
+        if ($item.PSIsContainer -and @((Get-ChildItem -LiteralPath $Path -Force)).Count -eq 0) {
+            Remove-Item -LiteralPath $Path -Force
+        }
+    }
+}
+
+function Move-ItemToArchive {
+    param(
+        [string]$Path,
+        [string]$ArchiveRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+
+    Ensure-Directory $ArchiveRoot
+
+    $item = Get-Item -LiteralPath $Path
+    $destinationPath = Join-Path $ArchiveRoot $item.Name
+
+    if (Test-Path -LiteralPath $destinationPath) {
+        Remove-Item -LiteralPath $destinationPath -Recurse -Force
+    }
+
+    Move-Item -LiteralPath $Path -Destination $destinationPath -Force
+    return $true
+}
 
 if (-not (Test-Path -LiteralPath $versionFile)) {
     throw "Version file not found: $versionFile"
@@ -75,15 +129,35 @@ New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
 Import-Module $modulePath -Force
 
+$currentReleaseZipNames = @($appConfigs | ForEach-Object { $_.ReleaseZipName })
+$archiveRunRoot = Join-Path $releaseArchiveRoot ("cleanup-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8)))
+$archivedReleaseItems = New-Object System.Collections.Generic.List[string]
+
+foreach ($releaseItem in @(Get-ChildItem -LiteralPath $releaseRoot -Force -ErrorAction SilentlyContinue)) {
+    if (-not $releaseItem.PSIsContainer -and $releaseItem.Extension.ToLowerInvariant() -eq ".zip" -and $currentReleaseZipNames -contains $releaseItem.Name) {
+        continue
+    }
+
+    if (Move-ItemToArchive -Path $releaseItem.FullName -ArchiveRoot $archiveRunRoot) {
+        $archivedReleaseItems.Add($releaseItem.Name) | Out-Null
+    }
+}
+
+if ($archivedReleaseItems.Count -gt 0) {
+    Write-Host ("Archived legacy release artifacts to: {0}" -f $archiveRunRoot) -ForegroundColor Yellow
+    foreach ($archivedItem in $archivedReleaseItems) {
+        Write-Host (" - {0}" -f $archivedItem) -ForegroundColor DarkYellow
+    }
+}
+
 foreach ($appConfig in $selectedApps) {
     $inputFile = Join-Path $repoRoot $appConfig.ScriptFile
     $outputFile = Join-Path $distFolder $appConfig.LocalExeName
     $iconFile = Join-Path $repoRoot $appConfig.IconFile
-    $releaseFolder = Join-Path $releaseRoot $appConfig.ReleaseFolder
+    $stagingFolder = Join-Path $stagingRoot $appConfig.ReleaseFolder
     $releaseZip = Join-Path $releaseRoot $appConfig.ReleaseZipName
-    $releaseExe = Join-Path $releaseRoot $appConfig.ReleaseExeName
-    $appFolder = Join-Path $releaseFolder "app"
-    $docsFolder = Join-Path $releaseFolder "docs"
+    $appFolder = Join-Path $stagingFolder "app"
+    $docsFolder = Join-Path $stagingFolder "docs"
 
     $appGuideSource = Join-Path $guidesRoot $appConfig.AppGuide
     $readmeTextSource = Join-Path $guidesRoot "README.txt"
@@ -109,36 +183,36 @@ foreach ($appConfig in $selectedApps) {
         -copyright "Copyright (c) 2026 Media Manglers Contributors" `
         -version $appVersion
 
-    if (Test-Path -LiteralPath $releaseFolder) {
-        Remove-Item -LiteralPath $releaseFolder -Recurse -Force
+    Remove-PathIfPresent -Path $stagingFolder
+    Remove-PathIfPresent -Path $releaseZip
+
+    try {
+        Ensure-Directory $appFolder
+        Ensure-Directory $docsFolder
+
+        Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
+        Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
+        Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
+        Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
+        Copy-Item -LiteralPath (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt") -Destination (Join-Path $docsFolder "THIRD_PARTY_NOTICES.txt") -Force
+        Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $docsFolder "LICENSE.txt") -Force
+        Copy-Item -LiteralPath $versionFile -Destination (Join-Path $docsFolder "VERSION.txt") -Force
+
+        Compress-Archive -LiteralPath $stagingFolder -DestinationPath $releaseZip -CompressionLevel Optimal
     }
-
-    if (Test-Path -LiteralPath $releaseZip) {
-        Remove-Item -LiteralPath $releaseZip -Force
-    }
-
-    if (Test-Path -LiteralPath $releaseExe) {
-        Remove-Item -LiteralPath $releaseExe -Force
-    }
-
-    New-Item -ItemType Directory -Path $appFolder -Force | Out-Null
-    New-Item -ItemType Directory -Path $docsFolder -Force | Out-Null
-
-    Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
-    Copy-Item -LiteralPath $outputFile -Destination $releaseExe -Force
-    Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
-    Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
-    Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
-    Copy-Item -LiteralPath (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt") -Destination (Join-Path $docsFolder "THIRD_PARTY_NOTICES.txt") -Force
-    Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $docsFolder "LICENSE.txt") -Force
-    Copy-Item -LiteralPath $versionFile -Destination (Join-Path $docsFolder "VERSION.txt") -Force
-
-    Compress-Archive -LiteralPath $releaseFolder -DestinationPath $releaseZip -CompressionLevel Optimal
-    if (Test-Path -LiteralPath $releaseFolder) {
-        Remove-Item -LiteralPath $releaseFolder -Recurse -Force
+    finally {
+        if (-not $KeepPackageStaging) {
+            Remove-PathIfPresent -Path $stagingFolder
+        }
     }
 
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
-    Write-Host ("Release exe: {0}" -f $releaseExe) -ForegroundColor Green
     Write-Host ("Release zip: {0}" -f $releaseZip) -ForegroundColor Green
+    if ($KeepPackageStaging) {
+        Write-Host ("Package staging kept: {0}" -f $stagingFolder) -ForegroundColor Yellow
+    }
+}
+
+if (-not $KeepPackageStaging) {
+    Remove-DirectoryIfEmpty -Path $stagingRoot
 }
