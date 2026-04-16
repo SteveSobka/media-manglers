@@ -2695,7 +2695,7 @@ function Get-InteractiveTranslationProvider {
         Write-Host "Media Manglers always works from the original spoken source first." -ForegroundColor Cyan
         Write-Host "Auto chooses the best available path for each requested language." -ForegroundColor Cyan
         Write-Host "  1. Auto   best available per target (default)" -ForegroundColor Cyan
-        Write-Host "  2. OpenAI highest quality, sends transcript text to OpenAI" -ForegroundColor Cyan
+        Write-Host "  2. OpenAI highest quality, uses the OpenAI API and needs OPENAI_API_KEY" -ForegroundColor Cyan
         Write-Host "  3. Local  free fallback using local tools on this PC" -ForegroundColor Cyan
 
         $choice = Read-Host "Press Enter for Auto, or type 1, 2, or 3"
@@ -2739,12 +2739,20 @@ function Get-OpenAiSetupInstructionsText {
 
     $lines = @(
         ("{0} was selected, but OPENAI_API_KEY is not available." -f $ProviderLabel),
-        ("OPENAI_API_KEY is required so {0} can send transcript text to OpenAI for translation." -f $script:AppName),
-        "Set it for this PowerShell session:",
-        "  `$env:OPENAI_API_KEY = 'your-api-key-here'",
-        "Or set it persistently for future PowerShell windows:",
-        '  setx OPENAI_API_KEY "your-api-key-here"',
-        "Then start a new PowerShell window and rerun with -TranslationProvider OpenAI.",
+        ("OPENAI_API_KEY lets {0} send transcript text to the OpenAI API for translation." -f $script:AppName),
+        "Create the key in your OpenAI Platform account on https://platform.openai.com/api-keys.",
+        "OpenAI API usage may incur charges.",
+        "For normal local desktop use, create a user-owned key.",
+        "If project scoping is available, put Media Manglers in a dedicated project.",
+        "Prefer Restricted permissions when the UI clearly shows the API access you need. Read Only is not enough.",
+        "Service accounts are better for shared automation, servers, or CI than normal personal desktop use.",
+        "If the permission UI is unclear, safest fallback is a user-owned key inside a dedicated project.",
+        "Current PowerShell session:",
+        '  $env:OPENAI_API_KEY="sk-..."',
+        "Persistent Windows user variable:",
+        '  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")',
+        "After setting the user variable, open a new PowerShell window and rerun with -TranslationProvider OpenAI.",
+        "Do not hardcode the key in the script or commit it to GitHub.",
         "If you do not want to use OpenAI, rerun with -TranslationProvider Auto or Local."
     )
 
@@ -2766,10 +2774,20 @@ function Read-OpenAiApiKeyForCurrentRun {
 }
 
 function Get-InteractiveOpenAiRecoveryDecision {
+    $showSetupGuidance = $true
     while ($true) {
         Write-Host ""
-        Write-Host "OpenAI translation was selected." -ForegroundColor Yellow
-        Write-Host "OPENAI_API_KEY is required before this run can send transcript text to OpenAI for translation." -ForegroundColor Yellow
+        if ($showSetupGuidance) {
+            Write-Host "OpenAI translation was selected." -ForegroundColor Yellow
+            Write-Host "Create the key in your OpenAI Platform account. This app sends transcript text to the OpenAI API for translation." -ForegroundColor Yellow
+            Write-Host "OpenAI API usage may incur charges." -ForegroundColor Yellow
+            Write-Host "For normal local desktop use, a user-owned key is recommended. Service accounts are better for servers, CI, or shared automation." -ForegroundColor Yellow
+            Write-Host "If project scoping is available, use a dedicated project. Prefer Restricted when the needed API access is clear. Read Only is not enough." -ForegroundColor Yellow
+            Write-Host 'PowerShell now: $env:OPENAI_API_KEY="sk-..."' -ForegroundColor DarkYellow
+            Write-Host '[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")' -ForegroundColor DarkYellow
+            Write-Host "If you set the user variable, open a new PowerShell window before re-checking." -ForegroundColor Yellow
+            $showSetupGuidance = $false
+        }
         Write-Host "Choose how to continue:" -ForegroundColor Yellow
         Write-Host "  1. Paste an API key for this run only" -ForegroundColor Cyan
         Write-Host "  2. Re-check after setting OPENAI_API_KEY externally" -ForegroundColor Cyan

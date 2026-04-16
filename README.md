@@ -89,6 +89,44 @@ Optional translation setup:
 
 The apps will explain what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things.
 
+## How To Create An OpenAI API Key
+
+If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for a script like Media Manglers. You do not need the ChatGPT consumer app for this.
+
+Recommended setup for normal local use:
+
+- Use a user-owned OpenAI Platform API key.
+- If the Platform lets you scope the key to a project, put Media Manglers in a dedicated project.
+- If the key-permission UI clearly shows the API access you need, prefer `Restricted`.
+- `Read Only` is not enough for translation because the app needs to send transcript text to the OpenAI API.
+- Service accounts are usually for shared automation, servers, CI, or non-personal bot identities, not normal personal desktop use.
+- If the permission UI is unclear, the safest fallback is a user-owned key inside a dedicated project instead of a broader shared key.
+- OpenAI API usage may incur charges.
+
+Ways to provide the key on Windows:
+
+- Paste it at the prompt for the current run only.
+- Set it for the current PowerShell session:
+
+```powershell
+$env:OPENAI_API_KEY="sk-..."
+```
+
+- Set it as a persistent Windows user environment variable:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+```
+
+After setting the persistent user variable, open a new PowerShell window before rerunning the app.
+
+Do not hardcode the key in either script. Do not commit it to GitHub.
+
+Official OpenAI references:
+
+- [Managing projects in the API platform](https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects/)
+- [Assign API key permissions](https://help.openai.com/en/articles/8867743-assign-api-key-permissions)
+
 ## Translation Options
 
 Both apps work the same way:
@@ -103,7 +141,7 @@ For YouTube links, `Video Mangler` now probes the available remote audio-track m
 Provider choices:
 
 - `Auto`: use the best available option for each requested language
-- `OpenAI`: best quality when configured
+- `OpenAI`: best quality when configured with an OpenAI Platform API key
 - `Local`: free fallback using local tools on your PC
 
 Local behavior:
@@ -117,7 +155,7 @@ OpenAI is optional, not required.
 
 - Local transcription runs on your machine.
 - Local translation stays on your machine once the local dependencies are installed.
-- OpenAI translation sends transcript text to OpenAI for translation.
+- OpenAI translation sends transcript text to the OpenAI API for translation.
 - Remote download sources obviously depend on the site you point the app at.
 
 ## Example Inputs
