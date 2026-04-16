@@ -104,16 +104,23 @@ The apps will explain what is missing. For local translation dependencies, they 
 
 ## How To Create An OpenAI API Key
 
-If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for a script like Media Manglers. You do not need the ChatGPT consumer app for this.
+If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for Media Manglers. You do not need the ChatGPT consumer app for this.
+
+Current OpenAI path in code:
+
+- Media Manglers currently sends translation requests to `POST /v1/chat/completions`.
+- It does not use the Responses API for translation today.
 
 Recommended setup for normal local use:
 
 - Use a user-owned OpenAI Platform API key.
 - If the Platform lets you scope the key to a project, put Media Manglers in a dedicated project.
-- If the key-permission UI clearly shows the API access you need, prefer `Restricted`.
-- `Read Only` is not enough for translation because the app needs to send transcript text to the OpenAI API.
+- If the key-permission UI clearly shows endpoint permissions, choose `Restricted`.
+- On a `Restricted` key, enable `Write` for `Chat Completions` or `/v1/chat/completions` if the UI shows raw endpoint names.
+- `Read Only` is not enough because Media Manglers sends `POST /v1/chat/completions` requests for translation.
+- You do not need unrelated permissions like Images, Embeddings, Files, Fine-tuning, Vector Stores, Assistants, Batches, or other extras for the current translation path.
 - Service accounts are usually for shared automation, servers, CI, or non-personal bot identities, not normal personal desktop use.
-- If the permission UI is unclear, the safest fallback is a user-owned key inside a dedicated project instead of a broader shared key.
+- If the permission UI is unclear, the safest fallback is a user-owned key inside a dedicated project with the smallest permission set that still lets Chat Completions work.
 - OpenAI API usage may incur charges.
 
 Ways to provide the key on Windows:
@@ -137,6 +144,7 @@ Do not hardcode the key in either script. Do not commit it to GitHub.
 
 Official OpenAI references:
 
+- [Chat Completions API reference](https://platform.openai.com/docs/api-reference/chat/create-chat-completion)
 - [Managing projects in the API platform](https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects/)
 - [Assign API key permissions](https://help.openai.com/en/articles/8867743-assign-api-key-permissions)
 
