@@ -18,6 +18,7 @@ param(
     [switch]$CreateChatGptZip,
     [switch]$KeepTempFiles,
     [switch]$OpenOutputInExplorer,
+    [switch]$Gui,
     [switch]$NoPrompt,
     [switch]$SkipEstimate,
     [Alias("ShowVersion")]
@@ -29,6 +30,7 @@ $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Audio Mangler"
 $script:FallbackAppVersion = "0.5.0"
+$script:SelfScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -2530,10 +2532,870 @@ function Process-Video {
     }
 }
 
+function Test-IsPackagedExecutable {
+    $processName = [System.Diagnostics.Process]::GetCurrentProcess().ProcessName
+    if ([string]::IsNullOrWhiteSpace($processName)) {
+        return $false
+    }
+
+    return $processName.ToLowerInvariant() -notin @("powershell", "pwsh", "powershell_ise")
+}
+
+function Get-CurrentExecutablePath {
+    try {
+        $processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if (-not [string]::IsNullOrWhiteSpace($processPath)) {
+            return $processPath
+        }
+    }
+    catch {
+    }
+
+    return $null
+}
+
+function Get-WindowsPowerShellPath {
+    $resolved = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($resolved) {
+        return $resolved.Source
+    }
+
+    $fallback = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path -LiteralPath $fallback) {
+        return $fallback
+    }
+
+    throw "Could not find powershell.exe on this machine."
+}
+
+function Format-ProcessArgument {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return '""'
+    }
+
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
+}
+
+function Join-ProcessArguments {
+    param([string[]]$Tokens)
+
+    return (($Tokens | ForEach-Object { Format-ProcessArgument -Value $_ }) -join " ")
+}
+
+function Ensure-ExtractedBackendScript {
+    param(
+        [string]$AppVersion
+    )
+
+    if (-not (Test-IsPackagedExecutable)) {
+        if ([string]::IsNullOrWhiteSpace($script:SelfScriptPath)) {
+            throw "Could not determine the current script path."
+        }
+
+        return $script:SelfScriptPath
+    }
+
+    $executablePath = Get-CurrentExecutablePath
+    if ([string]::IsNullOrWhiteSpace($executablePath)) {
+        throw "Could not determine the packaged executable path."
+    }
+
+    $cacheRoot = Join-Path $env:TEMP "MediaManglersGuiCache"
+    $cacheFolder = Join-Path $cacheRoot ("Audio-{0}" -f $AppVersion)
+    $backendScriptPath = Join-Path $cacheFolder "Audio Mangler.backend.ps1"
+    if (Test-Path -LiteralPath $backendScriptPath) {
+        return $backendScriptPath
+    }
+
+    Ensure-Directory $cacheFolder
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $executablePath
+    $psi.Arguments = ('-extract:{0}' -f (Format-ProcessArgument -Value $backendScriptPath))
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $backendScriptPath)) {
+            $failureBits = @("Could not extract the packaged backend script.")
+            if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+                $failureBits += ("stdout: {0}" -f $stdout.Trim())
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                $failureBits += ("stderr: {0}" -f $stderr.Trim())
+            }
+            throw ($failureBits -join " ")
+        }
+
+        return $backendScriptPath
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
+function Get-TranslationTargets {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+
+    return @(
+        $Value -split '[,\s]+' |
+            ForEach-Object { $_.Trim().ToLowerInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+}
+
+function Show-ManglerGuiWindow {
+    param(
+        [hashtable]$Config,
+        [hashtable]$InitialState
+    )
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    $translationOptions = @(
+        [PSCustomObject]@{ Display = "English (en)"; Code = "en" }
+        [PSCustomObject]@{ Display = "Spanish (es)"; Code = "es" }
+        [PSCustomObject]@{ Display = "French (fr)"; Code = "fr" }
+        [PSCustomObject]@{ Display = "German (de)"; Code = "de" }
+        [PSCustomObject]@{ Display = "Italian (it)"; Code = "it" }
+        [PSCustomObject]@{ Display = "Portuguese (pt)"; Code = "pt" }
+        [PSCustomObject]@{ Display = "Japanese (ja)"; Code = "ja" }
+        [PSCustomObject]@{ Display = "Korean (ko)"; Code = "ko" }
+        [PSCustomObject]@{ Display = "Chinese (zh)"; Code = "zh" }
+        [PSCustomObject]@{ Display = "Russian (ru)"; Code = "ru" }
+    )
+
+    $defaultOutputFolder = $InitialState.OutputFolder
+    $script:GuiSuggestedOutputFolder = $defaultOutputFolder
+    $script:GuiActiveProcess = $null
+    $script:GuiCancellationRequested = $false
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = ("{0} Setup" -f $Config.AppName)
+    $form.StartPosition = "CenterScreen"
+    $form.MinimumSize = [System.Drawing.Size]::new(920, 760)
+    $form.Size = [System.Drawing.Size]::new(980, 820)
+    $form.Font = [System.Drawing.Font]::new("Segoe UI", 9)
+
+    try {
+        $exePath = Get-CurrentExecutablePath
+        if (-not [string]::IsNullOrWhiteSpace($exePath) -and (Test-Path -LiteralPath $exePath)) {
+            $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)
+        }
+    }
+    catch {
+    }
+
+    $root = New-Object System.Windows.Forms.TableLayoutPanel
+    $root.Dock = "Fill"
+    $root.Padding = [System.Windows.Forms.Padding]::new(12)
+    $root.ColumnCount = 1
+    $root.RowCount = 8
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $form.Controls.Add($root)
+
+    $titlePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $titlePanel.Dock = "Top"
+    $titlePanel.AutoSize = $true
+    $titlePanel.ColumnCount = 1
+    $titlePanel.RowCount = 2
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.AutoSize = $true
+    $titleLabel.Font = [System.Drawing.Font]::new("Segoe UI Semibold", 16)
+    $titleLabel.Text = ("{0} v{1}" -f $Config.AppName, $InitialState.AppVersion)
+    $titlePanel.Controls.Add($titleLabel, 0, 0)
+
+    $subtitleLabel = New-Object System.Windows.Forms.Label
+    $subtitleLabel.AutoSize = $true
+    $subtitleLabel.MaximumSize = [System.Drawing.Size]::new(860, 0)
+    $subtitleLabel.Text = $Config.Description
+    $titlePanel.Controls.Add($subtitleLabel, 0, 1)
+    $root.Controls.Add($titlePanel, 0, 0)
+
+    $setupGroup = New-Object System.Windows.Forms.GroupBox
+    $setupGroup.Text = "Setup"
+    $setupGroup.Dock = "Top"
+    $setupGroup.AutoSize = $true
+    $root.Controls.Add($setupGroup, 0, 1)
+
+    $setupTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $setupTable.Dock = "Fill"
+    $setupTable.AutoSize = $true
+    $setupTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $setupTable.ColumnCount = 3
+    $setupTable.RowCount = 5
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 155))
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 190))
+    $setupGroup.Controls.Add($setupTable)
+
+    $inputLabel = New-Object System.Windows.Forms.Label
+    $inputLabel.AutoSize = $true
+    $inputLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $inputLabel.Text = $Config.InputLabel
+    $setupTable.Controls.Add($inputLabel, 0, 0)
+
+    $inputTextBox = New-Object System.Windows.Forms.TextBox
+    $inputTextBox.Dock = "Fill"
+    $inputTextBox.Text = $InitialState.InputPath
+    $setupTable.Controls.Add($inputTextBox, 1, 0)
+
+    $inputButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $inputButtonPanel.Dock = "Fill"
+    $inputButtonPanel.FlowDirection = "LeftToRight"
+    $inputButtonPanel.WrapContents = $false
+    $setupTable.Controls.Add($inputButtonPanel, 2, 0)
+
+    $browseFileButton = New-Object System.Windows.Forms.Button
+    $browseFileButton.Text = "Browse File..."
+    $browseFileButton.AutoSize = $true
+    $inputButtonPanel.Controls.Add($browseFileButton)
+
+    $browseFolderButton = New-Object System.Windows.Forms.Button
+    $browseFolderButton.Text = "Browse Folder..."
+    $browseFolderButton.AutoSize = $true
+    $inputButtonPanel.Controls.Add($browseFolderButton)
+
+    $inputHintLabel = New-Object System.Windows.Forms.Label
+    $inputHintLabel.AutoSize = $true
+    $inputHintLabel.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $inputHintLabel.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 10)
+    $inputHintLabel.Text = $Config.InputHint
+    $setupTable.SetColumnSpan($inputHintLabel, 3)
+    $setupTable.Controls.Add($inputHintLabel, 0, 1)
+
+    $outputLabel = New-Object System.Windows.Forms.Label
+    $outputLabel.AutoSize = $true
+    $outputLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $outputLabel.Text = "Output folder"
+    $setupTable.Controls.Add($outputLabel, 0, 2)
+
+    $outputTextBox = New-Object System.Windows.Forms.TextBox
+    $outputTextBox.Dock = "Fill"
+    $outputTextBox.Text = $defaultOutputFolder
+    $setupTable.Controls.Add($outputTextBox, 1, 2)
+
+    $outputButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $outputButtonPanel.Dock = "Fill"
+    $outputButtonPanel.FlowDirection = "LeftToRight"
+    $outputButtonPanel.WrapContents = $false
+    $setupTable.Controls.Add($outputButtonPanel, 2, 2)
+
+    $browseOutputButton = New-Object System.Windows.Forms.Button
+    $browseOutputButton.Text = "Choose Folder..."
+    $browseOutputButton.AutoSize = $true
+    $outputButtonPanel.Controls.Add($browseOutputButton)
+
+    $outputHintLabel = New-Object System.Windows.Forms.Label
+    $outputHintLabel.AutoSize = $true
+    $outputHintLabel.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $outputHintLabel.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 0)
+    $outputHintLabel.Text = "This folder will hold the finished package and the run log."
+    $setupTable.SetColumnSpan($outputHintLabel, 3)
+    $setupTable.Controls.Add($outputHintLabel, 0, 3)
+
+    $translationGroup = New-Object System.Windows.Forms.GroupBox
+    $translationGroup.Text = "Translation"
+    $translationGroup.Dock = "Top"
+    $translationGroup.AutoSize = $true
+    $root.Controls.Add($translationGroup, 0, 2)
+
+    $translationTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $translationTable.Dock = "Fill"
+    $translationTable.AutoSize = $true
+    $translationTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $translationTable.ColumnCount = 2
+    $translationTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 155))
+    $translationTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $translationGroup.Controls.Add($translationTable)
+
+    $translateLabel = New-Object System.Windows.Forms.Label
+    $translateLabel.AutoSize = $true
+    $translateLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $translateLabel.Text = "Translate transcript"
+    $translationTable.Controls.Add($translateLabel, 0, 0)
+
+    $translationPicker = New-Object System.Windows.Forms.CheckedListBox
+    $translationPicker.Dock = "Fill"
+    $translationPicker.CheckOnClick = $true
+    $translationPicker.Height = 96
+    $translationPicker.MultiColumn = $true
+    $translationPicker.ColumnWidth = 150
+    $translationPicker.IntegralHeight = $false
+    foreach ($option in $translationOptions) {
+        [void]$translationPicker.Items.Add($option.Display)
+    }
+    $translationTable.Controls.Add($translationPicker, 1, 0)
+
+    $customTranslationLabel = New-Object System.Windows.Forms.Label
+    $customTranslationLabel.AutoSize = $true
+    $customTranslationLabel.Margin = [System.Windows.Forms.Padding]::new(0, 10, 0, 0)
+    $customTranslationLabel.Text = "More language codes"
+    $translationTable.Controls.Add($customTranslationLabel, 0, 1)
+
+    $customTranslationTextBox = New-Object System.Windows.Forms.TextBox
+    $customTranslationTextBox.Dock = "Fill"
+    $translationTable.Controls.Add($customTranslationTextBox, 1, 1)
+
+    $customTranslationHint = New-Object System.Windows.Forms.Label
+    $customTranslationHint.AutoSize = $true
+    $customTranslationHint.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $customTranslationHint.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 8)
+    $customTranslationHint.Text = "Leave this blank for no translation, or add extra targets like nl, pl, ar separated by commas."
+    $translationTable.SetColumnSpan($customTranslationHint, 2)
+    $translationTable.Controls.Add($customTranslationHint, 0, 2)
+
+    $providerLabel = New-Object System.Windows.Forms.Label
+    $providerLabel.AutoSize = $true
+    $providerLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $providerLabel.Text = "Translation provider"
+    $translationTable.Controls.Add($providerLabel, 0, 3)
+
+    $providerComboBox = New-Object System.Windows.Forms.ComboBox
+    $providerComboBox.DropDownStyle = "DropDownList"
+    [void]$providerComboBox.Items.AddRange(@("Auto", "OpenAI", "Local"))
+    $providerComboBox.SelectedItem = $InitialState.TranslationProvider
+    $translationTable.Controls.Add($providerComboBox, 1, 3)
+
+    $optionsGroup = New-Object System.Windows.Forms.GroupBox
+    $optionsGroup.Text = "Common Options"
+    $optionsGroup.Dock = "Top"
+    $optionsGroup.AutoSize = $true
+    $root.Controls.Add($optionsGroup, 0, 3)
+
+    $optionsTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $optionsTable.Dock = "Fill"
+    $optionsTable.AutoSize = $true
+    $optionsTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $optionsTable.ColumnCount = 2
+    $optionsTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 50))
+    $optionsTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 50))
+    $optionsGroup.Controls.Add($optionsTable)
+
+    $copyRawCheckBox = New-Object System.Windows.Forms.CheckBox
+    $copyRawCheckBox.AutoSize = $true
+    $copyRawCheckBox.Text = $Config.CopyRawLabel
+    $copyRawCheckBox.Checked = $InitialState.CopyRaw
+    $optionsTable.Controls.Add($copyRawCheckBox, 0, 0)
+
+    $createZipCheckBox = New-Object System.Windows.Forms.CheckBox
+    $createZipCheckBox.AutoSize = $true
+    $createZipCheckBox.Text = "Create ChatGPT upload zip"
+    $createZipCheckBox.Checked = $InitialState.CreateChatGptZip
+    $optionsTable.Controls.Add($createZipCheckBox, 1, 0)
+
+    $includeCommentsCheckBox = New-Object System.Windows.Forms.CheckBox
+    $includeCommentsCheckBox.AutoSize = $true
+    $includeCommentsCheckBox.Text = "Include public comments when available"
+    $includeCommentsCheckBox.Checked = $InitialState.IncludeComments
+    $optionsTable.Controls.Add($includeCommentsCheckBox, 0, 1)
+
+    $keepTempCheckBox = New-Object System.Windows.Forms.CheckBox
+    $keepTempCheckBox.AutoSize = $true
+    $keepTempCheckBox.Text = "Keep temporary working files"
+    $keepTempCheckBox.Checked = $InitialState.KeepTempFiles
+    $optionsTable.Controls.Add($keepTempCheckBox, 1, 1)
+
+    $openOutputCheckBox = New-Object System.Windows.Forms.CheckBox
+    $openOutputCheckBox.AutoSize = $true
+    $openOutputCheckBox.Text = "Open output folder when finished"
+    $openOutputCheckBox.Checked = $InitialState.OpenOutputInExplorer
+    $optionsTable.Controls.Add($openOutputCheckBox, 0, 2)
+
+    $frameIntervalUpDown = $null
+
+    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $buttonPanel.Dock = "Top"
+    $buttonPanel.FlowDirection = "LeftToRight"
+    $buttonPanel.WrapContents = $false
+    $buttonPanel.AutoSize = $true
+    $buttonPanel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 8)
+    $root.Controls.Add($buttonPanel, 0, 5)
+
+    $runButton = New-Object System.Windows.Forms.Button
+    $runButton.Text = "Start"
+    $runButton.AutoSize = $true
+    $runButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $buttonPanel.Controls.Add($runButton)
+
+    $stopButton = New-Object System.Windows.Forms.Button
+    $stopButton.Text = "Stop"
+    $stopButton.AutoSize = $true
+    $stopButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $stopButton.Enabled = $false
+    $buttonPanel.Controls.Add($stopButton)
+
+    $openFolderButton = New-Object System.Windows.Forms.Button
+    $openFolderButton.Text = "Open Output Folder"
+    $openFolderButton.AutoSize = $true
+    $openFolderButton.MinimumSize = [System.Drawing.Size]::new(150, 34)
+    $buttonPanel.Controls.Add($openFolderButton)
+
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = "Close"
+    $closeButton.AutoSize = $true
+    $closeButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $buttonPanel.Controls.Add($closeButton)
+
+    $statusPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $statusPanel.Dock = "Top"
+    $statusPanel.AutoSize = $true
+    $statusPanel.ColumnCount = 1
+    $statusPanel.RowCount = 2
+    $root.Controls.Add($statusPanel, 0, 6)
+
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.AutoSize = $true
+    $statusLabel.Font = [System.Drawing.Font]::new("Segoe UI Semibold", 9)
+    $statusLabel.Text = "Ready"
+    $statusPanel.Controls.Add($statusLabel, 0, 0)
+
+    $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $progressBar.Dock = "Top"
+    $progressBar.Style = "Blocks"
+    $progressBar.Height = 18
+    $statusPanel.Controls.Add($progressBar, 0, 1)
+
+    $logTextBox = New-Object System.Windows.Forms.TextBox
+    $logTextBox.Dock = "Fill"
+    $logTextBox.Multiline = $true
+    $logTextBox.ReadOnly = $true
+    $logTextBox.ScrollBars = "Vertical"
+    $logTextBox.WordWrap = $false
+    $logTextBox.Font = [System.Drawing.Font]::new("Consolas", 9)
+    $root.Controls.Add($logTextBox, 0, 7)
+
+    $form.AcceptButton = $runButton
+    $form.CancelButton = $closeButton
+
+    $allCommonCodes = @($translationOptions | ForEach-Object { $_.Code })
+    $initialTargets = @(Get-TranslationTargets -Value $InitialState.TranslateTo)
+    foreach ($option in $translationOptions) {
+        if ($initialTargets -contains $option.Code) {
+            $translationPicker.SetItemChecked($translationPicker.Items.IndexOf($option.Display), $true)
+        }
+    }
+
+    $extraTargets = @($initialTargets | Where-Object { $allCommonCodes -notcontains $_ })
+    if ($extraTargets.Count -gt 0) {
+        $customTranslationTextBox.Text = ($extraTargets -join ", ")
+    }
+
+    if (-not $providerComboBox.SelectedItem) {
+        $providerComboBox.SelectedItem = "Auto"
+    }
+
+    $appendLineAction = [System.Action[string, bool]]{
+        param($line, $isError)
+
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            return
+        }
+
+        $logTextBox.AppendText($line + [Environment]::NewLine)
+        $logTextBox.SelectionStart = $logTextBox.TextLength
+        $logTextBox.ScrollToCaret()
+
+        if ($line -match 'PHASE:\s*(.+)$') {
+            $statusLabel.Text = $Matches[1]
+        }
+        elseif ($line -match '^====\s+(.+?)\s+====$') {
+            $statusLabel.Text = $Matches[1]
+        }
+        elseif ($line -match '^PASS ') {
+            $statusLabel.Text = "Completed successfully"
+        }
+        elseif ($line -match '^\[.+\]\s+\[(ERROR|FAIL)\]' -or $line -match '^FAIL ') {
+            $statusLabel.Text = "Run failed"
+        }
+
+        if ($isError) {
+            $statusLabel.ForeColor = [System.Drawing.Color]::Firebrick
+        }
+    }
+
+    $setRunningState = [System.Action[bool, string]]{
+        param($isRunning, $stateText)
+
+        $runButton.Enabled = -not $isRunning
+        $stopButton.Enabled = $isRunning
+        $browseFileButton.Enabled = -not $isRunning
+        $browseFolderButton.Enabled = -not $isRunning
+        $browseOutputButton.Enabled = -not $isRunning
+        $inputTextBox.Enabled = -not $isRunning
+        $outputTextBox.Enabled = -not $isRunning
+        $translationPicker.Enabled = -not $isRunning
+        $customTranslationTextBox.Enabled = -not $isRunning
+        $providerComboBox.Enabled = -not $isRunning
+        $copyRawCheckBox.Enabled = -not $isRunning
+        $createZipCheckBox.Enabled = -not $isRunning
+        $includeCommentsCheckBox.Enabled = -not $isRunning
+        $keepTempCheckBox.Enabled = -not $isRunning
+        $openOutputCheckBox.Enabled = -not $isRunning
+        $progressBar.Style = if ($isRunning) { "Marquee" } else { "Blocks" }
+        $statusLabel.Text = $stateText
+        $statusLabel.ForeColor = [System.Drawing.SystemColors]::ControlText
+    }
+
+    $getSelectedTranslationCodes = {
+        $targets = New-Object System.Collections.Generic.List[string]
+        foreach ($checkedItem in $translationPicker.CheckedItems) {
+            $matched = $translationOptions | Where-Object { $_.Display -eq [string]$checkedItem } | Select-Object -First 1
+            if ($matched -and -not $targets.Contains($matched.Code)) {
+                [void]$targets.Add($matched.Code)
+            }
+        }
+
+        foreach ($customTarget in (Get-TranslationTargets -Value $customTranslationTextBox.Text)) {
+            if (-not $targets.Contains($customTarget)) {
+                [void]$targets.Add($customTarget)
+            }
+        }
+
+        return @($targets)
+    }
+
+    $syncProviderState = [System.Action]{
+        $providerComboBox.Enabled = ((& $getSelectedTranslationCodes).Count -gt 0) -and $runButton.Enabled
+    }
+
+    $applySuggestedOutput = [System.Action[string]]{
+        param($selectedInput)
+
+        if ([string]::IsNullOrWhiteSpace($selectedInput) -or (Test-IsHttpUrl -Value $selectedInput)) {
+            return
+        }
+
+        $resolvedSuggestion = Resolve-DefaultInputOutputFolders `
+            -CurrentInputFolder $selectedInput `
+            -CurrentOutputFolder $outputTextBox.Text `
+            -InputProvided:$true `
+            -OutputProvided:$false `
+            -NoPrompt:$true
+
+        if ([string]::IsNullOrWhiteSpace($outputTextBox.Text) -or $outputTextBox.Text -eq $script:GuiSuggestedOutputFolder) {
+            $outputTextBox.Text = $resolvedSuggestion.OutputFolder
+        }
+
+        $script:GuiSuggestedOutputFolder = $resolvedSuggestion.OutputFolder
+    }
+
+    $browseFileButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = $Config.InputFileDialogTitle
+        $dialog.Filter = $Config.InputFileFilter
+        $dialog.CheckFileExists = $true
+        $dialog.Multiselect = $false
+        if (-not [string]::IsNullOrWhiteSpace($InitialState.DefaultInputFolder) -and (Test-Path -LiteralPath $InitialState.DefaultInputFolder)) {
+            $dialog.InitialDirectory = $InitialState.DefaultInputFolder
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $inputTextBox.Text = $dialog.FileName
+            $applySuggestedOutput.Invoke($dialog.FileName)
+        }
+    })
+
+    $browseFolderButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = $Config.InputFolderDialogTitle
+        $dialog.ShowNewFolderButton = $false
+        if (-not [string]::IsNullOrWhiteSpace($InitialState.DefaultInputFolder) -and (Test-Path -LiteralPath $InitialState.DefaultInputFolder)) {
+            $dialog.SelectedPath = $InitialState.DefaultInputFolder
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $inputTextBox.Text = $dialog.SelectedPath
+            $applySuggestedOutput.Invoke($dialog.SelectedPath)
+        }
+    })
+
+    $browseOutputButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Choose where the finished package should go."
+        $dialog.ShowNewFolderButton = $true
+        if (-not [string]::IsNullOrWhiteSpace($outputTextBox.Text)) {
+            $dialog.SelectedPath = $outputTextBox.Text
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $outputTextBox.Text = $dialog.SelectedPath
+            $script:GuiSuggestedOutputFolder = $dialog.SelectedPath
+        }
+    })
+
+    $openFolderButton.add_Click({
+        if ([string]::IsNullOrWhiteSpace($outputTextBox.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose an output folder first.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+
+        if (-not (Test-Path -LiteralPath $outputTextBox.Text)) {
+            New-Item -ItemType Directory -Path $outputTextBox.Text -Force | Out-Null
+        }
+
+        Invoke-Item -LiteralPath $outputTextBox.Text
+    })
+
+    $closeButton.add_Click({ $form.Close() })
+    $translationPicker.add_ItemCheck({ $null = $form.BeginInvoke($syncProviderState) })
+    $customTranslationTextBox.add_TextChanged({ $syncProviderState.Invoke() })
+
+    $stopProcessTree = {
+        param([int]$ProcessId)
+
+        try {
+            & taskkill.exe /PID $ProcessId /T /F | Out-Null
+        }
+        catch {
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $stopButton.add_Click({
+        if ($script:GuiActiveProcess -and -not $script:GuiActiveProcess.HasExited) {
+            $script:GuiCancellationRequested = $true
+            & $stopProcessTree $script:GuiActiveProcess.Id
+        }
+    })
+
+    $form.add_FormClosing({
+        param($sender, $eventArgs)
+
+        if ($script:GuiActiveProcess -and -not $script:GuiActiveProcess.HasExited) {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                "A run is still in progress. Stop it and close the window?",
+                $Config.AppName,
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
+                $eventArgs.Cancel = $true
+                return
+            }
+
+            $script:GuiCancellationRequested = $true
+            & $stopProcessTree $script:GuiActiveProcess.Id
+        }
+    })
+
+    $runButton.add_Click({
+        $inputValue = $inputTextBox.Text.Trim()
+        $outputValue = $outputTextBox.Text.Trim()
+        $selectedTranslations = @(& $getSelectedTranslationCodes)
+
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose a local file, folder, or URL before starting.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        if (-not (Test-IsHttpUrl -Value $inputValue) -and -not (Test-Path -LiteralPath $inputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("The selected input path was not found. Please choose a valid file, folder, or URL.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        if ([string]::IsNullOrWhiteSpace($outputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose an output folder before starting.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        $logTextBox.Clear()
+        $logTextBox.AppendText(("Starting {0}..." -f $Config.AppName) + [Environment]::NewLine)
+        $logTextBox.AppendText(("Input:  {0}" -f $inputValue) + [Environment]::NewLine)
+        $logTextBox.AppendText(("Output: {0}" -f $outputValue) + [Environment]::NewLine + [Environment]::NewLine)
+
+        try {
+            $backendScriptPath = Ensure-ExtractedBackendScript -AppVersion $InitialState.AppVersion
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+            return
+        }
+
+        $argumentTokens = New-Object System.Collections.Generic.List[string]
+        [void]$argumentTokens.Add("-NoProfile")
+        [void]$argumentTokens.Add("-ExecutionPolicy")
+        [void]$argumentTokens.Add("Bypass")
+        [void]$argumentTokens.Add("-File")
+        [void]$argumentTokens.Add($backendScriptPath)
+        [void]$argumentTokens.Add("-InputPath")
+        [void]$argumentTokens.Add($inputValue)
+        [void]$argumentTokens.Add("-OutputFolder")
+        [void]$argumentTokens.Add($outputValue)
+        [void]$argumentTokens.Add("-NoPrompt")
+
+        if ($selectedTranslations.Count -gt 0) {
+            [void]$argumentTokens.Add("-TranslateTo")
+            [void]$argumentTokens.Add($selectedTranslations -join ",")
+            [void]$argumentTokens.Add("-TranslationProvider")
+            [void]$argumentTokens.Add([string]$providerComboBox.SelectedItem)
+        }
+
+        foreach ($switchOption in @(
+            [PSCustomObject]@{ Checked = $copyRawCheckBox.Checked; Name = $Config.CopyRawSwitch }
+            [PSCustomObject]@{ Checked = $includeCommentsCheckBox.Checked; Name = "IncludeComments" }
+            [PSCustomObject]@{ Checked = $createZipCheckBox.Checked; Name = "CreateChatGptZip" }
+            [PSCustomObject]@{ Checked = $keepTempCheckBox.Checked; Name = "KeepTempFiles" }
+            [PSCustomObject]@{ Checked = $openOutputCheckBox.Checked; Name = "OpenOutputInExplorer" }
+        )) {
+            if ($switchOption.Checked) {
+                [void]$argumentTokens.Add(("-{0}" -f $switchOption.Name))
+            }
+        }
+
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = Get-WindowsPowerShellPath
+        $psi.Arguments = Join-ProcessArguments -Tokens $argumentTokens
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        $process.EnableRaisingEvents = $true
+        $process.add_OutputDataReceived({
+            param($sender, $eventArgs)
+            if (-not [string]::IsNullOrWhiteSpace($eventArgs.Data)) {
+                $null = $form.BeginInvoke($appendLineAction, @($eventArgs.Data, $false))
+            }
+        })
+        $process.add_ErrorDataReceived({
+            param($sender, $eventArgs)
+            if (-not [string]::IsNullOrWhiteSpace($eventArgs.Data)) {
+                $null = $form.BeginInvoke($appendLineAction, @($eventArgs.Data, $true))
+            }
+        })
+        $process.add_Exited({
+            $null = $form.BeginInvoke([System.Action]{
+                $runWasCancelled = $script:GuiCancellationRequested
+                $exitCode = $process.ExitCode
+                $script:GuiActiveProcess = $null
+                $script:GuiCancellationRequested = $false
+                $setRunningState.Invoke($false, $(if ($runWasCancelled) { "Run stopped" } elseif ($exitCode -eq 0) { "Completed successfully" } else { "Run failed" }))
+
+                if ($runWasCancelled) {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::DarkGoldenrod
+                    $logTextBox.AppendText([Environment]::NewLine + "Run stopped by user." + [Environment]::NewLine)
+                }
+                elseif ($exitCode -eq 0) {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+                    $logTextBox.AppendText([Environment]::NewLine + "Finished successfully." + [Environment]::NewLine)
+                }
+                else {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::Firebrick
+                    $logTextBox.AppendText([Environment]::NewLine + ("Run exited with code {0}." -f $exitCode) + [Environment]::NewLine)
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "The run did not finish successfully. Review the status area for details.",
+                        $Config.AppName,
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Error
+                    ) | Out-Null
+                }
+
+                $process.Dispose()
+            })
+        })
+
+        try {
+            [void]$process.Start()
+            $script:GuiActiveProcess = $process
+            $script:GuiCancellationRequested = $false
+            $setRunningState.Invoke($true, "Running...")
+            $process.BeginOutputReadLine()
+            $process.BeginErrorReadLine()
+        }
+        catch {
+            $process.Dispose()
+            [System.Windows.Forms.MessageBox]::Show(("Could not start the backend process.`r`n`r`n{0}" -f $_.Exception.Message), $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    })
+
+    $syncProviderState.Invoke()
+    [void]$form.ShowDialog()
+}
+
 $appVersion = Get-AppVersion
 
 if ($Version) {
-    Write-Host ("{0} v{1}" -f $script:AppName, $appVersion) -ForegroundColor Cyan
+    if (Test-IsPackagedExecutable) {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show(("{0} v{1}" -f $script:AppName, $appVersion), $script:AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+    }
+    else {
+        Write-Host ("{0} v{1}" -f $script:AppName, $appVersion) -ForegroundColor Cyan
+    }
+    return
+}
+
+if ($Gui -or (Test-IsPackagedExecutable)) {
+    $resolvedDefaultsForGui = Resolve-DefaultInputOutputFolders `
+        -CurrentInputFolder $InputFolder `
+        -CurrentOutputFolder $OutputFolder `
+        -InputProvided:$($PSBoundParameters.ContainsKey("InputFolder")) `
+        -OutputProvided:$($PSBoundParameters.ContainsKey("OutputFolder")) `
+        -NoPrompt:$true
+
+    $null = Show-ManglerGuiWindow `
+        -Config @{
+            AppName                = $script:AppName
+            Description            = "Choose the common settings visually, then run the same backend workflow without the checklist prompts."
+            InputLabel             = "Input audio file, folder, or URL"
+            InputHint              = "Paste a local path or URL, or use the browse buttons for local audio files and folders."
+            InputFileDialogTitle   = "Choose an audio file"
+            InputFolderDialogTitle = "Choose a folder that contains the audio files to package."
+            InputFileFilter        = "Audio Files|*.mp3;*.wav;*.flac;*.m4a;*.aac;*.ogg;*.opus;*.webm;*.mka;*.mp4|All Files|*.*"
+            CopyRawLabel           = "Copy original source audio"
+            CopyRawSwitch          = "CopyRawAudio"
+        } `
+        -InitialState @{
+            AppVersion           = $appVersion
+            InputPath            = $(if ($PSBoundParameters.ContainsKey("InputPath")) { $InputPath } else { "" })
+            OutputFolder         = $(if ($PSBoundParameters.ContainsKey("OutputFolder")) { $OutputFolder } else { $resolvedDefaultsForGui.OutputFolder })
+            DefaultInputFolder   = $resolvedDefaultsForGui.InputFolder
+            TranslateTo          = $TranslateTo
+            TranslationProvider  = $(if ([string]::IsNullOrWhiteSpace($TranslationProvider)) { "Auto" } else { $TranslationProvider })
+            IncludeComments      = $IncludeComments.IsPresent
+            CreateChatGptZip     = $(if ($PSBoundParameters.ContainsKey("CreateChatGptZip")) { $CreateChatGptZip.IsPresent } else { $true })
+            CopyRaw              = $(if ($PSBoundParameters.ContainsKey("CopyRawAudio")) { $CopyRawAudio.IsPresent } else { $true })
+            KeepTempFiles        = $KeepTempFiles.IsPresent
+            OpenOutputInExplorer = $(if ($PSBoundParameters.ContainsKey("OpenOutputInExplorer")) { $OpenOutputInExplorer.IsPresent } else { $true })
+        }
     return
 }
 
@@ -3906,6 +4768,810 @@ function Process-Audio {
         TranslationProvider = $translationProviderText
         CommentsSummary     = $commentsSummary
     }
+}
+
+function Test-IsPackagedExecutable {
+    $commandLineArgs = [Environment]::GetCommandLineArgs()
+    if (-not $commandLineArgs -or $commandLineArgs.Count -eq 0) {
+        return $false
+    }
+
+    $entryPointName = [System.IO.Path]::GetFileNameWithoutExtension($commandLineArgs[0]).ToLowerInvariant()
+    return $entryPointName -notin @("powershell", "pwsh", "powershell_ise")
+}
+
+function Get-CurrentExecutablePath {
+    try {
+        $processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if (-not [string]::IsNullOrWhiteSpace($processPath)) {
+            return $processPath
+        }
+    }
+    catch {
+    }
+
+    return $null
+}
+
+function Get-WindowsPowerShellPath {
+    $resolved = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($resolved) {
+        return $resolved.Source
+    }
+
+    $fallback = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (Test-Path -LiteralPath $fallback) {
+        return $fallback
+    }
+
+    throw "Could not find powershell.exe on this machine."
+}
+
+function Format-ProcessArgument {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return '""'
+    }
+
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
+}
+
+function Join-ProcessArguments {
+    param([string[]]$Tokens)
+
+    return (($Tokens | ForEach-Object { Format-ProcessArgument -Value $_ }) -join " ")
+}
+
+function Ensure-ExtractedBackendScript {
+    param(
+        [string]$AppVersion
+    )
+
+    if (-not (Test-IsPackagedExecutable)) {
+        if ([string]::IsNullOrWhiteSpace($script:SelfScriptPath)) {
+            throw "Could not determine the current script path."
+        }
+
+        return $script:SelfScriptPath
+    }
+
+    $executablePath = Get-CurrentExecutablePath
+    if ([string]::IsNullOrWhiteSpace($executablePath)) {
+        throw "Could not determine the packaged executable path."
+    }
+
+    $cacheRoot = Join-Path $env:TEMP "MediaManglersGuiCache"
+    $cacheFolder = Join-Path $cacheRoot ("Audio-{0}" -f $AppVersion)
+    $backendScriptPath = Join-Path $cacheFolder "Audio Mangler.backend.ps1"
+    if (Test-Path -LiteralPath $backendScriptPath) {
+        return $backendScriptPath
+    }
+
+    Ensure-Directory $cacheFolder
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $executablePath
+    $psi.Arguments = ('-extract:{0}' -f (Format-ProcessArgument -Value $backendScriptPath))
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $backendScriptPath)) {
+            $failureBits = @("Could not extract the packaged backend script.")
+            if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+                $failureBits += ("stdout: {0}" -f $stdout.Trim())
+            }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) {
+                $failureBits += ("stderr: {0}" -f $stderr.Trim())
+            }
+            throw ($failureBits -join " ")
+        }
+
+        return $backendScriptPath
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
+function Show-ManglerGuiWindow {
+    param(
+        [hashtable]$Config,
+        [hashtable]$InitialState
+    )
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+
+    $translationOptions = @(
+        [PSCustomObject]@{ Display = "English (en)"; Code = "en" }
+        [PSCustomObject]@{ Display = "Spanish (es)"; Code = "es" }
+        [PSCustomObject]@{ Display = "French (fr)"; Code = "fr" }
+        [PSCustomObject]@{ Display = "German (de)"; Code = "de" }
+        [PSCustomObject]@{ Display = "Italian (it)"; Code = "it" }
+        [PSCustomObject]@{ Display = "Portuguese (pt)"; Code = "pt" }
+        [PSCustomObject]@{ Display = "Japanese (ja)"; Code = "ja" }
+        [PSCustomObject]@{ Display = "Korean (ko)"; Code = "ko" }
+        [PSCustomObject]@{ Display = "Chinese (zh)"; Code = "zh" }
+        [PSCustomObject]@{ Display = "Russian (ru)"; Code = "ru" }
+    )
+
+    $defaultOutputFolder = $InitialState.OutputFolder
+    $script:GuiSuggestedOutputFolder = $defaultOutputFolder
+    $script:GuiActiveProcess = $null
+    $script:GuiCancellationRequested = $false
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = ("{0} Setup" -f $Config.AppName)
+    $form.StartPosition = "CenterScreen"
+    $form.MinimumSize = [System.Drawing.Size]::new(920, 760)
+    $form.Size = [System.Drawing.Size]::new(980, 820)
+    $form.Font = [System.Drawing.Font]::new("Segoe UI", 9)
+
+    try {
+        $exePath = Get-CurrentExecutablePath
+        if (-not [string]::IsNullOrWhiteSpace($exePath) -and (Test-Path -LiteralPath $exePath)) {
+            $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)
+        }
+    }
+    catch {
+    }
+
+    $root = New-Object System.Windows.Forms.TableLayoutPanel
+    $root.Dock = "Fill"
+    $root.Padding = [System.Windows.Forms.Padding]::new(12)
+    $root.ColumnCount = 1
+    $root.RowCount = 8
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $root.RowStyles.Add([System.Windows.Forms.RowStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $form.Controls.Add($root)
+
+    $titlePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $titlePanel.Dock = "Top"
+    $titlePanel.AutoSize = $true
+    $titlePanel.ColumnCount = 1
+    $titlePanel.RowCount = 2
+
+    $titleLabel = New-Object System.Windows.Forms.Label
+    $titleLabel.AutoSize = $true
+    $titleLabel.Font = [System.Drawing.Font]::new("Segoe UI Semibold", 16)
+    $titleLabel.Text = ("{0} v{1}" -f $Config.AppName, $InitialState.AppVersion)
+    $titlePanel.Controls.Add($titleLabel, 0, 0)
+
+    $subtitleLabel = New-Object System.Windows.Forms.Label
+    $subtitleLabel.AutoSize = $true
+    $subtitleLabel.MaximumSize = [System.Drawing.Size]::new(860, 0)
+    $subtitleLabel.Text = $Config.Description
+    $titlePanel.Controls.Add($subtitleLabel, 0, 1)
+    $root.Controls.Add($titlePanel, 0, 0)
+
+    $setupGroup = New-Object System.Windows.Forms.GroupBox
+    $setupGroup.Text = "Setup"
+    $setupGroup.Dock = "Top"
+    $setupGroup.AutoSize = $true
+    $root.Controls.Add($setupGroup, 0, 1)
+
+    $setupTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $setupTable.Dock = "Fill"
+    $setupTable.AutoSize = $true
+    $setupTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $setupTable.ColumnCount = 3
+    $setupTable.RowCount = 5
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 155))
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $setupTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 190))
+    $setupGroup.Controls.Add($setupTable)
+
+    $inputLabel = New-Object System.Windows.Forms.Label
+    $inputLabel.AutoSize = $true
+    $inputLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $inputLabel.Text = $Config.InputLabel
+    $setupTable.Controls.Add($inputLabel, 0, 0)
+
+    $inputTextBox = New-Object System.Windows.Forms.TextBox
+    $inputTextBox.Dock = "Fill"
+    $inputTextBox.Text = $InitialState.InputPath
+    $setupTable.Controls.Add($inputTextBox, 1, 0)
+
+    $inputButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $inputButtonPanel.Dock = "Fill"
+    $inputButtonPanel.FlowDirection = "LeftToRight"
+    $inputButtonPanel.WrapContents = $false
+    $setupTable.Controls.Add($inputButtonPanel, 2, 0)
+
+    $browseFileButton = New-Object System.Windows.Forms.Button
+    $browseFileButton.Text = "Browse File..."
+    $browseFileButton.AutoSize = $true
+    $inputButtonPanel.Controls.Add($browseFileButton)
+
+    $browseFolderButton = New-Object System.Windows.Forms.Button
+    $browseFolderButton.Text = "Browse Folder..."
+    $browseFolderButton.AutoSize = $true
+    $inputButtonPanel.Controls.Add($browseFolderButton)
+
+    $inputHintLabel = New-Object System.Windows.Forms.Label
+    $inputHintLabel.AutoSize = $true
+    $inputHintLabel.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $inputHintLabel.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 10)
+    $inputHintLabel.Text = $Config.InputHint
+    $setupTable.SetColumnSpan($inputHintLabel, 3)
+    $setupTable.Controls.Add($inputHintLabel, 0, 1)
+
+    $outputLabel = New-Object System.Windows.Forms.Label
+    $outputLabel.AutoSize = $true
+    $outputLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $outputLabel.Text = "Output folder"
+    $setupTable.Controls.Add($outputLabel, 0, 2)
+
+    $outputTextBox = New-Object System.Windows.Forms.TextBox
+    $outputTextBox.Dock = "Fill"
+    $outputTextBox.Text = $defaultOutputFolder
+    $setupTable.Controls.Add($outputTextBox, 1, 2)
+
+    $outputButtonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $outputButtonPanel.Dock = "Fill"
+    $outputButtonPanel.FlowDirection = "LeftToRight"
+    $outputButtonPanel.WrapContents = $false
+    $setupTable.Controls.Add($outputButtonPanel, 2, 2)
+
+    $browseOutputButton = New-Object System.Windows.Forms.Button
+    $browseOutputButton.Text = "Choose Folder..."
+    $browseOutputButton.AutoSize = $true
+    $outputButtonPanel.Controls.Add($browseOutputButton)
+
+    $outputHintLabel = New-Object System.Windows.Forms.Label
+    $outputHintLabel.AutoSize = $true
+    $outputHintLabel.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $outputHintLabel.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 0)
+    $outputHintLabel.Text = "This folder will hold the finished package and the run log."
+    $setupTable.SetColumnSpan($outputHintLabel, 3)
+    $setupTable.Controls.Add($outputHintLabel, 0, 3)
+
+    $translationGroup = New-Object System.Windows.Forms.GroupBox
+    $translationGroup.Text = "Translation"
+    $translationGroup.Dock = "Top"
+    $translationGroup.AutoSize = $true
+    $root.Controls.Add($translationGroup, 0, 2)
+
+    $translationTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $translationTable.Dock = "Fill"
+    $translationTable.AutoSize = $true
+    $translationTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $translationTable.ColumnCount = 2
+    $translationTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Absolute, 155))
+    $translationTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 100))
+    $translationGroup.Controls.Add($translationTable)
+
+    $translateLabel = New-Object System.Windows.Forms.Label
+    $translateLabel.AutoSize = $true
+    $translateLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $translateLabel.Text = "Translate transcript"
+    $translationTable.Controls.Add($translateLabel, 0, 0)
+
+    $translationPicker = New-Object System.Windows.Forms.CheckedListBox
+    $translationPicker.Dock = "Fill"
+    $translationPicker.CheckOnClick = $true
+    $translationPicker.Height = 96
+    $translationPicker.MultiColumn = $true
+    $translationPicker.ColumnWidth = 150
+    $translationPicker.IntegralHeight = $false
+    foreach ($option in $translationOptions) {
+        [void]$translationPicker.Items.Add($option.Display)
+    }
+    $translationTable.Controls.Add($translationPicker, 1, 0)
+
+    $customTranslationLabel = New-Object System.Windows.Forms.Label
+    $customTranslationLabel.AutoSize = $true
+    $customTranslationLabel.Margin = [System.Windows.Forms.Padding]::new(0, 10, 0, 0)
+    $customTranslationLabel.Text = "More language codes"
+    $translationTable.Controls.Add($customTranslationLabel, 0, 1)
+
+    $customTranslationTextBox = New-Object System.Windows.Forms.TextBox
+    $customTranslationTextBox.Dock = "Fill"
+    $translationTable.Controls.Add($customTranslationTextBox, 1, 1)
+
+    $customTranslationHint = New-Object System.Windows.Forms.Label
+    $customTranslationHint.AutoSize = $true
+    $customTranslationHint.MaximumSize = [System.Drawing.Size]::new(760, 0)
+    $customTranslationHint.Margin = [System.Windows.Forms.Padding]::new(0, 4, 0, 8)
+    $customTranslationHint.Text = "Leave this blank for no translation, or add extra targets like nl, pl, ar separated by commas."
+    $translationTable.SetColumnSpan($customTranslationHint, 2)
+    $translationTable.Controls.Add($customTranslationHint, 0, 2)
+
+    $providerLabel = New-Object System.Windows.Forms.Label
+    $providerLabel.AutoSize = $true
+    $providerLabel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 0)
+    $providerLabel.Text = "Translation provider"
+    $translationTable.Controls.Add($providerLabel, 0, 3)
+
+    $providerComboBox = New-Object System.Windows.Forms.ComboBox
+    $providerComboBox.DropDownStyle = "DropDownList"
+    [void]$providerComboBox.Items.AddRange(@("Auto", "OpenAI", "Local"))
+    $providerComboBox.SelectedItem = $InitialState.TranslationProvider
+    $translationTable.Controls.Add($providerComboBox, 1, 3)
+
+    $optionsGroup = New-Object System.Windows.Forms.GroupBox
+    $optionsGroup.Text = "Common Options"
+    $optionsGroup.Dock = "Top"
+    $optionsGroup.AutoSize = $true
+    $root.Controls.Add($optionsGroup, 0, 3)
+
+    $optionsTable = New-Object System.Windows.Forms.TableLayoutPanel
+    $optionsTable.Dock = "Fill"
+    $optionsTable.AutoSize = $true
+    $optionsTable.Padding = [System.Windows.Forms.Padding]::new(10, 12, 10, 10)
+    $optionsTable.ColumnCount = 2
+    $optionsTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 50))
+    $optionsTable.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent, 50))
+    $optionsGroup.Controls.Add($optionsTable)
+
+    $copyRawCheckBox = New-Object System.Windows.Forms.CheckBox
+    $copyRawCheckBox.AutoSize = $true
+    $copyRawCheckBox.Text = $Config.CopyRawLabel
+    $copyRawCheckBox.Checked = $InitialState.CopyRaw
+    $optionsTable.Controls.Add($copyRawCheckBox, 0, 0)
+
+    $createZipCheckBox = New-Object System.Windows.Forms.CheckBox
+    $createZipCheckBox.AutoSize = $true
+    $createZipCheckBox.Text = "Create ChatGPT upload zip"
+    $createZipCheckBox.Checked = $InitialState.CreateChatGptZip
+    $optionsTable.Controls.Add($createZipCheckBox, 1, 0)
+
+    $includeCommentsCheckBox = New-Object System.Windows.Forms.CheckBox
+    $includeCommentsCheckBox.AutoSize = $true
+    $includeCommentsCheckBox.Text = "Include public comments when available"
+    $includeCommentsCheckBox.Checked = $InitialState.IncludeComments
+    $optionsTable.Controls.Add($includeCommentsCheckBox, 0, 1)
+
+    $keepTempCheckBox = New-Object System.Windows.Forms.CheckBox
+    $keepTempCheckBox.AutoSize = $true
+    $keepTempCheckBox.Text = "Keep temporary working files"
+    $keepTempCheckBox.Checked = $InitialState.KeepTempFiles
+    $optionsTable.Controls.Add($keepTempCheckBox, 1, 1)
+
+    $openOutputCheckBox = New-Object System.Windows.Forms.CheckBox
+    $openOutputCheckBox.AutoSize = $true
+    $openOutputCheckBox.Text = "Open output folder when finished"
+    $openOutputCheckBox.Checked = $InitialState.OpenOutputInExplorer
+    $optionsTable.Controls.Add($openOutputCheckBox, 0, 2)
+
+    $frameIntervalUpDown = $null
+
+    $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $buttonPanel.Dock = "Top"
+    $buttonPanel.FlowDirection = "LeftToRight"
+    $buttonPanel.WrapContents = $false
+    $buttonPanel.AutoSize = $true
+    $buttonPanel.Margin = [System.Windows.Forms.Padding]::new(0, 8, 0, 8)
+    $root.Controls.Add($buttonPanel, 0, 5)
+
+    $runButton = New-Object System.Windows.Forms.Button
+    $runButton.Text = "Start"
+    $runButton.AutoSize = $true
+    $runButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $buttonPanel.Controls.Add($runButton)
+
+    $stopButton = New-Object System.Windows.Forms.Button
+    $stopButton.Text = "Stop"
+    $stopButton.AutoSize = $true
+    $stopButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $stopButton.Enabled = $false
+    $buttonPanel.Controls.Add($stopButton)
+
+    $openFolderButton = New-Object System.Windows.Forms.Button
+    $openFolderButton.Text = "Open Output Folder"
+    $openFolderButton.AutoSize = $true
+    $openFolderButton.MinimumSize = [System.Drawing.Size]::new(150, 34)
+    $buttonPanel.Controls.Add($openFolderButton)
+
+    $closeButton = New-Object System.Windows.Forms.Button
+    $closeButton.Text = "Close"
+    $closeButton.AutoSize = $true
+    $closeButton.MinimumSize = [System.Drawing.Size]::new(110, 34)
+    $buttonPanel.Controls.Add($closeButton)
+
+    $statusPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $statusPanel.Dock = "Top"
+    $statusPanel.AutoSize = $true
+    $statusPanel.ColumnCount = 1
+    $statusPanel.RowCount = 2
+    $root.Controls.Add($statusPanel, 0, 6)
+
+    $statusLabel = New-Object System.Windows.Forms.Label
+    $statusLabel.AutoSize = $true
+    $statusLabel.Font = [System.Drawing.Font]::new("Segoe UI Semibold", 9)
+    $statusLabel.Text = "Ready"
+    $statusPanel.Controls.Add($statusLabel, 0, 0)
+
+    $progressBar = New-Object System.Windows.Forms.ProgressBar
+    $progressBar.Dock = "Top"
+    $progressBar.Style = "Blocks"
+    $progressBar.Height = 18
+    $statusPanel.Controls.Add($progressBar, 0, 1)
+
+    $logTextBox = New-Object System.Windows.Forms.TextBox
+    $logTextBox.Dock = "Fill"
+    $logTextBox.Multiline = $true
+    $logTextBox.ReadOnly = $true
+    $logTextBox.ScrollBars = "Vertical"
+    $logTextBox.WordWrap = $false
+    $logTextBox.Font = [System.Drawing.Font]::new("Consolas", 9)
+    $root.Controls.Add($logTextBox, 0, 7)
+
+    $form.AcceptButton = $runButton
+    $form.CancelButton = $closeButton
+
+    $allCommonCodes = @($translationOptions | ForEach-Object { $_.Code })
+    $initialTargets = @(Get-TranslationTargets -Value $InitialState.TranslateTo)
+    foreach ($option in $translationOptions) {
+        if ($initialTargets -contains $option.Code) {
+            $translationPicker.SetItemChecked($translationPicker.Items.IndexOf($option.Display), $true)
+        }
+    }
+
+    $extraTargets = @($initialTargets | Where-Object { $allCommonCodes -notcontains $_ })
+    if ($extraTargets.Count -gt 0) {
+        $customTranslationTextBox.Text = ($extraTargets -join ", ")
+    }
+
+    if (-not $providerComboBox.SelectedItem) {
+        $providerComboBox.SelectedItem = "Auto"
+    }
+
+    $appendLineAction = [System.Action[string, bool]]{
+        param($line, $isError)
+
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            return
+        }
+
+        $logTextBox.AppendText($line + [Environment]::NewLine)
+        $logTextBox.SelectionStart = $logTextBox.TextLength
+        $logTextBox.ScrollToCaret()
+
+        if ($line -match 'PHASE:\s*(.+)$') {
+            $statusLabel.Text = $Matches[1]
+        }
+        elseif ($line -match '^====\s+(.+?)\s+====$') {
+            $statusLabel.Text = $Matches[1]
+        }
+        elseif ($line -match '^PASS ') {
+            $statusLabel.Text = "Completed successfully"
+        }
+        elseif ($line -match '^\[.+\]\s+\[(ERROR|FAIL)\]' -or $line -match '^FAIL ') {
+            $statusLabel.Text = "Run failed"
+        }
+
+        if ($isError) {
+            $statusLabel.ForeColor = [System.Drawing.Color]::Firebrick
+        }
+    }
+
+    $setRunningState = [System.Action[bool, string]]{
+        param($isRunning, $stateText)
+
+        $runButton.Enabled = -not $isRunning
+        $stopButton.Enabled = $isRunning
+        $browseFileButton.Enabled = -not $isRunning
+        $browseFolderButton.Enabled = -not $isRunning
+        $browseOutputButton.Enabled = -not $isRunning
+        $inputTextBox.Enabled = -not $isRunning
+        $outputTextBox.Enabled = -not $isRunning
+        $translationPicker.Enabled = -not $isRunning
+        $customTranslationTextBox.Enabled = -not $isRunning
+        $providerComboBox.Enabled = -not $isRunning
+        $copyRawCheckBox.Enabled = -not $isRunning
+        $createZipCheckBox.Enabled = -not $isRunning
+        $includeCommentsCheckBox.Enabled = -not $isRunning
+        $keepTempCheckBox.Enabled = -not $isRunning
+        $openOutputCheckBox.Enabled = -not $isRunning
+        $progressBar.Style = if ($isRunning) { "Marquee" } else { "Blocks" }
+        $statusLabel.Text = $stateText
+        $statusLabel.ForeColor = [System.Drawing.SystemColors]::ControlText
+    }
+
+    $getSelectedTranslationCodes = {
+        $targets = New-Object System.Collections.Generic.List[string]
+        foreach ($checkedItem in $translationPicker.CheckedItems) {
+            $matched = $translationOptions | Where-Object { $_.Display -eq [string]$checkedItem } | Select-Object -First 1
+            if ($matched -and -not $targets.Contains($matched.Code)) {
+                [void]$targets.Add($matched.Code)
+            }
+        }
+
+        foreach ($customTarget in (Get-TranslationTargets -Value $customTranslationTextBox.Text)) {
+            if (-not $targets.Contains($customTarget)) {
+                [void]$targets.Add($customTarget)
+            }
+        }
+
+        return @($targets)
+    }
+
+    $syncProviderState = [System.Action]{
+        $providerComboBox.Enabled = ((& $getSelectedTranslationCodes).Count -gt 0) -and $runButton.Enabled
+    }
+
+    $applySuggestedOutput = [System.Action[string]]{
+        param($selectedInput)
+
+        if ([string]::IsNullOrWhiteSpace($selectedInput) -or (Test-IsHttpUrl -Value $selectedInput)) {
+            return
+        }
+
+        $resolvedSuggestion = Resolve-DefaultInputOutputFolders `
+            -CurrentInputFolder $selectedInput `
+            -CurrentOutputFolder $outputTextBox.Text `
+            -InputProvided:$true `
+            -OutputProvided:$false `
+            -NoPrompt:$true
+
+        if ([string]::IsNullOrWhiteSpace($outputTextBox.Text) -or $outputTextBox.Text -eq $script:GuiSuggestedOutputFolder) {
+            $outputTextBox.Text = $resolvedSuggestion.OutputFolder
+        }
+
+        $script:GuiSuggestedOutputFolder = $resolvedSuggestion.OutputFolder
+    }
+
+    $browseFileButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = $Config.InputFileDialogTitle
+        $dialog.Filter = $Config.InputFileFilter
+        $dialog.CheckFileExists = $true
+        $dialog.Multiselect = $false
+        if (-not [string]::IsNullOrWhiteSpace($InitialState.DefaultInputFolder) -and (Test-Path -LiteralPath $InitialState.DefaultInputFolder)) {
+            $dialog.InitialDirectory = $InitialState.DefaultInputFolder
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $inputTextBox.Text = $dialog.FileName
+            $applySuggestedOutput.Invoke($dialog.FileName)
+        }
+    })
+
+    $browseFolderButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = $Config.InputFolderDialogTitle
+        $dialog.ShowNewFolderButton = $false
+        if (-not [string]::IsNullOrWhiteSpace($InitialState.DefaultInputFolder) -and (Test-Path -LiteralPath $InitialState.DefaultInputFolder)) {
+            $dialog.SelectedPath = $InitialState.DefaultInputFolder
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $inputTextBox.Text = $dialog.SelectedPath
+            $applySuggestedOutput.Invoke($dialog.SelectedPath)
+        }
+    })
+
+    $browseOutputButton.add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Choose where the finished package should go."
+        $dialog.ShowNewFolderButton = $true
+        if (-not [string]::IsNullOrWhiteSpace($outputTextBox.Text)) {
+            $dialog.SelectedPath = $outputTextBox.Text
+        }
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $outputTextBox.Text = $dialog.SelectedPath
+            $script:GuiSuggestedOutputFolder = $dialog.SelectedPath
+        }
+    })
+
+    $openFolderButton.add_Click({
+        if ([string]::IsNullOrWhiteSpace($outputTextBox.Text)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose an output folder first.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+            return
+        }
+
+        if (-not (Test-Path -LiteralPath $outputTextBox.Text)) {
+            New-Item -ItemType Directory -Path $outputTextBox.Text -Force | Out-Null
+        }
+
+        Invoke-Item -LiteralPath $outputTextBox.Text
+    })
+
+    $closeButton.add_Click({ $form.Close() })
+    $translationPicker.add_ItemCheck({ $null = $form.BeginInvoke($syncProviderState) })
+    $customTranslationTextBox.add_TextChanged({ $syncProviderState.Invoke() })
+
+    $stopProcessTree = {
+        param([int]$ProcessId)
+
+        try {
+            & taskkill.exe /PID $ProcessId /T /F | Out-Null
+        }
+        catch {
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $stopButton.add_Click({
+        if ($script:GuiActiveProcess -and -not $script:GuiActiveProcess.HasExited) {
+            $script:GuiCancellationRequested = $true
+            & $stopProcessTree $script:GuiActiveProcess.Id
+        }
+    })
+
+    $form.add_FormClosing({
+        param($sender, $eventArgs)
+
+        if ($script:GuiActiveProcess -and -not $script:GuiActiveProcess.HasExited) {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                "A run is still in progress. Stop it and close the window?",
+                $Config.AppName,
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
+
+            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) {
+                $eventArgs.Cancel = $true
+                return
+            }
+
+            $script:GuiCancellationRequested = $true
+            & $stopProcessTree $script:GuiActiveProcess.Id
+        }
+    })
+
+    $runButton.add_Click({
+        $inputValue = $inputTextBox.Text.Trim()
+        $outputValue = $outputTextBox.Text.Trim()
+        $selectedTranslations = @(& $getSelectedTranslationCodes)
+
+        if ([string]::IsNullOrWhiteSpace($inputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose a local file, folder, or URL before starting.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        if (-not (Test-IsHttpUrl -Value $inputValue) -and -not (Test-Path -LiteralPath $inputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("The selected input path was not found. Please choose a valid file, folder, or URL.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        if ([string]::IsNullOrWhiteSpace($outputValue)) {
+            [System.Windows.Forms.MessageBox]::Show("Choose an output folder before starting.", $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        $logTextBox.Clear()
+        $logTextBox.AppendText(("Starting {0}..." -f $Config.AppName) + [Environment]::NewLine)
+        $logTextBox.AppendText(("Input:  {0}" -f $inputValue) + [Environment]::NewLine)
+        $logTextBox.AppendText(("Output: {0}" -f $outputValue) + [Environment]::NewLine + [Environment]::NewLine)
+
+        try {
+            $backendScriptPath = Ensure-ExtractedBackendScript -AppVersion $InitialState.AppVersion
+        }
+        catch {
+            [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+            return
+        }
+
+        $argumentTokens = New-Object System.Collections.Generic.List[string]
+        [void]$argumentTokens.Add("-NoProfile")
+        [void]$argumentTokens.Add("-ExecutionPolicy")
+        [void]$argumentTokens.Add("Bypass")
+        [void]$argumentTokens.Add("-File")
+        [void]$argumentTokens.Add($backendScriptPath)
+        [void]$argumentTokens.Add("-InputPath")
+        [void]$argumentTokens.Add($inputValue)
+        [void]$argumentTokens.Add("-OutputFolder")
+        [void]$argumentTokens.Add($outputValue)
+        [void]$argumentTokens.Add("-NoPrompt")
+
+        if ($selectedTranslations.Count -gt 0) {
+            [void]$argumentTokens.Add("-TranslateTo")
+            [void]$argumentTokens.Add($selectedTranslations -join ",")
+            [void]$argumentTokens.Add("-TranslationProvider")
+            [void]$argumentTokens.Add([string]$providerComboBox.SelectedItem)
+        }
+
+        foreach ($switchOption in @(
+            [PSCustomObject]@{ Checked = $copyRawCheckBox.Checked; Name = $Config.CopyRawSwitch }
+            [PSCustomObject]@{ Checked = $includeCommentsCheckBox.Checked; Name = "IncludeComments" }
+            [PSCustomObject]@{ Checked = $createZipCheckBox.Checked; Name = "CreateChatGptZip" }
+            [PSCustomObject]@{ Checked = $keepTempCheckBox.Checked; Name = "KeepTempFiles" }
+            [PSCustomObject]@{ Checked = $openOutputCheckBox.Checked; Name = "OpenOutputInExplorer" }
+        )) {
+            if ($switchOption.Checked) {
+                [void]$argumentTokens.Add(("-{0}" -f $switchOption.Name))
+            }
+        }
+
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = Get-WindowsPowerShellPath
+        $psi.Arguments = Join-ProcessArguments -Tokens $argumentTokens
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        $process.EnableRaisingEvents = $true
+        $process.add_OutputDataReceived({
+            param($sender, $eventArgs)
+            if (-not [string]::IsNullOrWhiteSpace($eventArgs.Data)) {
+                $null = $form.BeginInvoke($appendLineAction, @($eventArgs.Data, $false))
+            }
+        })
+        $process.add_ErrorDataReceived({
+            param($sender, $eventArgs)
+            if (-not [string]::IsNullOrWhiteSpace($eventArgs.Data)) {
+                $null = $form.BeginInvoke($appendLineAction, @($eventArgs.Data, $true))
+            }
+        })
+        $process.add_Exited({
+            $null = $form.BeginInvoke([System.Action]{
+                $runWasCancelled = $script:GuiCancellationRequested
+                $exitCode = $process.ExitCode
+                $script:GuiActiveProcess = $null
+                $script:GuiCancellationRequested = $false
+                $setRunningState.Invoke($false, $(if ($runWasCancelled) { "Run stopped" } elseif ($exitCode -eq 0) { "Completed successfully" } else { "Run failed" }))
+
+                if ($runWasCancelled) {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::DarkGoldenrod
+                    $logTextBox.AppendText([Environment]::NewLine + "Run stopped by user." + [Environment]::NewLine)
+                }
+                elseif ($exitCode -eq 0) {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::DarkGreen
+                    $logTextBox.AppendText([Environment]::NewLine + "Finished successfully." + [Environment]::NewLine)
+                }
+                else {
+                    $statusLabel.ForeColor = [System.Drawing.Color]::Firebrick
+                    $logTextBox.AppendText([Environment]::NewLine + ("Run exited with code {0}." -f $exitCode) + [Environment]::NewLine)
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "The run did not finish successfully. Review the status area for details.",
+                        $Config.AppName,
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Error
+                    ) | Out-Null
+                }
+
+                $process.Dispose()
+            })
+        })
+
+        try {
+            [void]$process.Start()
+            $script:GuiActiveProcess = $process
+            $script:GuiCancellationRequested = $false
+            $setRunningState.Invoke($true, "Running...")
+            $process.BeginOutputReadLine()
+            $process.BeginErrorReadLine()
+        }
+        catch {
+            $process.Dispose()
+            [System.Windows.Forms.MessageBox]::Show(("Could not start the backend process.`r`n`r`n{0}" -f $_.Exception.Message), $Config.AppName, [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        }
+    })
+
+    $syncProviderState.Invoke()
+    [void]$form.ShowDialog()
 }
 
 $inputSourceDisplay = if ($remoteInputSources.Count -gt 0) {

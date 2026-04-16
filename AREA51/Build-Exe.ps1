@@ -176,6 +176,11 @@ foreach ($appConfig in $selectedApps) {
         -inputFile $inputFile `
         -outputFile $outputFile `
         -iconFile $iconFile `
+        -noConsole `
+        -noOutput `
+        -STA `
+        -DPIAware `
+        -supportOS `
         -title $appConfig.ProductName `
         -product $appConfig.ProductName `
         -description $appConfig.Description `
