@@ -85,17 +85,26 @@ Create the key in your OpenAI Platform account:
 
   https://platform.openai.com/api-keys
 
+Current OpenAI path in code:
+
+- Video Mangler currently sends translation requests to POST /v1/chat/completions
+- It does not use the Responses API for translation today
+
 Recommended setup for normal local use:
 
-- Use a user-owned key.
-- If project scoping is available, use a dedicated project for Media Manglers.
-- Prefer Restricted permissions when the UI clearly shows the API access the
-  app needs.
-- Read Only is not enough for translation work.
-- Service accounts are usually for shared automation, servers, CI, or other
+- Create the key in your OpenAI Platform account.
+- Choose Owned by you.
+- Put Media Manglers in a dedicated project.
+- Choose Restricted.
+- In the current OpenAI Platform UI, turn on Request for Chat Completions
+  (/v1/chat/completions).
+- Leave unrelated permissions like Images, Embeddings, Files, Fine-tuning,
+  Vector Stores, Assistants, Batches, and similar extras off or set to None
+  unless you actually use them.
+- Read Only is not enough because Video Mangler sends POST
+  /v1/chat/completions requests for translation.
+- Service accounts are mainly for shared automation, servers, CI, or other
   non-personal bot identities, not normal desktop use.
-- If the permission UI is unclear, safest fallback is a user-owned key inside a
-  dedicated project instead of a broader shared key.
 - OpenAI API usage may incur charges.
 
 Ways to provide the key on Windows:
