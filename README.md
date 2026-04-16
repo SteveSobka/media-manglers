@@ -158,7 +158,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioMangl
 
 ## License And Notices
 
-- Repository code: [MIT](LICENSE)
+- Repository code: [Apache License 2.0](LICENSE)
 - Third-party notices: [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
 
-The MIT license covers the code in this repo. It does not replace the upstream terms for any referenced media, hosted samples, or optional third-party services.
+The Apache License 2.0 covers the code in this repo. It does not replace the upstream terms for any referenced media, hosted samples, or optional third-party services.

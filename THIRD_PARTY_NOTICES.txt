@@ -7,7 +7,7 @@ optional workflows that rely on third-party media, tools, or services.
 Repository code
 ---------------
 
-The code in this repository is licensed under the MIT License.
+The code in this repository is licensed under the Apache License, Version 2.0.
 See LICENSE for the repository license text.
 
 Optional tooling and services
@@ -26,7 +26,7 @@ Examples include:
 
 Practical notes:
 
-- These tools and services are separate from the MIT license that covers this
+- These tools and services are separate from the Apache License 2.0 that covers this
   repository's code.
 - OpenAI is optional and not bundled with the repo.
 - OpenAI API usage depends on your own account, key, pricing, and service
@@ -103,6 +103,6 @@ General rule
 ------------
 
 Do not assume that referenced media, metadata, or third-party services become
-MIT just because this repository is MIT licensed.
+Apache 2.0 licensed just because this repository is Apache 2.0 licensed.
 If you redistribute any referenced media or exported content, follow the
 upstream terms for that specific source.

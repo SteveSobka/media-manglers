@@ -243,6 +243,132 @@ function Write-Log {
     }
 }
 
+function Initialize-StdInInterop {
+    if ("MediaMangler.NativeMethods" -as [type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace MediaMangler {
+    public static class NativeMethods {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int nStdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool PeekNamedPipe(
+            IntPtr hNamedPipe,
+            IntPtr lpBuffer,
+            uint nBufferSize,
+            IntPtr lpBytesRead,
+            out uint lpTotalBytesAvail,
+            IntPtr lpBytesLeftThisMessage);
+    }
+}
+"@
+}
+
+function Read-LineWithTimeout {
+    param(
+        [string]$Prompt,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = [System.DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    Write-Host ($Prompt + " ") -NoNewline
+
+    if ([System.Console]::IsInputRedirected) {
+        $stdInHandle = [System.IntPtr]::Zero
+        $canPollRedirectedInput = $false
+
+        try {
+            Initialize-StdInInterop
+            $stdInHandle = [MediaMangler.NativeMethods]::GetStdHandle(-10)
+            $canPollRedirectedInput = $stdInHandle -ne [System.IntPtr]::Zero -and $stdInHandle.ToInt64() -ne -1
+        }
+        catch {
+            $canPollRedirectedInput = $false
+        }
+
+        while ([System.DateTime]::UtcNow -lt $deadline) {
+            if ($canPollRedirectedInput) {
+                $bytesAvailable = [uint32]0
+                $canPeek = $false
+
+                try {
+                    $canPeek = [MediaMangler.NativeMethods]::PeekNamedPipe(
+                        $stdInHandle,
+                        [System.IntPtr]::Zero,
+                        [uint32]0,
+                        [System.IntPtr]::Zero,
+                        [ref]$bytesAvailable,
+                        [System.IntPtr]::Zero)
+                }
+                catch {
+                    $canPeek = $false
+                }
+
+                if ($canPeek -and $bytesAvailable -gt 0) {
+                    $line = [System.Console]::In.ReadLine()
+                    Write-Host ""
+                    return [PSCustomObject]@{
+                        TimedOut = $false
+                        Value    = if ($null -eq $line) { "" } else { $line }
+                    }
+                }
+            }
+
+            Start-Sleep -Milliseconds 100
+        }
+
+        Write-Host ""
+        return [PSCustomObject]@{
+            TimedOut = $true
+            Value    = ""
+        }
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    while ([System.DateTime]::UtcNow -lt $deadline) {
+        while ([System.Console]::KeyAvailable) {
+            $key = [System.Console]::ReadKey($true)
+
+            if ($key.Key -eq [System.ConsoleKey]::Enter) {
+                Write-Host ""
+                return [PSCustomObject]@{
+                    TimedOut = $false
+                    Value    = $builder.ToString()
+                }
+            }
+
+            if ($key.Key -eq [System.ConsoleKey]::Backspace) {
+                if ($builder.Length -gt 0) {
+                    $builder.Length -= 1
+                    Write-Host "`b `b" -NoNewline
+                }
+
+                continue
+            }
+
+            if (-not [char]::IsControl($key.KeyChar)) {
+                [void]$builder.Append($key.KeyChar)
+                Write-Host $key.KeyChar -NoNewline
+            }
+        }
+
+        Start-Sleep -Milliseconds 50
+    }
+
+    Write-Host ""
+    return [PSCustomObject]@{
+        TimedOut = $true
+        Value    = ""
+    }
+}
+
 function Write-Phase {
     param(
         [string]$Name,
@@ -868,7 +994,32 @@ function Select-YouTubeAudioTrackRequest {
             Write-Host "Provider metadata did not clearly identify the original/source audio track, so Auto remains available." -ForegroundColor Yellow
         }
 
-        $choice = Read-Host ("Enter 1-{0}. Press Enter for {1}" -f $cancelChoice, $(if ($recommendedTrack) { "the recommended track" } else { "Auto" }))
+        $promptResult = Read-LineWithTimeout `
+            -Prompt $(if ($recommendedTrack) {
+                "Press Enter for the recommended track, choose 1-$cancelChoice, or wait 30 seconds to continue automatically with the recommended track."
+            }
+            else {
+                "Press Enter for Auto, choose 1-$cancelChoice, or wait 30 seconds to continue automatically with Auto."
+            }) `
+            -TimeoutSeconds 30
+
+        if ($promptResult.TimedOut) {
+            if ($recommendedTrack) {
+                return [PSCustomObject]@{
+                    Mode           = "explicit"
+                    RequestedTrack = $recommendedTrack
+                    LogLine        = ("Audio-track prompt timed out after 30 seconds. Continuing with recommended track: {0}." -f $recommendedTrack.PromptLabel)
+                }
+            }
+
+            return [PSCustomObject]@{
+                Mode           = "auto"
+                RequestedTrack = $null
+                LogLine        = "Audio-track prompt timed out after 30 seconds. Continuing with Auto because provider metadata did not clearly confirm an original/source audio track."
+            }
+        }
+
+        $choice = $promptResult.Value
         if ([string]::IsNullOrWhiteSpace($choice)) {
             if ($recommendedTrack) {
                 return [PSCustomObject]@{
