@@ -1,6 +1,10 @@
 # Media Manglers
 
-Media Manglers is a small Windows-focused media review toolkit built around a simple idea: if you want AI to review media well, you usually need to prepare that media first.
+Media Manglers started as a practical way to break video and audio into pieces that AI can review more accurately.
+
+I originally built it for a sim-racing project, where high-frame-rate footage moves too fast for broad, generic AI video review to catch the details I actually cared about. Instead of handing AI one giant video and hoping for the best, I wanted a way to extract the frames, audio, transcripts, translations, comments, and other artifacts needed to review specific moments more deliberately.
+
+That is what Media Manglers does.
 
 ## Why This Project Exists
 
