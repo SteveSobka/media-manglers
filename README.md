@@ -94,6 +94,8 @@ Both apps work the same way:
 
 That matters most for remote video. If you are processing, say, a German YouTube video, Media Manglers is meant to work from the original German speech instead of trusting a weak English auto-track or platform-generated translated captions.
 
+For YouTube links, `Video Mangler` now probes the available remote audio-track metadata before the final download when the provider exposes it. If multiple spoken-language tracks are available, interactive runs offer a clean track picker and recommend the original/source spoken audio when it can be identified. `-NoPrompt` runs try to lock onto that original/source track automatically and log a best-effort warning when YouTube metadata does not clearly confirm it.
+
 Provider choices:
 
 - `Auto`: use the best available option for each requested language

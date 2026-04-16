@@ -54,6 +54,13 @@ This is especially useful for remote video. If a YouTube video has poor
 platform-translated audio or captions, Video Mangler is meant to prefer the
 original spoken source instead.
 
+For YouTube links, the app now probes the available audio-track metadata before
+the final download when YouTube exposes it. If multiple spoken-language tracks
+are available, interactive runs show a track picker and recommend the
+original/source audio. NoPrompt runs try to choose that original/source track
+automatically and log best-effort wording when the provider metadata does not
+confirm it clearly.
+
 Provider choices:
 
 - Auto: choose the best available path
