@@ -32,7 +32,7 @@ Validation and tooling
 Licensing
 ---------
 
-- Repository code is MIT licensed
+- Repository code is licensed under Apache License 2.0
 - Sample media references remain under their own upstream terms
 - See THIRD_PARTY_NOTICES.txt for NASA, Wikimedia Commons, Blender, and other
   media-license notes
