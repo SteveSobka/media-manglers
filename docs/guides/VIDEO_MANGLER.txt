@@ -61,11 +61,16 @@ original/source audio. NoPrompt runs try to choose that original/source track
 automatically and log best-effort wording when the provider metadata does not
 confirm it clearly.
 
-Provider choices:
+Mode choices:
 
-- Auto: choose the best available path
-- OpenAI: best-quality option when OPENAI_API_KEY is configured
-- Local: free fallback
+- Local mode: local transcription plus local translation
+- AI Private: OpenAI transcription plus OpenAI translation
+- AI Public: local transcription plus OpenAI translation on the Public/shared
+  project
+
+That difference matters. AI Public does not behave the same way as AI Private,
+and AI Public does not imply that source audio is uploaded to OpenAI for
+transcription.
 
 Local translation paths:
 
@@ -85,10 +90,10 @@ Create the key in your OpenAI Platform account:
 
   https://platform.openai.com/api-keys
 
-Current OpenAI path in code:
+Current OpenAI paths in code:
 
-- Video Mangler currently sends translation requests to POST /v1/chat/completions
-- It does not use the Responses API for translation today
+- AI translation uses POST /v1/chat/completions
+- AI Private transcription uses POST /v1/audio/transcriptions
 
 Recommended setup for normal local use:
 
@@ -98,6 +103,9 @@ Recommended setup for normal local use:
 - Choose Restricted.
 - In the current OpenAI Platform UI, turn on Request for Chat Completions
   (/v1/chat/completions).
+- For AI Private, also turn on Request permission for audio transcription
+  access because Private AI mode sends source audio to OpenAI for
+  transcription.
 - Leave unrelated permissions like Images, Embeddings, Files, Fine-tuning,
   Vector Stores, Assistants, Batches, and similar extras off or set to None
   unless you actually use them.
@@ -105,21 +113,56 @@ Recommended setup for normal local use:
   /v1/chat/completions requests for translation.
 - Service accounts are mainly for shared automation, servers, CI, or other
   non-personal bot identities, not normal desktop use.
+- ChatGPT subscriptions and OpenAI API billing are separate.
+- OpenAI translation needs API billing/credits on the selected OpenAI Platform
+  project.
 - OpenAI API usage may incur charges.
+- Private is the default and safest key profile.
+- If you want a Private/Public split, create two separate OpenAI Platform
+  projects and one key per project.
+- Use OPENAI_API_KEY_PRIVATE for the default Private path.
+- Use OPENAI_API_KEY_PUBLIC only when you explicitly run -ProcessingMode AI
+  -OpenAiProject Public.
+- OPENAI_API_KEY still works as a legacy Private fallback for older setups.
+- The script cannot infer whether a pasted key is Private or Public.
+- Use Private for confidential, sensitive, internal, client, or proprietary
+  media. If you are unsure, use Private.
+- Use Public only for media you are allowed to share with OpenAI.
+- Public/shared complimentary tokens only apply when the Public project is
+  configured for shared traffic and the request uses an eligible model.
+- If a request would cross the remaining complimentary daily quota, OpenAI
+  bills the whole request normally.
 
 Ways to provide the key on Windows:
 
 - Paste it at the prompt for the current run only.
 - Current PowerShell session:
 
+  $env:OPENAI_API_KEY_PRIVATE="sk-..."
+
+- Public project session:
+
+  $env:OPENAI_API_KEY_PUBLIC="sk-..."
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Public
+
+- Legacy fallback:
+
   $env:OPENAI_API_KEY="sk-..."
 
 - Persistent Windows user variable:
 
-  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY_PRIVATE","sk-...","User")
 
 After setting the persistent user variable, open a new PowerShell window before
 rerunning the app. Do not hardcode the key in the script or commit it to GitHub.
+
+Optional troubleshooting:
+
+- Set MM_OPENAI_DIAGNOSTICS=1 to write per-segment OpenAI diagnostics into an
+  openai_diagnostics folder inside the output package.
+- Leave MM_OPENAI_DIAGNOSTICS unset during normal runs.
+- Video Mangler includes a verified Windows PowerShell 5.1 compatibility fix for
+  non-ASCII transcript text on the OpenAI path.
 
 Examples
 --------
@@ -157,11 +200,26 @@ Create an English translation from the original spoken source:
 
 Request multiple translated transcript outputs:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en,es -TranslationProvider Auto
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en,es -ProcessingMode Local
+
+Use AI Private for OpenAI transcription plus OpenAI translation:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Private
+
+Use AI Public for local transcription plus OpenAI translation on the
+Public/shared project:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Public
 
 Request YouTube comments when available:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -IncludeComments
+
+Interactive YouTube runs also ask:
+
+  If comments are available for a YouTube source, save them in the package too? (Y/n):
+
+Press Enter to accept comments by default. Type N or No to skip them.
 
 Keep temporary processing files for troubleshooting:
 
@@ -176,7 +234,7 @@ Smoke test:
 
 Translation smoke test:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1 -TranslateTo en -TranslationProvider Local
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1 -TranslateTo en -ProcessingMode Local
 
 Validator:
 
@@ -185,9 +243,10 @@ Validator:
 Notes
 -----
 
-- OpenAI translation is optional.
-- Local transcription stays on your machine.
-- Local translation stays on your machine after its dependencies are installed.
-- OpenAI translation sends transcript text to the OpenAI API.
+- Local mode keeps transcription and translation on your machine after its
+  dependencies are installed.
+- AI Private sends source audio plus transcript/translation content to OpenAI.
+- AI Public keeps transcription local and only sends transcript/translation
+  content to the Public/shared OpenAI project.
 - Temporary helper files, staging folders, and transient download folders are
   cleaned up by default unless you use -KeepTempFiles.

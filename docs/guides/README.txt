@@ -61,7 +61,12 @@ What they mean:
 Translation in plain English
 ----------------------------
 
-Both apps now use the same general translation approach:
+Both apps now use the same two main operator choices:
+
+- Local mode
+- AI mode
+
+Both apps still follow the same general media flow:
 
 1. Create the original-language transcript from the source audio first.
 2. If you ask for translation, build translated transcript files from that
@@ -78,34 +83,29 @@ original/source audio when it can be identified. NoPrompt runs try to choose
 that original/source track automatically and log best-effort wording when the
 provider does not confirm it clearly.
 
-Translation providers:
+Mode behavior:
 
-- Auto: choose the best available option
-- OpenAI: usually the best quality when you have an API key configured
-- Local: free fallback that runs on your machine
+- Local mode: local transcription plus local translation
+- AI Private: OpenAI transcription plus OpenAI translation
+- AI Public: local transcription plus OpenAI translation on the Public/shared
+  project
 
-Local translation options:
-
-- English translation can use Whisper locally
-- Other target languages can use Argos Translate when its language packages are
-  installed
-
-Missing local translation dependencies are handled with a prompt-install flow.
-The apps explain what is missing, why it helps, and how to install it. They do
-not silently install anything.
+Local mode does not depend on OpenAI. If local translation support is missing,
+the apps explain what is missing, why it helps, and how to install it. They do
+not silently install anything or silently switch to OpenAI.
 
 OpenAI API key setup
 --------------------
 
-If you want the OpenAI translation path, create a new secret key in your OpenAI
-Platform account on the API Keys page:
+If you want AI mode, create a new secret key in your OpenAI Platform account on
+the API Keys page:
 
   https://platform.openai.com/api-keys
 
-Current OpenAI path in code:
+Current OpenAI paths in code:
 
-- Media Manglers currently sends translation requests to POST /v1/chat/completions
-- It does not use the Responses API for translation today
+- AI translation uses POST /v1/chat/completions
+- AI Private transcription uses POST /v1/audio/transcriptions
 
 Recommended setup for normal local use:
 
@@ -115,25 +115,51 @@ Recommended setup for normal local use:
 - Choose Restricted.
 - In the current OpenAI Platform UI, turn on Request for Chat Completions
   (/v1/chat/completions).
+- For AI Private, also turn on Request permission for audio transcription
+  access because Private AI mode sends source audio to OpenAI for
+  transcription.
 - Leave unrelated permissions like Images, Embeddings, Files, Fine-tuning,
   Vector Stores, Assistants, Batches, and similar extras off or set to None
   unless you actually use them.
-- Read Only is not enough because Media Manglers sends POST
-  /v1/chat/completions requests for translation.
+- Read Only is not enough because Media Manglers sends POST requests for
+  transcription and translation.
 - Service accounts are mainly for shared automation, servers, CI, or other
   non-personal bot identities, not normal desktop use.
 - OpenAI API usage may incur charges.
+- Private is the default and safest AI mode.
+- Public mode only happens when you explicitly choose AI mode with
+  -OpenAiProject Public.
+- Use OPENAI_API_KEY_PRIVATE for the default Private path.
+- Use OPENAI_API_KEY_PUBLIC only when you explicitly choose the Public/shared
+  project.
+- OPENAI_API_KEY still works as a legacy Private fallback for older setups.
+- Public/shared complimentary tokens only apply when the Public project is
+  configured for shared traffic and the request uses an eligible model.
+- If a request would cross the remaining complimentary daily quota, OpenAI
+  bills the whole request normally.
+- Use Private for confidential or sensitive media. Use Public only for media
+  you are allowed to share with OpenAI.
 
 Ways to provide the key on Windows:
 
 - Paste it at the prompt for the current run only.
-- Set it for the current PowerShell session:
+- Set Private mode for the current PowerShell session:
+
+  $env:OPENAI_API_KEY_PRIVATE="sk-..."
+
+- Set Public mode for the current PowerShell session, then explicitly choose
+  Public:
+
+  $env:OPENAI_API_KEY_PUBLIC="sk-..."
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Public
+
+- Legacy fallback for older setups:
 
   $env:OPENAI_API_KEY="sk-..."
 
 - Set it as a persistent Windows user environment variable:
 
-  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY_PRIVATE","sk-...","User")
 
 After setting the persistent user variable, open a new PowerShell window before
 rerunning the app.
@@ -149,9 +175,11 @@ Official OpenAI references:
 Privacy and processing
 ----------------------
 
-- Local transcription runs on your machine.
-- Local translation stays on your machine once the needed tools are installed.
-- OpenAI translation sends transcript text to the OpenAI API.
+- Local mode keeps transcription and translation on your machine once the
+  needed tools are installed.
+- AI Private sends source audio plus transcript/translation content to OpenAI.
+- AI Public keeps transcription local and only sends transcript/translation
+  content to the Public/shared OpenAI project.
 - Remote downloads depend on the source you point the app at.
 
 Optional comments export

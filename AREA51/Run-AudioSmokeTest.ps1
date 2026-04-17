@@ -11,8 +11,10 @@ param(
     [switch]$AllAudio,
     [switch]$TranslateToEnglish,
     [string]$TranslateTo,
-    [ValidateSet("Auto", "OpenAI", "Local")]
-    [string]$TranslationProvider = "Auto",
+    [ValidateSet("Local", "AI")]
+    [string]$ProcessingMode = "Local",
+    [ValidateSet("Private", "Public")]
+    [string]$OpenAiProject = "Private",
     [switch]$IncludeComments,
     [switch]$KeepTestOutput
 )
@@ -49,7 +51,8 @@ function Invoke-AudioPackaging {
         [switch]$CopyRawAudio,
         [switch]$SkipEstimate,
         [string]$TranslateTo,
-        [string]$TranslationProvider,
+        [string]$ProcessingMode,
+        [string]$OpenAiProject,
         [switch]$TranslateToEnglish,
         [switch]$IncludeComments
     )
@@ -69,6 +72,13 @@ function Invoke-AudioPackaging {
     [void]$args.Add("-HeartbeatSeconds")
     [void]$args.Add($HeartbeatSeconds.ToString())
     [void]$args.Add("-NoPrompt")
+    [void]$args.Add("-ProcessingMode")
+    [void]$args.Add($ProcessingMode)
+
+    if ($ProcessingMode -eq "AI") {
+        [void]$args.Add("-OpenAiProject")
+        [void]$args.Add($OpenAiProject)
+    }
 
     if ($CopyRawAudio) {
         [void]$args.Add("-CopyRawAudio")
@@ -86,8 +96,6 @@ function Invoke-AudioPackaging {
     if (-not [string]::IsNullOrWhiteSpace($resolvedTranslateTo)) {
         [void]$args.Add("-TranslateTo")
         [void]$args.Add($resolvedTranslateTo)
-        [void]$args.Add("-TranslationProvider")
-        [void]$args.Add($TranslationProvider)
     }
 
     if ($IncludeComments) {
@@ -174,7 +182,11 @@ if ($TranslateToEnglish) {
     Write-Host "Translation mode:             -> en" -ForegroundColor Cyan
 }
 elseif (-not [string]::IsNullOrWhiteSpace($TranslateTo)) {
-    Write-Host ("Translation mode:             -> {0} via {1}" -f $TranslateTo, $TranslationProvider) -ForegroundColor Cyan
+    Write-Host ("Translation mode:             -> {0}" -f $TranslateTo) -ForegroundColor Cyan
+}
+Write-Host ("Processing mode:             {0}" -f $ProcessingMode) -ForegroundColor Cyan
+if ($ProcessingMode -eq "AI") {
+    Write-Host ("AI project mode:             {0}" -f $OpenAiProject) -ForegroundColor Cyan
 }
 
 $exitCode = Invoke-AudioPackaging `
@@ -186,7 +198,8 @@ $exitCode = Invoke-AudioPackaging `
     -CopyRawAudio:$CopyRawAudio `
     -SkipEstimate:$SkipEstimate `
     -TranslateTo $TranslateTo `
-    -TranslationProvider $TranslationProvider `
+    -ProcessingMode $ProcessingMode `
+    -OpenAiProject $OpenAiProject `
     -TranslateToEnglish:$TranslateToEnglish `
     -IncludeComments:$IncludeComments
 
@@ -202,7 +215,8 @@ if ($exitCode -ne 0 -and $usingRemoteSample -and -not $TranslateToEnglish -and -
         -CopyRawAudio:$CopyRawAudio `
         -SkipEstimate:$SkipEstimate `
         -TranslateTo $TranslateTo `
-        -TranslationProvider $TranslationProvider `
+        -ProcessingMode $ProcessingMode `
+        -OpenAiProject $OpenAiProject `
         -TranslateToEnglish:$TranslateToEnglish `
         -IncludeComments:$IncludeComments
 }
