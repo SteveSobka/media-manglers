@@ -65,6 +65,11 @@ Local translation paths:
 - to other target languages: can use Argos Translate when the language packages
   are installed
 
+Local mode now defaults to Whisper large. That is intentional: local accuracy
+and nuance are prioritized over speed, so Local runs will be slower and heavier
+than smaller Whisper models. Advanced users can still choose a different
+supported local Whisper model with -WhisperModel.
+
 If local translation support is missing, the app explains what is missing, what
 it unlocks, and gives you install commands plus an install/skip/cancel choice.
 It does not auto-install dependencies behind your back.

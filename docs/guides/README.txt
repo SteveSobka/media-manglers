@@ -90,6 +90,11 @@ Mode behavior:
 - AI Public: local transcription plus OpenAI translation on the Public/shared
   project
 
+Local mode now defaults to Whisper large. That is intentional: local accuracy
+and nuance are prioritized over speed, so Local runs will be slower and heavier
+than smaller Whisper models. Advanced users can still choose a different
+supported local Whisper model with -WhisperModel.
+
 Local mode does not depend on OpenAI. If local translation support is missing,
 the apps explain what is missing, why it helps, and how to install it. They do
 not silently install anything or silently switch to OpenAI.

@@ -78,10 +78,14 @@ Local translation paths:
 - to other target languages: can use Argos Translate when the language packages
   are installed
 
-If translation is requested and you are using an English-only Whisper model,
-the app explains the issue clearly. When possible, it auto-switches the default
-model from an English-only variant to the matching multilingual one. If you
-explicitly chose an English-only model, it stops and tells you what to change.
+Local mode now defaults to Whisper large. That is intentional: local accuracy
+and nuance are prioritized over speed, so Local runs will be slower and heavier
+than smaller Whisper models. Advanced users can still choose a different
+supported local Whisper model with -WhisperModel.
+
+If translation is requested and you explicitly choose an English-only Whisper
+model, the app explains the issue clearly and tells you to switch to a
+multilingual model.
 
 OpenAI API key setup
 --------------------

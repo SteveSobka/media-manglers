@@ -34,6 +34,8 @@ $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Video Mangler"
 $script:FallbackAppVersion = "0.6.0"
+$script:LocalAccuracyWhisperModel = "large"
+$script:LocalCpuLongWhisperWarningThresholdSeconds = 900
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
 $script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:OpenAiTranscriptionModel = "whisper-1"
@@ -1755,6 +1757,52 @@ function Format-DurationHuman {
     else {
         return "{0:0}s" -f [math]::Floor($ts.TotalSeconds)
     }
+}
+
+function Test-LocalWhisperLongCpuRunRisk {
+    param(
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu,
+        [double]$DurationSeconds
+    )
+
+    if ($CanUseWhisperGpu) {
+        return $false
+    }
+
+    if ($DurationSeconds -lt $script:LocalCpuLongWhisperWarningThresholdSeconds) {
+        return $false
+    }
+
+    $normalizedModel = if ([string]::IsNullOrWhiteSpace($ModelName)) {
+        ""
+    }
+    else {
+        $ModelName.Trim().ToLowerInvariant()
+    }
+
+    return (
+        $normalizedModel -eq "large" -or
+        $normalizedModel.StartsWith("large-") -or
+        $normalizedModel.StartsWith("large.") -or
+        $normalizedModel.StartsWith("large_")
+    )
+}
+
+function Write-LocalWhisperLongCpuRunWarning {
+    param(
+        [string]$ModelName,
+        [double]$DurationSeconds
+    )
+
+    $durationLabel = if ($DurationSeconds -gt 0) {
+        Format-DurationHuman -Seconds $DurationSeconds
+    }
+    else {
+        "long media"
+    }
+
+    Write-Log ("This Local run is using Whisper model '{0}' on CPU for about {1}. Longer CPU-only Local runs with 'large' can exceed the current 1800-second Whisper watchdog before transcription finishes. If that happens, rerun with GPU, split the media, or choose a smaller -WhisperModel." -f $ModelName, $durationLabel) "WARN"
 }
 
 function Get-VideoFilesFromPath {
@@ -3680,7 +3728,7 @@ function Get-TranslationProviderPreflightNotes {
     }
 
     if (($normalizedTargets -contains "en") -and -not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-        throw ("Local translation to English needs a multilingual Whisper model. The selected model '{0}' is English-only. Use a model like 'base' or 'small', or rerun with -ProcessingMode AI." -f $ModelName)
+        throw ("Local translation to English needs a multilingual Whisper model. The selected model '{0}' is English-only. Use 'large' or another supported Whisper model that does not end in '.en', or rerun with -ProcessingMode AI." -f $ModelName)
     }
 
     $needsArgos = (@($normalizedTargets | Where-Object { $_ -ne "en" })).Count -gt 0
@@ -4072,7 +4120,7 @@ function Resolve-TranslationTargetProvider {
     if ($TranslationMode -eq "Local") {
         if ($TargetLanguage -eq "en") {
             if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-                throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -ProcessingMode AI."
+                throw "Local translation to English needs a multilingual Whisper model. Use 'large' or another supported Whisper model that does not end in '.en', or use -ProcessingMode AI."
             }
 
             return [PSCustomObject]@{
@@ -5608,6 +5656,9 @@ function Process-Video {
     }
     Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
     Write-Log ("Transcription path selected: {0}" -f $transcriptionPathDetails)
+    if ($ProcessingMode -eq "Local") {
+        Write-Log ("Local Whisper model: {0}" -f $ModelName)
+    }
     if ($ProcessingMode -eq "AI") {
         Write-Log ("AI project mode: {0}" -f $OpenAiProject)
         Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
@@ -5644,15 +5695,19 @@ function Process-Video {
     $preflightResult = Invoke-PhaseAction -Name "Preflight" -Detail $videoItem.Name -Action {
         $phaseHasAudio = Test-VideoHasAudio -FFprobeExe $FFprobeExe -VideoPath $videoItem.FullName
         $phaseAudioPresentText = if ($phaseHasAudio) { "Yes" } else { "No" }
+        $phaseDuration = Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $videoItem.FullName
         Write-Log "Source audio present: $phaseAudioPresentText"
+        Write-Log ("Source duration: {0}" -f (Format-DurationHuman $phaseDuration))
 
         return [PSCustomObject]@{
             HasAudio         = $phaseHasAudio
             AudioPresentText = $phaseAudioPresentText
+            DurationSeconds  = $phaseDuration
         }
     }
     $hasAudio = [bool]$preflightResult.HasAudio
     $audioPresentText = [string]$preflightResult.AudioPresentText
+    $sourceDurationSeconds = [double]$preflightResult.DurationSeconds
 
     if ($DoCopyRaw) {
         Invoke-PhaseAction -Name "Raw" -Detail $videoItem.Name -Action {
@@ -5696,6 +5751,10 @@ function Process-Video {
             $null = Export-AudioMp3 -FFmpegExe $FFmpegExe -InputVideo $videoItem.FullName -AudioFile $audioFile -HeartbeatSeconds $HeartbeatSeconds
         } | Out-Null
 
+        if ($ProcessingMode -eq "Local" -and (Test-LocalWhisperLongCpuRunRisk -ModelName $ModelName -CanUseWhisperGpu $CanUseWhisperGpu -DurationSeconds $sourceDurationSeconds)) {
+            Write-LocalWhisperLongCpuRunWarning -ModelName $ModelName -DurationSeconds $sourceDurationSeconds
+        }
+
         $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
             Ensure-Directory $transcriptFolder
             if ((Test-Path -LiteralPath $transcriptSrt) -and (Test-Path -LiteralPath $transcriptJson) -and (Test-Path -LiteralPath $transcriptText)) {
@@ -5725,7 +5784,7 @@ function Process-Video {
                     -HeartbeatSeconds $HeartbeatSeconds
             }
             else {
-                Write-Log ("Generating transcript with Whisper on {0}..." -f $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
+                Write-Log ("Generating transcript with Whisper model '{0}' on {1}..." -f $ModelName, $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
 
                 $phaseTranscriptResult = Invoke-PythonWhisperTranscript `
                     -PythonCommand $PythonCommand `
@@ -5886,6 +5945,19 @@ function Process-Video {
                             -TextName "transcript.txt"
                     }
                     elseif ($providerUsed -eq "Local (Whisper audio translation)") {
+                        $whisperTranslationLanguageCode = if (-not [string]::IsNullOrWhiteSpace($detectedLanguage) -and $detectedLanguage -ne "unknown") {
+                            $detectedLanguage
+                        }
+                        else {
+                            $LanguageCode
+                        }
+                        $whisperTranslationLanguageLabel = if ([string]::IsNullOrWhiteSpace($whisperTranslationLanguageCode)) {
+                            "auto-detect"
+                        }
+                        else {
+                            $whisperTranslationLanguageCode
+                        }
+                        Write-Log ("Running local Whisper audio translation to English with model '{0}' and source language hint '{1}'." -f $ModelName, $whisperTranslationLanguageLabel)
                         $tempJsonName = "transcript_whisper_translate.json"
                         $tempSrtName = "transcript_whisper_translate.srt"
                         $tempTextName = "transcript_whisper_translate.txt"
@@ -5894,7 +5966,7 @@ function Process-Video {
                             -AudioPath $audioFile `
                             -TranscriptFolder $translationFolder `
                             -ModelName $ModelName `
-                            -LanguageCode $LanguageCode `
+                            -LanguageCode $whisperTranslationLanguageCode `
                             -FFmpegExe $FFmpegExe `
                             -PreferGpu $CanUseWhisperGpu `
                             -Task "translate" `
@@ -6374,6 +6446,17 @@ if ($ProcessingMode -ne "AI" -and $PSBoundParameters.ContainsKey("OpenAiProject"
     $openAiProjectResolutionNote = ("OpenAiProject {0} was provided, but OpenAiProject only applies in AI mode." -f $OpenAiProject)
 }
 
+$whisperModelWasExplicit = $PSBoundParameters.ContainsKey("WhisperModel")
+$whisperModelResolutionNote = $null
+if (-not [string]::IsNullOrWhiteSpace($WhisperModel)) {
+    $WhisperModel = $WhisperModel.Trim()
+}
+if (-not $whisperModelWasExplicit -and $ProcessingMode -eq "Local") {
+    $originalWhisperModel = $WhisperModel
+    $WhisperModel = $script:LocalAccuracyWhisperModel
+    $whisperModelResolutionNote = ("Local mode defaulted Whisper from '{0}' to '{1}' because local accuracy and nuance are prioritized over speed." -f $originalWhisperModel, $WhisperModel)
+}
+
 $TranslationProvider = Get-TranslationModeForProcessingMode -EffectiveMode $ProcessingMode
 $requestedLegacyTranslationProvider = if ($translationProviderWasExplicit) { $PSBoundParameters["TranslationProvider"] } else { "" }
 $translationProviderResolution = [PSCustomObject]@{
@@ -6405,13 +6488,13 @@ $translationModeSummary = Get-TranslationModeSummary `
     -TranslationRequested:($translationTargets.Count -gt 0)
 
 if (($ProcessingMode -eq "Local" -or ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Public")) -and $translationTargets.Count -gt 0) {
-    if (-not $PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
+    if (-not $whisperModelWasExplicit -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
         $originalModel = $WhisperModel
         $WhisperModel = $WhisperModel -replace '\.en$', ''
         Write-Host ("Translation was requested, so Video Mangler switched Whisper from '{0}' to '{1}' to work from the original spoken source." -f $originalModel, $WhisperModel) -ForegroundColor Yellow
     }
-    elseif ($PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
-        throw "Translation needs a multilingual Whisper model. The selected model '$WhisperModel' is English-only. Use a model like 'base' or 'small' instead."
+    elseif ($whisperModelWasExplicit -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
+        throw "Translation needs a multilingual Whisper model. The selected model '$WhisperModel' is English-only. Use 'large' or another supported Whisper model that does not end in '.en'."
     }
 }
 
@@ -6452,8 +6535,14 @@ if (-not [string]::IsNullOrWhiteSpace($processingModeResolution.ResolutionNote))
 if (-not [string]::IsNullOrWhiteSpace($openAiProjectResolutionNote)) {
     Write-Log $openAiProjectResolutionNote "WARN"
 }
+if (-not [string]::IsNullOrWhiteSpace($whisperModelResolutionNote)) {
+    Write-Log $whisperModelResolutionNote
+}
 Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
 Write-Log ("Transcription path selected: {0}" -f $transcriptionPathSummary)
+if ($ProcessingMode -eq "Local") {
+    Write-Log ("Local Whisper model: {0}" -f $WhisperModel)
+}
 if ($ProcessingMode -eq "AI") {
     Write-Log ("AI project mode: {0}" -f $OpenAiProject)
     Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
@@ -6707,6 +6796,9 @@ if ($downloadedInputPaths.Count -gt 0) {
 }
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
 Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
+if ($ProcessingMode -eq "Local") {
+    Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
+}
 if ($ProcessingMode -eq "AI") {
     Write-Host ("AI project mode:                 {0}" -f $OpenAiProject)
 }

@@ -24,7 +24,19 @@ No open GitHub issues are currently active in this repo.
   Status: repo-only follow-up
   Current note: The `Video Mangler.ps1` bug is fixed and live-verified, but the repo still lacks permanent scripted coverage that proves UTF-8 transcript reads and UTF-8 request-byte sending stay correct for non-ASCII segments on Windows PowerShell 5.1.
 
+- [ ] Verify longer CPU-only Local Whisper `large` behavior beyond the new warning safeguard
+  Status: repo-only needs verification
+  Current note: The current `1800` second Whisper watchdog is still in place. This pass adds a pre-transcript warning when Local mode is using Whisper `large` on CPU for media at or above 15 minutes because the 19m35 German audio fixture previously hit that watchdog on this machine. No full long-run completion rerun was performed in this pass.
+
 ## Recently Completed
+
+- [x] Repo-only: warn before likely long CPU-only Local Whisper `large` timeout surprises
+  Status: completed on 2026-04-17
+  Current note: `Video Mangler.ps1` and `Audio Mangler.ps1` now warn before transcription when Local mode is using Whisper `large` on CPU for media at or above 15 minutes, explicitly calling out the current `1800` second watchdog plus the practical fallback options (`GPU`, split media, or a smaller `-WhisperModel`). Verified in this pass by PowerShell parse of both scripts after the scoped edits. No full long-run completion rerun was performed.
+
+- [x] Repo-only: raise Local mode Whisper defaults to accuracy-first `large`
+  Status: completed on 2026-04-17
+  Current note: `Video Mangler.ps1` and `Audio Mangler.ps1` now default Local mode to Whisper `large` when the operator did not explicitly choose a model, keep explicit `-WhisperModel` overrides available, log the resolved local model, and pass the detected source-language code into the local Whisper `translate` rerun for `-> en` translation. Reviewed the existing YouTube multi-track selector and kept it as-is because the current code already auto-selects provider-marked original/source audio when that metadata is available. Verified on this machine with a Local German video run at `test-output\codex-local-large-video-20260417-101452` and a Local foreign-language audio run at `test-output\codex-local-large-audio-short-20260417-101018`; both package validators passed, both per-package `script_run.log` files recorded `Local Whisper model: large`, and `rg "OpenAI"` against those logs returned no matches. Current caveat verified in the same pass: the longer `AREA51\TestData\German_audio.mp3` fixture (`19m35s`) hit the current `1800` second Whisper timeout on CPU with `large`, so the successful audio validation used a 45-second German clip extracted from the repo's German video fixture.
 
 - [x] Repo-only: refresh stale tracked packaged outputs and reconcile stale draft PRs after the v0.6.0 release
   Status: completed on 2026-04-17

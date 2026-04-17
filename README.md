@@ -114,6 +114,8 @@ For Local mode you may also need:
 - `argostranslate` for non-English local translation targets
 - matching Argos language packages for the source and target languages you request
 
+Local mode now defaults to Whisper `large`. That is intentional: local accuracy and nuance are prioritized over speed, so Local runs will be slower and heavier than smaller Whisper models. Advanced users can still choose a different supported local Whisper model with `-WhisperModel`.
+
 The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
 ## OpenAI Integration
