@@ -32,7 +32,7 @@ param(
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Audio Mangler"
-$script:FallbackAppVersion = "0.6.0"
+$script:FallbackAppVersion = "0.6.1"
 $script:LocalAccuracyWhisperModel = "large"
 $script:LocalCpuLongWhisperWarningThresholdSeconds = 900
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"

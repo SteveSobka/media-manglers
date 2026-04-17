@@ -129,12 +129,16 @@ New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
 Import-Module $modulePath -Force
 
-$currentReleaseZipNames = @($appConfigs | ForEach-Object { $_.ReleaseZipName })
+$currentReleaseAssetNames = @(
+    $appConfigs | ForEach-Object { $_.ReleaseZipName }
+) + @(
+    $appConfigs | ForEach-Object { $_.ReleaseExeName }
+)
 $archiveRunRoot = Join-Path $releaseArchiveRoot ("cleanup-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8)))
 $archivedReleaseItems = New-Object System.Collections.Generic.List[string]
 
 foreach ($releaseItem in @(Get-ChildItem -LiteralPath $releaseRoot -Force -ErrorAction SilentlyContinue)) {
-    if (-not $releaseItem.PSIsContainer -and $releaseItem.Extension.ToLowerInvariant() -eq ".zip" -and $currentReleaseZipNames -contains $releaseItem.Name) {
+    if (-not $releaseItem.PSIsContainer -and $currentReleaseAssetNames -contains $releaseItem.Name) {
         continue
     }
 
@@ -155,6 +159,7 @@ foreach ($appConfig in $selectedApps) {
     $outputFile = Join-Path $distFolder $appConfig.LocalExeName
     $iconFile = Join-Path $repoRoot $appConfig.IconFile
     $stagingFolder = Join-Path $stagingRoot $appConfig.ReleaseFolder
+    $releaseExe = Join-Path $releaseRoot $appConfig.ReleaseExeName
     $releaseZip = Join-Path $releaseRoot $appConfig.ReleaseZipName
     $appFolder = Join-Path $stagingFolder "app"
     $docsFolder = Join-Path $stagingFolder "docs"
@@ -184,6 +189,7 @@ foreach ($appConfig in $selectedApps) {
         -version $appVersion
 
     Remove-PathIfPresent -Path $stagingFolder
+    Remove-PathIfPresent -Path $releaseExe
     Remove-PathIfPresent -Path $releaseZip
 
     try {
@@ -191,6 +197,7 @@ foreach ($appConfig in $selectedApps) {
         Ensure-Directory $docsFolder
 
         Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
+        Copy-Item -LiteralPath $outputFile -Destination $releaseExe -Force
         Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
         Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
         Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
@@ -207,6 +214,7 @@ foreach ($appConfig in $selectedApps) {
     }
 
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
+    Write-Host ("Release exe: {0}" -f $releaseExe) -ForegroundColor Green
     Write-Host ("Release zip: {0}" -f $releaseZip) -ForegroundColor Green
     if ($KeepPackageStaging) {
         Write-Host ("Package staging kept: {0}" -f $stagingFolder) -ForegroundColor Yellow

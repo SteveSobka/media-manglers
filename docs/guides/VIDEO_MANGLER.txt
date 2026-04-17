@@ -83,6 +83,11 @@ and nuance are prioritized over speed, so Local runs will be slower and heavier
 than smaller Whisper models. Advanced users can still choose a different
 supported local Whisper model with -WhisperModel.
 
+On CPU-only systems, Video Mangler now warns before Local Whisper large runs at
+or above about 15 minutes because the current Whisper watchdog is still 1800
+seconds. If that warning appears, rerun with GPU, split the media, or choose a
+smaller -WhisperModel.
+
 If translation is requested and you explicitly choose an English-only Whisper
 model, the app explains the issue clearly and tells you to switch to a
 multilingual model.
@@ -113,9 +118,16 @@ How model selection works:
   models if that Private key/project cannot use the first choice.
 - AI Private transcription keeps the current approved transcription model:
   whisper-1.
-- -OpenAiModel is optional. If you set it, it must be approved for the chosen
-  mode/project and visible to that key/project, or the script stops with a
-  clear message.
+- If discovery succeeds, the script auto-selects the first visible approved
+  model for the chosen mode/project.
+- If discovery is skipped or only fails with network / timeout / server-style
+  errors, current main can still fall back to an approved explicit model or an
+  approved default model.
+- If discovery fails because of auth, permissions, quota, or because no
+  approved model is visible, the run stops instead of silently guessing.
+- -OpenAiModel is optional. If you set it, it must still be approved for the
+  chosen mode/project. When discovery succeeds, it must also be visible to
+  that key/project.
 
 Recommended setup for normal local use:
 
@@ -207,47 +219,98 @@ Open-source YouTube video:
 
   https://www.youtube.com/watch?v=R6MlUcmOul8
 
-Common commands
----------------
+Command-line summary
+--------------------
 
-Run the script:
+Current main behavior:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1'
+- ProcessingMode is the primary operator-facing switch.
+- If you do not pass -ProcessingMode, Video Mangler defaults to Local.
+- If you do not explicitly pass -WhisperModel and the resolved mode is Local,
+  Video Mangler upgrades the literal script default from base.en to large.
+- -OpenAiProject Private = OpenAI transcription + OpenAI translation.
+- -OpenAiProject Public = local transcription + OpenAI translation on the
+  Public/shared project.
+- -NoPrompt disables the interactive questions and uses the non-interactive
+  defaults.
+- -Version and -ShowVersion are aliases for the same version-only path.
 
-Show the version:
+Parameters:
+
+- -InputPath / -InputUrl: local video file/folder or a direct/page/YouTube
+  URL. If omitted, interactive runs ask and non-interactive runs scan
+  -InputFolder.
+- -InputFolder: default scan/cache root when -InputPath is omitted. Literal
+  default: C:\DATA\TEMP\_VIDEO_INPUT. If you did not set it and the D: default
+  already exists, current main switches to D:\DATA\TEMP\_VIDEO_INPUT.
+- -OutputFolder: root folder for output packages and logs. Literal default:
+  C:\DATA\TEMP\_VIDEO_OUTPUT. If you did not set it and the D: default already
+  exists, current main switches to D:\DATA\TEMP\_VIDEO_OUTPUT.
+- -FFmpegPath: override the ffmpeg.exe path. Literal default:
+  D:\APPS\ffmpeg\bin\ffmpeg.exe, with command/path fallback detection.
+- -PythonExe: override the Python launcher used for Whisper, Argos, and the
+  yt-dlp module fallback. Default: py.
+- -YtDlpPath: override the yt-dlp command/path used for remote inputs.
+  Default: yt-dlp.
+- -WhisperModel: choose the local Whisper model. Literal script default:
+  base.en. Real current-main Local default: large when you do not explicitly
+  set the parameter. For translation work, use a multilingual model such as
+  large.
+- -Language: optional source-language hint for transcription and local
+  translation. Leave blank to auto-detect when possible.
+- -TranslateTo: comma-separated target language codes such as en or en,es.
+  Blank means no translated transcript outputs.
+- -ProcessingMode: primary mode switch. Valid values: Local, AI.
+  Default: Local.
+- -TranslationProvider: legacy compatibility flag. Valid values: Auto,
+  OpenAI, Local. Current main maps it into ProcessingMode; new runs should
+  prefer -ProcessingMode.
+- -OpenAiModel: optional OpenAI translation model request. Explicit values
+  must be repo-approved for the chosen mode/project and, when discovery
+  succeeds, visible to that key/project.
+- -OpenAiProject: valid values: Private, Public. Default: Private when AI mode
+  is used. Ignored in Local mode.
+- -FrameIntervalSeconds: extract one frame every N seconds. Real default: 0.5.
+  Interactive runs prompt with 0.5 as the default; -NoPrompt runs take 0.5
+  automatically.
+- -HeartbeatSeconds: how often long-running steps log progress. Default: 10.
+- -CopyRawVideo: copy the original source video into the package raw folder.
+  CLI default: off. Interactive default on Enter: Yes.
+- -IncludeComments: request YouTube comments when the source supports them.
+  CLI default: off. Interactive YouTube default on Enter: Yes.
+- -CreateChatGptZip: build chatgpt_review_package.zip for each completed
+  package. CLI default: off. Interactive default on Enter: Yes.
+- -KeepTempFiles: keep temporary working files and download caches instead of
+  cleaning them up. Default: off.
+- -OpenOutputInExplorer: open the output folder in Windows Explorer when the
+  run finishes. CLI default: off. Interactive default on Enter: Yes.
+- -NoPrompt: disable interactive questions and use the non-interactive
+  defaults described above.
+- -SkipEstimate: skip the runtime estimate stage. Default: off.
+- -Version / -ShowVersion: print the app version and exit.
+- -ChatGptZipMaxMb: maximum ChatGPT ZIP size in MB. Default: 500.
+
+Example commands:
+
+- Show the version:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
 
-Create an English translation from the original spoken source:
+- Local review package with the current accuracy-first default and no prompts:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputPath 'C:\Videos\session' -OutputFolder 'C:\Reviews\Video' -TranslateTo en -NoPrompt
 
-Request multiple translated transcript outputs:
+- AI Private remote video run:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en,es -ProcessingMode Local
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 
-Use AI Private for OpenAI transcription plus OpenAI translation:
+- AI Public run with an explicit approved translation model and comments:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Private
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
 
-Use AI Public for local transcription plus OpenAI translation on the
-Public/shared project:
+- Custom frame interval plus ChatGPT ZIP output:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Public
-
-Request YouTube comments when available:
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -IncludeComments
-
-Interactive YouTube runs also ask:
-
-  If comments are available for a YouTube source, save them in the package too? (Y/n):
-
-Press Enter to accept comments by default. Type N or No to skip them.
-
-Keep temporary processing files for troubleshooting:
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -KeepTempFiles
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputPath 'C:\Videos\lap.mp4' -FrameIntervalSeconds 1.0 -CreateChatGptZip -NoPrompt
 
 Validation
 ----------

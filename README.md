@@ -116,6 +116,8 @@ For Local mode you may also need:
 
 Local mode now defaults to Whisper `large`. That is intentional: local accuracy and nuance are prioritized over speed, so Local runs will be slower and heavier than smaller Whisper models. Advanced users can still choose a different supported local Whisper model with `-WhisperModel`.
 
+On CPU-only systems, both apps now warn before Local Whisper `large` runs at or above about 15 minutes because the current Whisper watchdog is still `1800` seconds. If that warning appears, rerun with GPU, split the media, or choose a smaller `-WhisperModel`.
+
 The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
 ## OpenAI Integration
@@ -138,7 +140,10 @@ How model selection works in plain English:
 - AI Public translation is intentionally pinned to a small approved Public list: `gpt-4o-mini-2024-07-18` first, then `gpt-4.1-mini-2025-04-14`.
 - AI Private translation uses a separate approved preference list. Right now it prefers `gpt-5-mini` and only falls back to other approved lower-cost models if that Private key/project cannot use the first choice.
 - AI Private transcription keeps the current approved transcription model: `whisper-1`.
-- `-OpenAiModel` is optional. If you set it, it must be approved for the chosen mode/project and visible to that key/project, or the script stops with a clear message.
+- If discovery succeeds, the scripts auto-select the first visible approved model for the chosen mode/project.
+- If discovery is skipped or only fails with network / timeout / server-style errors, current main can still fall back to an approved explicit model or an approved default model.
+- If discovery fails because of auth, permissions, quota, or because no approved model is visible, the scripts stop instead of silently guessing.
+- `-OpenAiModel` is optional. If you set it, it must still be approved for the chosen mode/project. When discovery succeeds, it must also be visible to that key/project.
 
 ### Private/Public OpenAI Project Guidance
 
@@ -268,42 +273,112 @@ Audio examples:
 - Direct LibriVox MP3: `https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3`
 - Multilingual sample MP3: `https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3`
 
-## Command Examples
+## Command-line summary
 
-Video / Local:
+### Shared behavior
+
+- `-ProcessingMode` is the main operator-facing control. If you do not pass it, both apps default to `Local`.
+- If you do not explicitly pass `-WhisperModel` and the resolved mode is `Local`, both apps upgrade the literal script default to `large` for accuracy.
+- `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project.
+- `-OpenAiModel` only matters when AI translation is requested. Current main queries `GET /v1/models`, keeps only the repo-approved allowlist for the chosen mode/project, auto-selects the first visible approved model, and only uses an approved fallback when discovery is skipped or only hits network / timeout / server-style failures.
+- `-NoPrompt` disables the interactive questions. Without `-NoPrompt`, the apps prompt for missing inputs and treat Enter as Yes for `CopyRaw*`, `CreateChatGptZip`, `OpenOutputInExplorer`, and supported YouTube comments prompts.
+- `-Version` and `-ShowVersion` are aliases for the same version-only path.
+
+### Video Mangler
+
+- `-InputPath` / `-InputUrl`: Process a local video file/folder or a direct/page/YouTube URL. If omitted, interactive runs ask and non-interactive runs scan `-InputFolder`.
+- `-InputFolder`: Default scan/cache root when `-InputPath` is omitted. Literal default: `C:\DATA\TEMP\_VIDEO_INPUT`. If you did not set it and the `D:` default already exists, current main switches to `D:\DATA\TEMP\_VIDEO_INPUT`.
+- `-OutputFolder`: Root folder for output packages and logs. Literal default: `C:\DATA\TEMP\_VIDEO_OUTPUT`. If you did not set it and the `D:` default already exists, current main switches to `D:\DATA\TEMP\_VIDEO_OUTPUT`.
+- `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
+- `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
+- `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs. Default: `yt-dlp`.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base.en`. Real current-main Local default: `large` when you do not explicitly set the parameter. For translation work, use a multilingual model such as `large`.
+- `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
+- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs.
+- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
+- `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
+- `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
+- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
+- `-FrameIntervalSeconds`: Extract one frame every N seconds. Real default: `0.5`. Interactive runs prompt with `0.5` as the default; `-NoPrompt` runs take `0.5` automatically.
+- `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
+- `-CopyRawVideo`: Copy the original source video into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.
+- `-IncludeComments`: Request YouTube comments when the source supports them. CLI default: off. Interactive YouTube default on Enter: Yes.
+- `-CreateChatGptZip`: Build `chatgpt_review_package.zip` for each completed package. CLI default: off. Interactive default on Enter: Yes.
+- `-KeepTempFiles`: Keep temporary working files and download caches instead of cleaning them up. Default: off.
+- `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
+- `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
+- `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
+- `-Version` / `-ShowVersion`: Print the app version and exit.
+- `-ChatGptZipMaxMb`: Maximum ChatGPT ZIP size in MB. Default: `500`.
+
+Video Mangler examples:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode Local
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
 ```
 
-Video / AI Private:
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode AI -OpenAiProject Private
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputPath 'C:\Videos\session' -OutputFolder 'C:\Reviews\Video' -TranslateTo en -NoPrompt
 ```
 
-Video / AI Public:
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode AI -OpenAiProject Public
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 ```
 
-Audio / Local:
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode Local
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
 ```
 
-Audio / AI Private:
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode AI -OpenAiProject Private
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputPath 'C:\Videos\lap.mp4' -FrameIntervalSeconds 1.0 -CreateChatGptZip -NoPrompt
 ```
 
-Audio / AI Public:
+### Audio Mangler
+
+- `-InputPath` / `-InputUrl`: Process a local audio file/folder or a direct/page/YouTube URL. If omitted, interactive runs ask and non-interactive runs scan `-InputFolder`.
+- `-InputFolder`: Default scan/cache root when `-InputPath` is omitted. Literal default: `C:\DATA\TEMP\_AUDIO_INPUT`. If you did not set it and the `D:` default already exists, current main switches to `D:\DATA\TEMP\_AUDIO_INPUT`.
+- `-OutputFolder`: Root folder for output packages and logs. Literal default: `C:\DATA\TEMP\_AUDIO_OUTPUT`. If you did not set it and the `D:` default already exists, current main switches to `D:\DATA\TEMP\_AUDIO_OUTPUT`.
+- `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
+- `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
+- `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs that need it. Default: `yt-dlp`.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base`. Real current-main Local default: `large` when you do not explicitly set the parameter.
+- `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
+- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs.
+- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
+- `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
+- `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
+- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
+- `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
+- `-CopyRawAudio`: Copy the original source audio into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.
+- `-IncludeComments`: Request YouTube comments when the source supports them. CLI default: off. Interactive YouTube default on Enter: Yes.
+- `-CreateChatGptZip`: Build `chatgpt_review_package.zip` for each completed package. CLI default: off. Interactive default on Enter: Yes.
+- `-KeepTempFiles`: Keep temporary working files and download caches instead of cleaning them up. Default: off.
+- `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
+- `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
+- `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
+- `-Version` / `-ShowVersion`: Print the app version and exit.
+- `-ChatGptZipMaxMb`: Maximum ChatGPT ZIP size in MB. Default: `500`.
+
+Audio Mangler examples:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode AI -OpenAiProject Public
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Version
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath 'C:\Audio\interview.mp3' -OutputFolder 'C:\Reviews\Audio' -TranslateTo en,es -NoPrompt
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -IncludeComments -NoPrompt
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath 'C:\Audio\note.wav' -WhisperModel medium -KeepTempFiles -NoPrompt
 ```
 
 ## Documentation
@@ -311,7 +386,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.6.0 release notes](docs/release-notes/RELEASE_NOTES_v0.6.0.txt)
+- [v0.6.1 release notes](docs/release-notes/RELEASE_NOTES_v0.6.1.txt)
 
 ## Testing
 

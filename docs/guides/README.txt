@@ -95,6 +95,11 @@ and nuance are prioritized over speed, so Local runs will be slower and heavier
 than smaller Whisper models. Advanced users can still choose a different
 supported local Whisper model with -WhisperModel.
 
+On CPU-only systems, both apps now warn before Local Whisper large runs at or
+above about 15 minutes because the current Whisper watchdog is still 1800
+seconds. If that warning appears, rerun with GPU, split the media, or choose a
+smaller -WhisperModel.
+
 Local mode does not depend on OpenAI. If local translation support is missing,
 the apps explain what is missing, why it helps, and how to install it. They do
 not silently install anything or silently switch to OpenAI.
@@ -126,9 +131,16 @@ How model selection works:
   models if that Private key/project cannot use the first choice.
 - AI Private transcription keeps the current approved transcription model:
   whisper-1.
-- -OpenAiModel is optional. If you set it, it must be approved for the chosen
-  mode/project and visible to that key/project, or the script stops with a
-  clear message.
+- If discovery succeeds, the scripts auto-select the first visible approved
+  model for the chosen mode/project.
+- If discovery is skipped or only fails with network / timeout / server-style
+  errors, current main can still fall back to an approved explicit model or an
+  approved default model.
+- If discovery fails because of auth, permissions, quota, or because no
+  approved model is visible, the scripts stop instead of silently guessing.
+- -OpenAiModel is optional. If you set it, it must still be approved for the
+  chosen mode/project. When discovery succeeds, it must also be visible to
+  that key/project.
 
 Recommended setup for normal local use:
 
@@ -214,12 +226,37 @@ For supported YouTube sources, both apps can optionally save public comments
 into the output package. This is optional, not automatic, and only included
 when the underlying toolchain can retrieve comments reliably for that source.
 
+Command-line summary
+--------------------
+
+Current main behavior:
+
+- ProcessingMode is the primary operator-facing switch.
+- If you do not pass -ProcessingMode, both apps default to Local.
+- If you do not explicitly pass -WhisperModel and the resolved mode is Local,
+  both apps upgrade the literal script default to large for accuracy.
+- -OpenAiProject Private = OpenAI transcription + OpenAI translation.
+- -OpenAiProject Public = local transcription + OpenAI translation on the
+  Public/shared project.
+- -OpenAiModel only matters when AI translation is requested. Current main
+  queries GET /v1/models, keeps only the repo-approved allowlist, auto-selects
+  the first visible approved model, and only uses an approved fallback when
+  discovery is skipped or only hits network / timeout / server-style failures.
+- -NoPrompt disables the interactive questions and uses the non-interactive
+  defaults.
+- -Version and -ShowVersion are aliases for the same version-only path.
+
+See the full per-app command-line summary sections in:
+
+- VIDEO_MANGLER.txt
+- AUDIO_MANGLER.txt
+
 Useful docs
 -----------
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.6.0.txt
+- ../release-notes/RELEASE_NOTES_v0.6.1.txt
 
 Build and test
 --------------
@@ -242,8 +279,10 @@ The build keeps the live output layout minimal by default:
 
 - dist\Video Mangler.exe
 - dist\Audio Mangler.exe
-- dist\release\Video-Mangler-v0.6.0.zip
-- dist\release\Audio-Mangler-v0.6.0.zip
+- dist\release\Video-Mangler.exe
+- dist\release\Audio-Mangler.exe
+- dist\release\Video-Mangler-v0.6.1.zip
+- dist\release\Audio-Mangler-v0.6.1.zip
 
 Legacy release clutter is moved under dist\archive\release\ instead of being
 left mixed into the live release folder. Temporary packaging folders are also

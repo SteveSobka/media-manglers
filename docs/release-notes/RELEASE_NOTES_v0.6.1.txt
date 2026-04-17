@@ -1,0 +1,65 @@
+Release Notes - v0.6.1
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.6.1
+
+What changed
+------------
+
+- Kept the current-main Local path accuracy-first:
+  - both apps still default non-explicit Local runs to Whisper `large`
+  - both apps now warn before CPU-only Local `large` runs at or above about
+    15 minutes because the current Whisper watchdog is still `1800` seconds
+- Kept the safe OpenAI model-selection behavior live on `main`:
+  - `GET /v1/models` is used to see which repo-approved models are visible to
+    the selected key/project
+  - AI Public translation stays limited to the approved Public list
+  - AI Private translation stays limited to the approved Private list
+  - AI Private transcription stays on the approved transcription model
+    `whisper-1`
+- Refreshed the repo docs and packaged guides so they match the current
+  Local/AI behavior on `main`
+- Added a dedicated `Command-line summary` section to the README and synced the
+  packaged text guides with the current parameter surfaces
+- Refreshed the release packaging so the GitHub release can expose both the
+  versioned ZIP bundles and the direct `Video-Mangler.exe` /
+  `Audio-Mangler.exe` downloads for `v0.6.1`
+
+Operator notes
+--------------
+
+- `ProcessingMode` remains the main operator-facing control.
+- `OpenAiProject Private` means OpenAI transcription plus OpenAI translation.
+- `OpenAiProject Public` means local transcription plus OpenAI translation on
+  the Public/shared project.
+- If OpenAI model discovery succeeds, the scripts auto-select the first visible
+  approved model for the chosen mode/project.
+- If model discovery is skipped or only hits network/server-style failures, the
+  scripts can still fall back to an approved explicit/default model.
+- If discovery fails because of permissions, auth, quota, or no approved model
+  visibility, the run stops instead of silently guessing.
+
+Validation and packaging
+------------------------
+
+- Rebuilt both tracked executables from current `main`
+- Rebuilt both versioned release ZIP bundles for `0.6.1`
+- Revalidated source/package version surfaces against `0.6.1`
+- Refreshed the packaged docs, release notes, and `VERSION.txt` content inside
+  the release bundles
+
+Non-blocking follow-ups
+-----------------------
+
+- `AREA51\Validate-VideoToCodexPackage.ps1` still assumes translated transcript
+  files exist whenever `translations\<lang>\` exists, so expected partial-
+  success OpenAI failure packages can still report missing translation
+  artifacts instead of validating the partial-package output
+- The repo still needs durable scripted regression coverage for Windows
+  PowerShell 5.1 non-ASCII OpenAI transcript content even though the live fix
+  itself has been validated
+- Longer CPU-only Local Whisper `large` runs still need more end-to-end
+  verification beyond the current operator warning safeguard

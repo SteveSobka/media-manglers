@@ -30,6 +30,10 @@ No open GitHub issues are currently active in this repo.
 
 ## Recently Completed
 
+- [x] Repo-only: prepare the v0.6.1 patch-release payload from current `main`
+  Status: completed on 2026-04-17
+  Current note: Bumped the repo/app version surfaces to `0.6.1`, refreshed `README.md` plus the packaged guide sources to match the current Local/AI behavior on `main`, added a dedicated `Command-line summary` section with the real current parameter surfaces, rebuilt both tracked executables plus `dist\release\Video-Mangler.exe`, `dist\release\Audio-Mangler.exe`, `Video-Mangler-v0.6.1.zip`, and `Audio-Mangler-v0.6.1.zip`, and revalidated source/exe `-Version` output at `0.6.1`. Verified in this pass that both release ZIPs contain the updated docs, `RELEASE_NOTES_v0.6.1.txt`, and `VERSION.txt = 0.6.1`; verified a Local default-behavior run for both apps without an explicit `-WhisperModel` and confirmed `Local Whisper model: large` in both logs; and rechecked the current AI allowlist path with Audio Mangler on this machine, where AI Public auto-detected `gpt-4o-mini-2024-07-18` and AI Private auto-detected `gpt-5-mini` plus `whisper-1`.
+
 - [x] Repo-only: warn before likely long CPU-only Local Whisper `large` timeout surprises
   Status: completed on 2026-04-17
   Current note: `Video Mangler.ps1` and `Audio Mangler.ps1` now warn before transcription when Local mode is using Whisper `large` on CPU for media at or above 15 minutes, explicitly calling out the current `1800` second watchdog plus the practical fallback options (`GPU`, split media, or a smaller `-WhisperModel`). Verified in this pass by PowerShell parse of both scripts after the scoped edits. No full long-run completion rerun was performed.
