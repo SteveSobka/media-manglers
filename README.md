@@ -24,6 +24,8 @@ The same idea expanded into spoken-content workflows. Sometimes the pictures mat
 
 YouTube comments turned out to be part of the same workflow too. They are often useful context, but reviewing them in the browser is awkward. Exporting them to text or JSON makes them much easier to search, review, and include in an AI workflow.
 
+Interactive YouTube runs now ask `If comments are available for a YouTube source, save them in the package too? (y/N):`. Pressing Enter keeps comments on by default. Type `N` or `No` if you want to skip them.
+
 ## A Note On How It Was Built
 
 Most of this project was built collaboratively with AI. That is part of the story as I am a geek, but not a traditional software developer. AI gave me a way to turn a very specific workflow problem into something real. The standard I care about is simple: does the tool solve a real problem, is the logic inspectable, and are the outputs useful? That is the bar I am trying to meet here.
@@ -97,19 +99,48 @@ The apps are compiled as Windows executables, but they still rely on a few exter
 
 Optional translation setup:
 
-- `OPENAI_API_KEY` if you want the OpenAI translation path
+- `OPENAI_API_KEY_PRIVATE` for the default/safest OpenAI translation path
+- `OPENAI_API_KEY_PUBLIC` plus `-OpenAiProject Public` if you intentionally use a separate Public OpenAI project
+- `OPENAI_API_KEY` still works as a legacy Private fallback for older setups
 - `argostranslate` if you want the free local fallback for non-English translation targets
 
 The apps will explain what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things.
 
-## How To Create An OpenAI API Key
+## OpenAI Integration
 
-If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for Media Manglers. You do not need the ChatGPT consumer app for this.
+OpenAI translation is optional. Media Manglers can still work without OpenAI, and `Auto` or `Local` can stay on local tooling when those dependencies are installed.
+
+ChatGPT subscriptions and OpenAI API billing are separate. Media Manglers uses the OpenAI API, so OpenAI translation needs API billing/credits on the OpenAI Platform project tied to the key you use.
 
 Current OpenAI path in code:
 
 - Media Manglers currently sends translation requests to `POST /v1/chat/completions`.
 - It does not use the Responses API for translation today.
+
+### Private/Public OpenAI Project Guidance
+
+If you want a Private/Public split, create two separate OpenAI Platform projects:
+
+- one Private project
+- one Public project
+
+Important rules:
+
+- Sharing behavior is controlled by the OpenAI project configuration, not by the environment variable name alone.
+- Create one API key per project.
+- Recommended environment variable names are `OPENAI_API_KEY_PRIVATE` and `OPENAI_API_KEY_PUBLIC`.
+- Private is the default and safest mode.
+- Public only happens when you explicitly run `-OpenAiProject Public`.
+- `OPENAI_API_KEY` is still accepted as a legacy Private fallback for older setups.
+- The scripts cannot look at a pasted key and magically tell whether it is Private or Public.
+- Use Private for confidential, sensitive, internal, client, or proprietary media.
+- Use Public only for media you are allowed to share with OpenAI.
+- Public mode may qualify for complimentary shared-traffic tokens on eligible models, but it is not unlimited free usage.
+- If you are unsure, use Private.
+
+### How To Create An OpenAI API Key
+
+If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for Media Manglers. You do not need the ChatGPT consumer app for this.
 
 Recommended setup for normal local use:
 
@@ -122,28 +153,49 @@ Recommended setup for normal local use:
 - `Read Only` is not enough because Media Manglers sends `POST /v1/chat/completions` requests for translation.
 - Service accounts are mainly for shared automation, servers, CI, or other non-personal bot identities, not normal desktop use.
 - OpenAI API usage may incur charges.
-- If OpenAI returns `429`, check the actual error details. A `429` with `insufficient_quota`, billing, credits, or balance language usually means API billing is not active for that project/account, not that you simply sent requests too quickly.
 - ChatGPT subscriptions and OpenAI API billing are separate.
+- If OpenAI returns `429`, check the actual error details. A `429` with `insufficient_quota`, billing, credits, or balance language usually means API billing is not active for that project/account, not that you simply sent requests too quickly.
 - If billing or credits are missing, add payment details / credits in the OpenAI API billing settings, wait a few minutes, and retry.
 
 Ways to provide the key on Windows:
 
 - Paste it at the prompt for the current run only.
-- Set it for the current PowerShell session:
+- Set Private mode for the current PowerShell session:
+
+```powershell
+$env:OPENAI_API_KEY_PRIVATE="sk-..."
+```
+
+- Set Public mode for the current PowerShell session, then explicitly choose Public:
+
+```powershell
+$env:OPENAI_API_KEY_PUBLIC="sk-..."
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -TranslationProvider OpenAI -OpenAiProject Public
+```
+
+- Legacy fallback for older setups:
 
 ```powershell
 $env:OPENAI_API_KEY="sk-..."
 ```
 
-- Set it as a persistent Windows user environment variable:
+- Set a persistent Windows user environment variable:
 
 ```powershell
-[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")
+[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY_PRIVATE","sk-...","User")
 ```
 
 After setting the persistent user variable, open a new PowerShell window before rerunning the app.
 
 Do not hardcode the key in either script. Do not commit it to GitHub.
+
+### Video Mangler OpenAI Troubleshooting
+
+- `MM_OPENAI_DIAGNOSTICS` is an opt-in troubleshooting setting for `Video Mangler`.
+- Set `MM_OPENAI_DIAGNOSTICS=1` to write per-segment diagnostics into an `openai_diagnostics` folder inside the output package.
+- You can also set `MM_OPENAI_DIAGNOSTICS` to a folder name or path if you want those files somewhere else.
+- Leave it unset during normal runs.
+- `Video Mangler` includes a verified Windows PowerShell 5.1 compatibility fix for non-ASCII transcript text on the OpenAI translation path. That failure was request-encoding related, not a separate `frame_index.csv` bug.
 
 Official OpenAI references:
 
@@ -174,6 +226,8 @@ Local behavior:
 - Other targets can use Argos Translate when the needed language packages are installed
 
 OpenAI is optional, not required.
+
+If OpenAI is not configured, `Auto` can still use the local path when the local dependencies are installed.
 
 ## Privacy And Local Processing
 

@@ -12,6 +12,8 @@ param(
     [ValidateSet("Auto", "OpenAI", "Local")]
     [string]$TranslationProvider = "Auto",
     [string]$OpenAiModel = "gpt-5-mini",
+    [ValidateSet("Private", "Public")]
+    [string]$OpenAiProject = "Private",
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawAudio,
     [switch]$IncludeComments,
@@ -2713,7 +2715,7 @@ function Get-InteractiveTranslationProvider {
         Write-Host "Media Manglers always works from the original spoken source first." -ForegroundColor Cyan
         Write-Host "Auto chooses the best available path for each requested language." -ForegroundColor Cyan
         Write-Host "  1. Auto   best available per target (default)" -ForegroundColor Cyan
-        Write-Host "  2. OpenAI best quality, needs OPENAI_API_KEY" -ForegroundColor Cyan
+        Write-Host "  2. OpenAI best quality, needs a configured OpenAI API key" -ForegroundColor Cyan
         Write-Host "  3. Local  free fallback using local tools on this PC" -ForegroundColor Cyan
 
         $choice = Read-Host "Press Enter for Auto, or type 1, 2, or 3"
@@ -2750,6 +2752,67 @@ function Get-InteractiveTranslationProvider {
     }
 }
 
+function Get-OpenAiKeyPreference {
+    $projectMode = if ([string]::IsNullOrWhiteSpace($OpenAiProject)) {
+        "Private"
+    }
+    else {
+        $OpenAiProject.Trim()
+    }
+
+    $primaryVariable = if ($projectMode -eq "Public") {
+        "OPENAI_API_KEY_PUBLIC"
+    }
+    else {
+        "OPENAI_API_KEY_PRIVATE"
+    }
+
+    return [PSCustomObject]@{
+        ProjectMode         = $projectMode
+        PrimaryVariable     = $primaryVariable
+        LegacyVariable      = "OPENAI_API_KEY"
+        AllowLegacyFallback = ($projectMode -eq "Private")
+    }
+}
+
+function Find-EnvironmentVariableValue {
+    param([string]$Name)
+
+    foreach ($scope in @(
+            [System.EnvironmentVariableTarget]::Process,
+            [System.EnvironmentVariableTarget]::User,
+            [System.EnvironmentVariableTarget]::Machine)) {
+        $candidate = [Environment]::GetEnvironmentVariable($Name, $scope)
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return [string]$candidate
+        }
+    }
+
+    return $null
+}
+
+function Get-OpenAiProjectModeSummary {
+    $keyPreference = Get-OpenAiKeyPreference
+    if ($keyPreference.ProjectMode -eq "Public") {
+        return "Public (explicit)"
+    }
+
+    return "Private (default)"
+}
+
+function Get-OpenAiKeyRequirementText {
+    $keyPreference = Get-OpenAiKeyPreference
+    if ($keyPreference.AllowLegacyFallback) {
+        return ("OpenAI translation cannot continue until {0} is set, or legacy {1} is available." -f $keyPreference.PrimaryVariable, $keyPreference.LegacyVariable)
+    }
+
+    return ("OpenAI translation cannot continue until {0} is set. Public mode requires an explicit Public project key." -f $keyPreference.PrimaryVariable)
+}
+
+function Get-OpenAiKeyTroubleshootingText {
+    return "Check the selected OpenAI API key, make sure it belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions."
+}
+
 function Get-OpenAiSetupInstructionLines {
     param(
         [string]$ProviderLabel = "OpenAI translation",
@@ -2757,8 +2820,12 @@ function Get-OpenAiSetupInstructionLines {
         [string]$Audience = "NonInteractive"
     )
 
+    $keyPreference = Get-OpenAiKeyPreference
     $lines = @(
         ("{0} was selected, but no API key is available." -f $ProviderLabel),
+        "",
+        ("Current key profile: {0}" -f (Get-OpenAiProjectModeSummary)),
+        ("Preferred environment variable: {0}" -f $keyPreference.PrimaryVariable),
         "",
         "To use OpenAI translation, create a key in your OpenAI Platform account:",
         "https://platform.openai.com/api-keys",
@@ -2772,19 +2839,37 @@ function Get-OpenAiSetupInstructionLines {
         "- Read Only will not work",
         "",
         "Service accounts are mainly for shared or server automation, not normal personal desktop use.",
+        "ChatGPT subscriptions and OpenAI API billing are separate.",
+        "If API billing or credits are missing, OpenAI translation will not run.",
         "OpenAI API usage may cost money.",
-        "",
-        "Use it now:",
-        '  $env:OPENAI_API_KEY="sk-..."',
-        "Save it for later:",
-        '  [System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY","sk-...","User")'
+        "If you are unsure, use Private."
     )
+
+    if ($keyPreference.ProjectMode -eq "Public") {
+        $lines += "Public mode only works when you explicitly choose -OpenAiProject Public."
+        $lines += "The script cannot infer a key's sharing behavior from the secret value."
+    }
+    else {
+        $lines += "Private is the default and safest mode."
+        $lines += ("Legacy fallback is still supported for older setups: {0}" -f $keyPreference.LegacyVariable)
+    }
+
+    $lines += ""
+    $lines += "Use it now:"
+    $lines += ('  $env:{0}="sk-..."' -f $keyPreference.PrimaryVariable)
+    $lines += "Save it for later:"
+    $lines += ('  [System.Environment]::SetEnvironmentVariable("{0}","sk-...","User")' -f $keyPreference.PrimaryVariable)
 
     if ($Audience -eq "Interactive") {
         $lines += "If you save it for later, open a new PowerShell window before re-checking."
     }
     else {
-        $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI."
+        if ($keyPreference.ProjectMode -eq "Public") {
+            $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI -OpenAiProject Public."
+        }
+        else {
+            $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI."
+        }
         $lines += "Do not hardcode the key or commit it to GitHub."
         $lines += "If you do not want OpenAI, rerun with -TranslationProvider Auto or Local."
     }
@@ -2823,11 +2908,11 @@ function Show-OpenAiSetupGuidance {
 
 function Read-OpenAiApiKeyForCurrentRun {
     if ([System.Console]::IsInputRedirected) {
-        $rawValue = Read-Host "Paste OPENAI_API_KEY for this run only"
+        $rawValue = Read-Host "Paste the OpenAI API key for this run only"
         return [string]$rawValue
     }
 
-    $secureValue = Read-Host "Paste OPENAI_API_KEY for this run only" -AsSecureString
+    $secureValue = Read-Host "Paste the OpenAI API key for this run only" -AsSecureString
     if ($null -eq $secureValue) {
         return ""
     }
@@ -2857,7 +2942,7 @@ function Get-InteractiveOpenAiRecoveryDecision {
         }
         Write-Host "Choose how to continue:" -ForegroundColor Yellow
         Write-Host "  1. Paste API key for this run only" -ForegroundColor Cyan
-        Write-Host "  2. Re-check after setting OPENAI_API_KEY externally" -ForegroundColor Cyan
+        Write-Host "  2. Re-check after setting the OpenAI API key externally" -ForegroundColor Cyan
         Write-Host "  3. Switch to Auto" -ForegroundColor Cyan
         Write-Host "  4. Switch to Local" -ForegroundColor Cyan
         Write-Host "  5. Cancel" -ForegroundColor Cyan
@@ -2881,26 +2966,26 @@ function Get-InteractiveOpenAiRecoveryDecision {
                 if (Test-OpenAiTranslationAvailable) {
                     return [PSCustomObject]@{
                         EffectiveProvider = "OpenAI"
-                        ResolutionNote    = "OpenAI translation was selected. OPENAI_API_KEY was found after re-check."
+                        ResolutionNote    = "OpenAI translation was selected. An OpenAI API key was found after re-check."
                     }
                 }
 
-                Write-Host "OPENAI_API_KEY still is not set. Set it in another window, then re-check, or choose a different option." -ForegroundColor Yellow
+                Write-Host "An OpenAI API key still is not set. Set it in another window, then re-check, or choose a different option." -ForegroundColor Yellow
             }
             "3" {
                 return [PSCustomObject]@{
                     EffectiveProvider = "Auto"
-                    ResolutionNote    = "OpenAI translation was selected, but OPENAI_API_KEY is missing. Interactive recovery selected: Auto."
+                    ResolutionNote    = "OpenAI translation was selected, but the OpenAI API key is missing. Interactive recovery selected: Auto."
                 }
             }
             "4" {
                 return [PSCustomObject]@{
                     EffectiveProvider = "Local"
-                    ResolutionNote    = "OpenAI translation was selected, but OPENAI_API_KEY is missing. Interactive recovery selected: Local."
+                    ResolutionNote    = "OpenAI translation was selected, but the OpenAI API key is missing. Interactive recovery selected: Local."
                 }
             }
             "5" {
-                throw "OpenAI translation was selected, but OPENAI_API_KEY is still not available. Translation was canceled at the provider preflight prompt."
+                throw (Get-OpenAiKeyRequirementText)
             }
             default {
                 Write-Host "Please type 1, 2, 3, 4, or 5." -ForegroundColor Yellow
@@ -3197,7 +3282,7 @@ function Get-OpenAiFailureDetails {
             $category = "Unauthorized"
             $recoverable = $true
             $userMessage = "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project."
-            $nextStep = "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions."
+            $nextStep = Get-OpenAiKeyTroubleshootingText
             $showSetupGuidance = $true
         }
         elseif (($statusCode -eq 403) -or ($combinedMessage -match '(?i)permission denied|permission_denied|forbidden|access denied|does not have access|insufficient permissions|not allowed')) {
@@ -3500,21 +3585,16 @@ function Get-OpenAiApiKey {
 
     $apiKey = [string]$script:SessionOpenAiApiKey
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
-        foreach ($scope in @(
-                [System.EnvironmentVariableTarget]::Process,
-                [System.EnvironmentVariableTarget]::User,
-                [System.EnvironmentVariableTarget]::Machine)) {
-            $candidate = [Environment]::GetEnvironmentVariable("OPENAI_API_KEY", $scope)
-            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-                $apiKey = $candidate
-                break
-            }
+        $keyPreference = Get-OpenAiKeyPreference
+        $apiKey = Find-EnvironmentVariableValue -Name $keyPreference.PrimaryVariable
+        if ([string]::IsNullOrWhiteSpace($apiKey) -and $keyPreference.AllowLegacyFallback) {
+            $apiKey = Find-EnvironmentVariableValue -Name $keyPreference.LegacyVariable
         }
     }
 
     if ($Required -and [string]::IsNullOrWhiteSpace($apiKey)) {
         Show-OpenAiSetupGuidance -ProviderLabel "OpenAI translation"
-        throw "OpenAI translation cannot continue until OPENAI_API_KEY is set."
+        throw (Get-OpenAiKeyRequirementText)
     }
 
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
@@ -3553,7 +3633,7 @@ function Resolve-TranslationProviderRequest {
     if ($requestedProviderValue -eq "OpenAI" -and -not (Test-OpenAiTranslationAvailable)) {
         if (-not $WasExplicitlySet) {
             $effectiveProvider = "Auto"
-            $resolutionNote = "OpenAI was present without an explicit user override, but OPENAI_API_KEY is missing. Falling back to Auto."
+            $resolutionNote = "OpenAI was present without an explicit user override, but the selected OpenAI API key is missing. Falling back to Auto."
         }
         elseif ($InteractiveMode) {
             $recoveryDecision = Get-InteractiveOpenAiRecoveryDecision
@@ -3562,7 +3642,7 @@ function Resolve-TranslationProviderRequest {
         }
         else {
             Show-OpenAiSetupGuidance -ProviderLabel "OpenAI translation"
-            throw "OpenAI translation cannot continue until OPENAI_API_KEY is set."
+            throw (Get-OpenAiKeyRequirementText)
         }
     }
 
@@ -4143,7 +4223,7 @@ function Invoke-OpenAiSegmentTranslation {
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "Unauthorized" `
                         -UserMessage "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project." `
-                        -NextStep "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions." `
+                        -NextStep (Get-OpenAiKeyTroubleshootingText) `
                         -StatusCode 401 `
                         -StatusDescription "Unauthorized" `
                         -ErrorCode "invalid_api_key" `
@@ -4822,7 +4902,7 @@ function Process-Audio {
 
     if ($requestedProvider -eq "OpenAI" -and -not (Test-OpenAiTranslationAvailable)) {
         Show-OpenAiSetupGuidance -ProviderLabel "OpenAI translation"
-        throw "OpenAI translation cannot continue until OPENAI_API_KEY is set."
+        throw (Get-OpenAiKeyRequirementText)
     }
 
     foreach ($targetLanguage in $normalizedTargets) {
@@ -5325,9 +5405,12 @@ try {
         $downloadCacheFolder = $InputFolder
         $doIncludeComments = $IncludeComments.IsPresent
         if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
-            $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N)"
-            if (-not [string]::IsNullOrWhiteSpace($value)) {
-                $doIncludeComments = $value.Trim() -match '^(y|yes)$'
+            $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N):"
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                $doIncludeComments = $true
+            }
+            else {
+                $doIncludeComments = $value.Trim() -match '^(?i)(y|yes)$'
             }
         }
         if ($ytDlpInvoker) {
@@ -5387,9 +5470,12 @@ try {
                 $downloadCacheFolder = $InputFolder
                 $doIncludeComments = $IncludeComments.IsPresent
                 if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
-                    $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N)"
-                    if (-not [string]::IsNullOrWhiteSpace($value)) {
-                        $doIncludeComments = $value.Trim() -match '^(y|yes)$'
+                    $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N):"
+                    if ([string]::IsNullOrWhiteSpace($value)) {
+                        $doIncludeComments = $true
+                    }
+                    else {
+                        $doIncludeComments = $value.Trim() -match '^(?i)(y|yes)$'
                     }
                 }
                 if ($ytDlpInvoker) {
