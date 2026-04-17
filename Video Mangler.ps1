@@ -39,6 +39,20 @@ $script:LocalCpuLongWhisperWarningThresholdSeconds = 900
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
 $script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:OpenAiTranscriptionModel = "whisper-1"
+$script:OpenAiPrivateTranslationApprovedModels = @(
+    "gpt-5-mini",
+    "gpt-5-mini-2025-08-07",
+    "gpt-4.1-mini-2025-04-14",
+    "gpt-4o-mini-2024-07-18"
+)
+$script:OpenAiPublicTranslationApprovedModels = @(
+    "gpt-4o-mini-2024-07-18",
+    "gpt-4.1-mini-2025-04-14"
+)
+$script:OpenAiPrivateTranscriptionApprovedModels = @(
+    "whisper-1"
+)
+$script:OpenAiModelDiscoveryCache = @{}
 $script:SessionOpenAiApiKey = $null
 $script:OpenAiTestModeLogged = $false
 
@@ -2517,7 +2531,8 @@ function Get-ProcessingModeSummary {
 function Get-TranscriptionProviderDetails {
     param(
         [string]$EffectiveMode,
-        [string]$ProjectMode
+        [string]$ProjectMode,
+        [string]$Model = ""
     )
 
     if ($EffectiveMode -ne "AI") {
@@ -2528,7 +2543,14 @@ function Get-TranscriptionProviderDetails {
         return "Local (Whisper transcription, AI Public keeps audio on this PC)"
     }
 
-    return "OpenAI (whisper-1 transcription)"
+    $resolvedModel = if ([string]::IsNullOrWhiteSpace($Model)) {
+        $script:OpenAiTranscriptionModel
+    }
+    else {
+        $Model.Trim()
+    }
+
+    return ("OpenAI ({0} transcription)" -f $resolvedModel)
 }
 
 function Get-TranslationModeSummary {
@@ -2656,18 +2678,326 @@ function Resolve-ProcessingModeRequest {
     }
 }
 
-function Resolve-EffectiveOpenAiTranslationModel {
-    param([switch]$WasExplicitlySet)
-
-    if ($WasExplicitlySet -and -not [string]::IsNullOrWhiteSpace($OpenAiModel)) {
-        return $OpenAiModel.Trim()
+function Test-OpenAiDiagnosticsEnabled {
+    $diagnosticsSetting = [Environment]::GetEnvironmentVariable("MM_OPENAI_DIAGNOSTICS")
+    if ([string]::IsNullOrWhiteSpace($diagnosticsSetting)) {
+        return $false
     }
 
-    if ($OpenAiProject -eq "Public") {
-        return $script:OpenAiPublicTranslationDefaultModel
+    return $diagnosticsSetting.Trim() -notmatch '^(?i)(0|false|no|off)$'
+}
+
+function Normalize-OpenAiModelId {
+    param([string]$ModelId)
+
+    if ([string]::IsNullOrWhiteSpace($ModelId)) {
+        return ""
     }
 
-    return $script:OpenAiPrivateTranslationDefaultModel
+    return $ModelId.Trim().ToLowerInvariant()
+}
+
+function Get-OpenAiApprovedTranslationModels {
+    param([string]$ProjectMode)
+
+    if ($ProjectMode -eq "Public") {
+        return @($script:OpenAiPublicTranslationApprovedModels)
+    }
+
+    return @($script:OpenAiPrivateTranslationApprovedModels)
+}
+
+function Get-OpenAiApprovedTranscriptionModels {
+    param([string]$ProjectMode)
+
+    if ($ProjectMode -eq "Public") {
+        return @()
+    }
+
+    return @($script:OpenAiPrivateTranscriptionApprovedModels)
+}
+
+function Get-OpenAiApprovedModelFallbackDefault {
+    param(
+        [ValidateSet("Translation", "Transcription")]
+        [string]$Capability,
+        [string]$ProjectMode
+    )
+
+    if ($Capability -eq "Translation") {
+        if ($ProjectMode -eq "Public") {
+            return $script:OpenAiPublicTranslationDefaultModel
+        }
+
+        return $script:OpenAiPrivateTranslationDefaultModel
+    }
+
+    return $script:OpenAiTranscriptionModel
+}
+
+function Resolve-OpenAiApprovedModelName {
+    param(
+        [string]$RequestedModel,
+        [string[]]$ApprovedModels
+    )
+
+    $normalizedRequestedModel = Normalize-OpenAiModelId -ModelId $RequestedModel
+    if ([string]::IsNullOrWhiteSpace($normalizedRequestedModel)) {
+        return $null
+    }
+
+    foreach ($approvedModel in @($ApprovedModels)) {
+        if ((Normalize-OpenAiModelId -ModelId $approvedModel) -eq $normalizedRequestedModel) {
+            return $approvedModel
+        }
+    }
+
+    return $null
+}
+
+function Get-OpenAiApprovedAccessibleModels {
+    param(
+        [string[]]$ApprovedModels,
+        [string[]]$AccessibleModels
+    )
+
+    $accessibleLookup = @{}
+    foreach ($modelId in @($AccessibleModels)) {
+        $normalizedModelId = Normalize-OpenAiModelId -ModelId $modelId
+        if (-not [string]::IsNullOrWhiteSpace($normalizedModelId)) {
+            $accessibleLookup[$normalizedModelId] = $true
+        }
+    }
+
+    $matches = New-Object System.Collections.Generic.List[string]
+    foreach ($approvedModel in @($ApprovedModels)) {
+        $normalizedApprovedModel = Normalize-OpenAiModelId -ModelId $approvedModel
+        if ($accessibleLookup.ContainsKey($normalizedApprovedModel)) {
+            [void]$matches.Add($approvedModel)
+        }
+    }
+
+    return $matches.ToArray()
+}
+
+function Test-OpenAiModelDiscoveryFallbackAllowed {
+    param([PSCustomObject]$DiscoveryResult)
+
+    if ($null -eq $DiscoveryResult) {
+        return $false
+    }
+
+    if ($DiscoveryResult.Success) {
+        return $false
+    }
+
+    if ($DiscoveryResult.Skipped) {
+        return $true
+    }
+
+    $failureCategory = ""
+    if ($DiscoveryResult.FailureDetails) {
+        $failureCategory = [string]$DiscoveryResult.FailureDetails.Category
+    }
+
+    return $failureCategory -in @("", "Network", "Timeout", "ServerError", "Unexpected")
+}
+
+function Get-OpenAiAccessibleModelIds {
+    param(
+        [string]$ProjectMode,
+        [string]$ProviderLabel = "OpenAI model discovery"
+    )
+
+    $resolvedProjectMode = if ([string]::IsNullOrWhiteSpace($ProjectMode)) {
+        "Private"
+    }
+    else {
+        $ProjectMode.Trim()
+    }
+
+    $cacheKey = $resolvedProjectMode.ToLowerInvariant()
+    if ($script:OpenAiModelDiscoveryCache.ContainsKey($cacheKey)) {
+        return $script:OpenAiModelDiscoveryCache[$cacheKey]
+    }
+
+    $testMode = Get-OpenAiTestMode
+    if (-not [string]::IsNullOrWhiteSpace($testMode)) {
+        $result = [PSCustomObject]@{
+            Success        = $false
+            Skipped        = $true
+            ModelIds       = @()
+            Endpoint       = "https://api.openai.com/v1/models"
+            ErrorMessage   = ("OpenAI model discovery was skipped because MM_TEST_OPENAI_MODE='{0}' is active." -f $testMode)
+            NextStep       = ""
+            FailureDetails = $null
+        }
+        $script:OpenAiModelDiscoveryCache[$cacheKey] = $result
+        return $result
+    }
+
+    $apiKey = Get-OpenAiApiKey -Required -ProviderLabel $ProviderLabel
+    $endpoint = "https://api.openai.com/v1/models"
+
+    try {
+        $response = Invoke-RestMethod -Method Get -Uri $endpoint -Headers @{ Authorization = "Bearer $apiKey" }
+        $modelIds = @(
+            $response.data |
+                ForEach-Object { [string]$_.id } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -Unique
+        )
+
+        $result = [PSCustomObject]@{
+            Success        = $true
+            Skipped        = $false
+            ModelIds       = @($modelIds)
+            Endpoint       = $endpoint
+            ErrorMessage   = ""
+            NextStep       = ""
+            FailureDetails = $null
+        }
+    }
+    catch {
+        $failureDetails = Get-OpenAiFailureDetails -Exception $_.Exception
+        $errorMessage = if ($failureDetails -and -not [string]::IsNullOrWhiteSpace($failureDetails.UserMessage)) {
+            $failureDetails.UserMessage
+        }
+        else {
+            ("OpenAI model discovery failed: {0}" -f $_.Exception.Message)
+        }
+
+        $nextStep = if ($failureDetails -and -not [string]::IsNullOrWhiteSpace($failureDetails.NextStep)) {
+            $failureDetails.NextStep
+        }
+        else {
+            "Check the OpenAI project permissions and network access, then try again."
+        }
+
+        $result = [PSCustomObject]@{
+            Success        = $false
+            Skipped        = $false
+            ModelIds       = @()
+            Endpoint       = $endpoint
+            ErrorMessage   = $errorMessage
+            NextStep       = $nextStep
+            FailureDetails = $failureDetails
+        }
+    }
+
+    $script:OpenAiModelDiscoveryCache[$cacheKey] = $result
+    return $result
+}
+
+function Resolve-OpenAiApprovedModelSelection {
+    param(
+        [ValidateSet("Translation", "Transcription")]
+        [string]$Capability,
+        [string]$ProjectMode,
+        [string]$RequestedModel = "",
+        [switch]$WasExplicitlySet
+    )
+
+    $resolvedProjectMode = if ([string]::IsNullOrWhiteSpace($ProjectMode)) {
+        "Private"
+    }
+    else {
+        $ProjectMode.Trim()
+    }
+
+    $approvedModels = if ($Capability -eq "Translation") {
+        Get-OpenAiApprovedTranslationModels -ProjectMode $resolvedProjectMode
+    }
+    else {
+        Get-OpenAiApprovedTranscriptionModels -ProjectMode $resolvedProjectMode
+    }
+
+    if (@($approvedModels).Count -eq 0) {
+        throw ("OpenAI {0} model selection is not available for AI {1}." -f $Capability.ToLowerInvariant(), $resolvedProjectMode)
+    }
+
+    $defaultModel = Get-OpenAiApprovedModelFallbackDefault -Capability $Capability -ProjectMode $resolvedProjectMode
+    $requestedApprovedModel = $null
+    if ($WasExplicitlySet -and -not [string]::IsNullOrWhiteSpace($RequestedModel)) {
+        $requestedApprovedModel = Resolve-OpenAiApprovedModelName -RequestedModel $RequestedModel -ApprovedModels $approvedModels
+        if ([string]::IsNullOrWhiteSpace($requestedApprovedModel)) {
+            throw ("OpenAI {0} model '{1}' is not allowed for AI {2}. Approved models: {3}" -f $Capability.ToLowerInvariant(), $RequestedModel.Trim(), $resolvedProjectMode, ($approvedModels -join ", "))
+        }
+    }
+
+    $providerLabel = if ($Capability -eq "Translation") { "OpenAI translation" } else { "OpenAI transcription" }
+    $discoveryResult = Get-OpenAiAccessibleModelIds -ProjectMode $resolvedProjectMode -ProviderLabel $providerLabel
+    if ($discoveryResult.Success) {
+        $accessibleApprovedModels = @(Get-OpenAiApprovedAccessibleModels -ApprovedModels $approvedModels -AccessibleModels $discoveryResult.ModelIds)
+
+        if (Test-OpenAiDiagnosticsEnabled) {
+            Write-Log ("OpenAI {0} model discovery for AI {1}: approved visible models = {2}" -f $Capability.ToLowerInvariant(), $resolvedProjectMode, $(if ($accessibleApprovedModels.Count -gt 0) { $accessibleApprovedModels -join ", " } else { "none" }))
+        }
+
+        if ($requestedApprovedModel) {
+            if ($accessibleApprovedModels -contains $requestedApprovedModel) {
+                return [PSCustomObject]@{
+                    ResolvedModel            = $requestedApprovedModel
+                    SelectionSource          = "explicit"
+                    ResolutionNote           = ("OpenAI {0} model '{1}' was explicitly requested and confirmed for AI {2}." -f $Capability.ToLowerInvariant(), $requestedApprovedModel, $resolvedProjectMode)
+                    ApprovedModels           = @($approvedModels)
+                    AccessibleApprovedModels = @($accessibleApprovedModels)
+                    DiscoveryStatus          = "success"
+                }
+            }
+
+            throw ("OpenAI {0} model '{1}' is approved for AI {2}, but this API key/project cannot access it. Approved models visible to this key: {3}. Expected approved models: {4}" -f $Capability.ToLowerInvariant(), $requestedApprovedModel, $resolvedProjectMode, $(if ($accessibleApprovedModels.Count -gt 0) { $accessibleApprovedModels -join ", " } else { "none" }), ($approvedModels -join ", "))
+        }
+
+        if ($accessibleApprovedModels.Count -gt 0) {
+            return [PSCustomObject]@{
+                ResolvedModel            = $accessibleApprovedModels[0]
+                SelectionSource          = "detected"
+                ResolutionNote           = ("OpenAI {0} model auto-detected from the approved AI {1} allowlist: {2}" -f $Capability.ToLowerInvariant(), $resolvedProjectMode, $accessibleApprovedModels[0])
+                ApprovedModels           = @($approvedModels)
+                AccessibleApprovedModels = @($accessibleApprovedModels)
+                DiscoveryStatus          = "success"
+            }
+        }
+
+        throw ("OpenAI {0} cannot continue because AI {1} does not have access to any approved models. Expected one of: {2}" -f $Capability.ToLowerInvariant(), $resolvedProjectMode, ($approvedModels -join ", "))
+    }
+
+    if (-not (Test-OpenAiModelDiscoveryFallbackAllowed -DiscoveryResult $discoveryResult)) {
+        $errorSuffix = if (-not [string]::IsNullOrWhiteSpace($discoveryResult.NextStep)) {
+            (" {0}" -f $discoveryResult.NextStep)
+        }
+        else {
+            ""
+        }
+
+        throw ("OpenAI {0} model discovery failed before a safe approved model could be confirmed for AI {1}. {2}{3}" -f $Capability.ToLowerInvariant(), $resolvedProjectMode, $discoveryResult.ErrorMessage, $errorSuffix)
+    }
+
+    if ($requestedApprovedModel) {
+        return [PSCustomObject]@{
+            ResolvedModel            = $requestedApprovedModel
+            SelectionSource          = "explicit"
+            ResolutionNote           = ("OpenAI {0} model discovery could not confirm visibility. Using the approved explicit model '{1}' for AI {2}. {3}" -f $Capability.ToLowerInvariant(), $requestedApprovedModel, $resolvedProjectMode, $discoveryResult.ErrorMessage)
+            ApprovedModels           = @($approvedModels)
+            AccessibleApprovedModels = @()
+            DiscoveryStatus          = "fallback"
+        }
+    }
+
+    $fallbackModel = $defaultModel
+    if ([string]::IsNullOrWhiteSpace((Resolve-OpenAiApprovedModelName -RequestedModel $fallbackModel -ApprovedModels $approvedModels))) {
+        $fallbackModel = @($approvedModels)[0]
+    }
+
+    return [PSCustomObject]@{
+        ResolvedModel            = $fallbackModel
+        SelectionSource          = "fallback-default"
+        ResolutionNote           = ("OpenAI {0} model discovery could not confirm visibility. Falling back to the approved default '{1}' for AI {2}. {3}" -f $Capability.ToLowerInvariant(), $fallbackModel, $resolvedProjectMode, $discoveryResult.ErrorMessage)
+        ApprovedModels           = @($approvedModels)
+        AccessibleApprovedModels = @()
+        DiscoveryStatus          = "fallback"
+    }
 }
 
 function Find-EnvironmentVariableValue {
@@ -5040,6 +5370,7 @@ function Invoke-OpenAiWhisperTranscript {
         [string]$AudioPath,
         [string]$TranscriptFolder,
         [string]$LanguageCode,
+        [string]$Model = "",
         [string]$FFmpegExe,
         [string]$FFprobeExe,
         [string]$JsonName = "transcript.json",
@@ -5049,6 +5380,7 @@ function Invoke-OpenAiWhisperTranscript {
     )
 
     Ensure-Directory $TranscriptFolder
+    $resolvedModel = if ([string]::IsNullOrWhiteSpace($Model)) { $script:OpenAiTranscriptionModel } else { $Model.Trim() }
     $chunkPlan = New-OpenAiTranscriptionChunkPlan `
         -AudioPath $AudioPath `
         -FFmpegExe $FFmpegExe `
@@ -5065,7 +5397,7 @@ function Invoke-OpenAiWhisperTranscript {
             $payload = Invoke-OpenAiAudioTranscriptionRequest `
                 -AudioPath $chunk.Path `
                 -LanguageCode $LanguageCode `
-                -Model $script:OpenAiTranscriptionModel
+                -Model $resolvedModel
 
             if ([string]::IsNullOrWhiteSpace($detectedLanguage) -and -not [string]::IsNullOrWhiteSpace([string]$payload.language)) {
                 $detectedLanguage = [string]$payload.language
@@ -5564,6 +5896,7 @@ function Process-Video {
         [string]$TranslationProviderResolutionNote,
         [string]$TranslationProvider,
         [string]$OpenAiModel,
+        [string]$OpenAiTranscriptionModel,
         [double]$FrameIntervalSeconds,
         [int]$HeartbeatSeconds = 10
     )
@@ -5616,7 +5949,7 @@ function Process-Video {
     Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
     $processingModeSummary = Get-ProcessingModeSummary -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
     $openAiProjectSummary = if ($ProcessingMode -eq "AI") { $OpenAiProject } else { "" }
-    $transcriptionPathDetails = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
+    $transcriptionPathDetails = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject -Model $OpenAiTranscriptionModel
     $diagnosticsSetting = [Environment]::GetEnvironmentVariable("MM_OPENAI_DIAGNOSTICS")
     if (-not [string]::IsNullOrWhiteSpace($diagnosticsSetting)) {
         $normalizedDiagnosticsSetting = $diagnosticsSetting.Trim()
@@ -5661,7 +5994,12 @@ function Process-Video {
     }
     if ($ProcessingMode -eq "AI") {
         Write-Log ("AI project mode: {0}" -f $OpenAiProject)
-        Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+        if (-not [string]::IsNullOrWhiteSpace($OpenAiTranscriptionModel) -and $OpenAiProject -eq "Private") {
+            Write-Log ("OpenAI transcription model: {0}" -f $OpenAiTranscriptionModel)
+        }
+        if ($TranslationTargets.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($OpenAiModel)) {
+            Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+        }
     }
     if ($TranslationTargets.Count -gt 0) {
         $loggedRequestedProvider = if ([string]::IsNullOrWhiteSpace($RequestedTranslationProvider)) {
@@ -5770,12 +6108,13 @@ function Process-Video {
             }
 
             if ($transcriptionUsesOpenAi) {
-                Write-Log ("Generating transcript with OpenAI transcription ({0})..." -f $script:OpenAiTranscriptionModel)
+                Write-Log ("Generating transcript with OpenAI transcription ({0})..." -f $OpenAiTranscriptionModel)
 
                 $phaseTranscriptResult = Invoke-OpenAiWhisperTranscript `
                     -AudioPath $audioFile `
                     -TranscriptFolder $transcriptFolder `
                     -LanguageCode $LanguageCode `
+                    -Model $OpenAiTranscriptionModel `
                     -FFmpegExe $FFmpegExe `
                     -FFprobeExe $FFprobeExe `
                     -JsonName "transcript.json" `
@@ -6472,15 +6811,30 @@ $translationProviderResolution = [PSCustomObject]@{
 }
 
 $openAiModelWasExplicit = $PSBoundParameters.ContainsKey("OpenAiModel")
+$openAiTranslationModelResolution = $null
 if ($ProcessingMode -eq "AI") {
-    $OpenAiModel = Resolve-EffectiveOpenAiTranslationModel -WasExplicitlySet:$openAiModelWasExplicit
+    if ($translationTargets.Count -gt 0) {
+        $openAiTranslationModelResolution = Resolve-OpenAiApprovedModelSelection `
+            -Capability "Translation" `
+            -ProjectMode $OpenAiProject `
+            -RequestedModel $OpenAiModel `
+            -WasExplicitlySet:$openAiModelWasExplicit
+        $OpenAiModel = $openAiTranslationModelResolution.ResolvedModel
+    }
+    elseif ($openAiModelWasExplicit -and -not [string]::IsNullOrWhiteSpace($OpenAiModel)) {
+        $OpenAiModel = $OpenAiModel.Trim()
+    }
+    else {
+        $OpenAiModel = Get-OpenAiApprovedModelFallbackDefault -Capability "Translation" -ProjectMode $OpenAiProject
+    }
 }
 elseif (-not $openAiModelWasExplicit -or [string]::IsNullOrWhiteSpace($OpenAiModel)) {
     $OpenAiModel = $script:OpenAiPrivateTranslationDefaultModel
 }
 
+$ResolvedOpenAiTranscriptionModel = $script:OpenAiTranscriptionModel
 $processingModeSummary = Get-ProcessingModeSummary -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
-$transcriptionPathSummary = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
+$transcriptionPathSummary = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject -Model $ResolvedOpenAiTranscriptionModel
 $translationModeSummary = Get-TranslationModeSummary `
     -EffectiveMode $ProcessingMode `
     -ProjectMode $OpenAiProject `
@@ -6545,7 +6899,12 @@ if ($ProcessingMode -eq "Local") {
 }
 if ($ProcessingMode -eq "AI") {
     Write-Log ("AI project mode: {0}" -f $OpenAiProject)
-    Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+    if ($translationTargets.Count -gt 0) {
+        if ($openAiTranslationModelResolution -and -not [string]::IsNullOrWhiteSpace($openAiTranslationModelResolution.ResolutionNote)) {
+            Write-Log $openAiTranslationModelResolution.ResolutionNote
+        }
+        Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+    }
 }
 if ($translationTargets.Count -gt 0) {
     Write-Log ("Translation targets selected: {0}" -f ($translationTargets -join ", "))
@@ -6730,6 +7089,18 @@ foreach ($video in $videos) {
     }
 }
 
+if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
+    $openAiTranscriptionModelResolution = Resolve-OpenAiApprovedModelSelection `
+        -Capability "Transcription" `
+        -ProjectMode $OpenAiProject `
+        -RequestedModel $script:OpenAiTranscriptionModel
+    $ResolvedOpenAiTranscriptionModel = $openAiTranscriptionModelResolution.ResolvedModel
+    $transcriptionPathSummary = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject -Model $ResolvedOpenAiTranscriptionModel
+    if ($openAiTranscriptionModelResolution -and -not [string]::IsNullOrWhiteSpace($openAiTranscriptionModelResolution.ResolutionNote)) {
+        Write-Log $openAiTranscriptionModelResolution.ResolutionNote
+    }
+}
+
 if ($ProcessingMode -eq "AI" -and (($OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) -or $translationTargets.Count -gt 0)) {
     $requiredOpenAiLabel = if ($OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
         "AI mode"
@@ -6801,6 +7172,12 @@ if ($ProcessingMode -eq "Local") {
 }
 if ($ProcessingMode -eq "AI") {
     Write-Host ("AI project mode:                 {0}" -f $OpenAiProject)
+    if ($OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
+        Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
+    }
+    if ($translationTargets.Count -gt 0) {
+        Write-Host ("OpenAI translation model:        {0}" -f $OpenAiModel)
+    }
 }
 Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
 Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
@@ -6886,6 +7263,7 @@ foreach ($video in $videos) {
             -TranslationProviderResolutionNote $translationProviderResolution.ResolutionNote `
             -TranslationProvider $TranslationProvider `
             -OpenAiModel $OpenAiModel `
+            -OpenAiTranscriptionModel $ResolvedOpenAiTranscriptionModel `
             -FrameIntervalSeconds $FrameIntervalSeconds `
             -HeartbeatSeconds $HeartbeatSeconds
 

@@ -109,8 +109,26 @@ the API Keys page:
 
 Current OpenAI paths in code:
 
+- AI model selection can query GET /v1/models to see which repo-approved
+  models are visible to the selected key/project.
 - AI translation uses POST /v1/chat/completions
 - AI Private transcription uses POST /v1/audio/transcriptions
+
+How model selection works:
+
+- The scripts do not pick from every model a key can see.
+- They first check which models are visible to the selected key/project.
+- They then choose only from a repo-approved allowlist for the current mode.
+- AI Public translation is intentionally pinned to a small approved Public
+  list: gpt-4o-mini-2024-07-18 first, then gpt-4.1-mini-2025-04-14.
+- AI Private translation uses a separate approved preference list. Right now
+  it prefers gpt-5-mini and only falls back to other approved lower-cost
+  models if that Private key/project cannot use the first choice.
+- AI Private transcription keeps the current approved transcription model:
+  whisper-1.
+- -OpenAiModel is optional. If you set it, it must be approved for the chosen
+  mode/project and visible to that key/project, or the script stops with a
+  clear message.
 
 Recommended setup for normal local use:
 
@@ -140,6 +158,8 @@ Recommended setup for normal local use:
 - OPENAI_API_KEY still works as a legacy Private fallback for older setups.
 - Public/shared complimentary tokens only apply when the Public project is
   configured for shared traffic and the request uses an eligible model.
+- Public mode will not auto-upgrade itself to broader or more expensive models
+  just because the key can see them.
 - If a request would cross the remaining complimentary daily quota, OpenAI
   bills the whole request normally.
 - Use Private for confidential or sensitive media. Use Public only for media
