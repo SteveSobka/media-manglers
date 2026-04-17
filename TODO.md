@@ -24,11 +24,11 @@ No open GitHub issues are currently active in this repo.
   Status: repo-only follow-up
   Current note: The `Video Mangler.ps1` bug is fixed and live-verified, but the repo still lacks permanent scripted coverage that proves UTF-8 transcript reads and UTF-8 request-byte sending stay correct for non-ASCII segments on Windows PowerShell 5.1.
 
-- [ ] Reconcile stale draft PRs #12 and #5 against current `main`
-  Status: repo-only follow-up
-  Current note: Live GitHub inspection during the v0.6.0 release pass showed draft PR `#12` (`[codex] Finalize OpenAI UTF-8 fix and operator guidance`) and draft PR `#5` (`[codex] Add GUI workflow wrappers for packaged builds`) still open. Current `main` at `dba8232` built and validated without them, so they did not block the release, but they should be closed or re-scoped so open PR state matches real active work.
-
 ## Recently Completed
+
+- [x] Repo-only: refresh stale tracked packaged outputs and reconcile stale draft PRs after the v0.6.0 release
+  Status: completed on 2026-04-17
+  Current note: Confirmed the source/doc surfaces and the live GitHub `v0.6.0` release assets already reported `0.6.0`, but the tracked repo `dist\Video Mangler.exe` and `dist\Audio Mangler.exe` binaries on `main` were still stale `0.5.0` builds because the release prep commit updated `VERSION`, scripts, and docs without updating the tracked executables. Rebuilt both via `AREA51\Build-Exe.ps1 -App All`, revalidated source plus packaged `-Version` and launch banners at `0.6.0`, re-verified the comments prompt path with a controlled `yt-dlp` stub (`Enter`/`Y` requested comments, `N` skipped them), and closed stale draft PRs `#12` and `#5`. No corrective release was needed because the published `v0.6.0` GitHub release assets were already correct.
 
 - [x] Repo-only: prepare the v0.6.0 release from current `main`
   Status: completed on 2026-04-17
