@@ -20,19 +20,19 @@ No open GitHub issues are currently active in this repo.
   Status: repo-only follow-up
   Current note: The current validator assumes translated transcript files exist whenever `translations\<lang>\` exists, so expected partial-success OpenAI failure packages report missing translation artifacts instead of validating the operator-facing partial-package outputs.
 
-- [ ] Re-run AI Private validation with a key/project that has transcription permission
-  Status: repo-only follow-up
-  Current note: The redesigned AI Private path is implemented in both apps, but the current machine only exposes `OPENAI_API_KEY` as a legacy Private fallback and that key returns `401 Unauthorized` with missing `model.request` on `POST /v1/audio/transcriptions`. Supply a proper Private key/project with transcription access, then rerun the AI Private matrix rows end-to-end.
-
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
   Status: repo-only follow-up
   Current note: The `Video Mangler.ps1` bug is fixed and live-verified, but the repo still lacks permanent scripted coverage that proves UTF-8 transcript reads and UTF-8 request-byte sending stay correct for non-ASCII segments on Windows PowerShell 5.1.
 
 ## Recently Completed
 
+- [x] Repo-only: validate AI Private end-to-end with the working Private transcription key path
+  Status: completed on 2026-04-17
+  Current note: Verified the current Codex/child PowerShell process can see `OPENAI_API_KEY_PRIVATE`, confirmed AI Private still resolves `Private -> OPENAI_API_KEY_PRIVATE` with `OPENAI_API_KEY` only as a legacy fallback, confirmed the scripted transcription request still uses `POST /v1/audio/transcriptions` with model `whisper-1` and multipart file upload, fixed a `List[object]` to array conversion bug in both OpenAI transcription artifact paths, and reran `VIDEO AI Private English`, `VIDEO AI Private Foreign`, `AUDIO AI Private English`, and `AUDIO AI Private Foreign` successfully.
+
 - [x] Repo-only: simplify Video Mangler and Audio Mangler to Local vs AI processing modes
   Status: completed on 2026-04-16
-  Current note: Added `docs/plans/2026-04-16-ai-vs-local-mode-simplification.md`, promoted `-ProcessingMode Local|AI` to the primary operator-facing control in both apps, kept `TranslationProvider` as compatibility-only, updated package/operator docs, added `AREA51\Run-AI-Local-Mode-Matrix.ps1`, and verified the matrix evidence that was possible on this machine. Verified passes: Video Local English, Video Local foreign, Audio Local English, Audio Local foreign, Audio AI Public English, and Video AI Public foreign. Remaining unverified success path: AI Private end-to-end, which is currently blocked by the machine's available Private key/project returning `401 Unauthorized` with missing `model.request` on transcription.
+  Current note: Added `docs/plans/2026-04-16-ai-vs-local-mode-simplification.md`, promoted `-ProcessingMode Local|AI` to the primary operator-facing control in both apps, kept `TranslationProvider` as compatibility-only, updated package/operator docs, added `AREA51\Run-AI-Local-Mode-Matrix.ps1`, and verified the matrix evidence that was possible on this machine on 2026-04-16. Verified passes in that pass: Video Local English, Video Local foreign, Audio Local English, Audio Local foreign, Audio AI Public English, and Video AI Public foreign. AI Private end-to-end was validated in the follow-up pass on 2026-04-17.
 
 - [x] Repo-only: document OpenAI integration, Private/Public guidance, and safe key selection defaults
   Status: completed on 2026-04-16

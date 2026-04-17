@@ -4983,7 +4983,7 @@ function New-OpenAiTranscriptionChunkPlan {
 
     return [PSCustomObject]@{
         TempRoot = $tempRoot
-        Chunks   = @($chunks)
+        Chunks   = $chunks.ToArray()
     }
 }
 
@@ -5056,7 +5056,7 @@ function Invoke-OpenAiWhisperTranscript {
 
         $artifacts = Write-TranscriptArtifactsFromSegments `
             -OutputFolder $TranscriptFolder `
-            -Segments @($segments) `
+            -Segments $segments.ToArray() `
             -Language $(if ([string]::IsNullOrWhiteSpace($detectedLanguage)) { $LanguageCode } else { $detectedLanguage }) `
             -SourceLanguage $(if ([string]::IsNullOrWhiteSpace($detectedLanguage)) { $LanguageCode } else { $detectedLanguage }) `
             -Task "transcribe" `
