@@ -1,0 +1,69 @@
+Release Notes - v0.6.0
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.6.0
+
+What changed
+------------
+
+- Simplified both apps around one primary operator choice:
+  - `-ProcessingMode Local`
+  - `-ProcessingMode AI`
+- Kept `TranslationProvider` as a compatibility-only surface instead of the
+  main operator-facing workflow
+- Updated repo docs, packaged guides, and release packaging so the current mode
+  model is explained consistently across the repo and downloadable bundles
+
+OpenAI project behavior
+-----------------------
+
+- Private remains the default and safest AI path
+- `OPENAI_API_KEY_PRIVATE` is now the primary default key source for AI Private
+- `OPENAI_API_KEY_PUBLIC` is only used when you explicitly run AI mode with
+  `-OpenAiProject Public`
+- `OPENAI_API_KEY` is still accepted as a legacy Private fallback for older
+  setups
+- AI Private uses OpenAI for transcription plus translation
+- AI Public keeps transcription local and uses OpenAI only for translation on
+  the Public/shared project
+- Current OpenAI API paths remain:
+  - `POST /v1/audio/transcriptions` for AI Private transcription
+  - `POST /v1/chat/completions` for AI translation
+
+Validation and reliability
+--------------------------
+
+- Validated the Local vs AI simplification pass across the matrix that was
+  possible on this machine on 2026-04-16
+- Followed that with a 2026-04-17 AI Private validation pass that confirmed the
+  working `OPENAI_API_KEY_PRIVATE` path for both Video Mangler and Audio
+  Mangler
+- Fixed the Windows PowerShell 5.1 UTF-8 handling bug on the OpenAI video path
+  so non-ASCII transcript text is read and sent as UTF-8 instead of mojibake
+- Fixed the OpenAI transcription artifact `List[object]` conversion issue in
+  both apps
+- Kept the operator-facing guidance aligned with the real Private/Public
+  behavior so the safest path is also the default path
+
+Operator notes
+--------------
+
+- Local mode remains the no-OpenAI path once the local dependencies are
+  installed
+- AI Public does not mean source audio is uploaded to OpenAI for transcription
+- AI Private is the intended path when you need OpenAI help on sensitive media
+  and have a properly permissioned Private key
+
+Non-blocking follow-ups
+-----------------------
+
+- `AREA51\Validate-VideoToCodexPackage.ps1` still assumes translated transcript
+  files exist whenever `translations\<lang>\` exists, so expected partial-
+  success OpenAI failure packages can still report missing translation artifacts
+  instead of validating the partial-package output
+- The repo still needs durable scripted regression coverage for Windows
+  PowerShell 5.1 non-ASCII OpenAI transcript content even though the live fix
+  itself has been validated

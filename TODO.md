@@ -24,7 +24,15 @@ No open GitHub issues are currently active in this repo.
   Status: repo-only follow-up
   Current note: The `Video Mangler.ps1` bug is fixed and live-verified, but the repo still lacks permanent scripted coverage that proves UTF-8 transcript reads and UTF-8 request-byte sending stay correct for non-ASCII segments on Windows PowerShell 5.1.
 
+- [ ] Reconcile stale draft PRs #12 and #5 against current `main`
+  Status: repo-only follow-up
+  Current note: Live GitHub inspection during the v0.6.0 release pass showed draft PR `#12` (`[codex] Finalize OpenAI UTF-8 fix and operator guidance`) and draft PR `#5` (`[codex] Add GUI workflow wrappers for packaged builds`) still open. Current `main` at `dba8232` built and validated without them, so they did not block the release, but they should be closed or re-scoped so open PR state matches real active work.
+
 ## Recently Completed
+
+- [x] Repo-only: prepare the v0.6.0 release from current `main`
+  Status: completed on 2026-04-17
+  Current note: Confirmed local `main` matched `origin/main` at `dba8232`, bumped repo/app version surfaces to `0.6.0`, rebuilt both packaged executables and release zips, validated the canonical Video and Audio Local smoke paths, and verified the packaged docs/version files in both zips matched the tracked repo copies.
 
 - [x] Repo-only: validate AI Private end-to-end with the working Private transcription key path
   Status: completed on 2026-04-17

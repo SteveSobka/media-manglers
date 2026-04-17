@@ -194,7 +194,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.5.0.txt
+- ../release-notes/RELEASE_NOTES_v0.6.0.txt
 
 Build and test
 --------------
@@ -217,8 +217,8 @@ The build keeps the live output layout minimal by default:
 
 - dist\Video Mangler.exe
 - dist\Audio Mangler.exe
-- dist\release\Video-Mangler-v0.5.0.zip
-- dist\release\Audio-Mangler-v0.5.0.zip
+- dist\release\Video-Mangler-v0.6.0.zip
+- dist\release\Audio-Mangler-v0.6.0.zip
 
 Legacy release clutter is moved under dist\archive\release\ instead of being
 left mixed into the live release folder. Temporary packaging folders are also

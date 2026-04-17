@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Video Mangler"
-$script:FallbackAppVersion = "0.5.0"
+$script:FallbackAppVersion = "0.6.0"
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
 $script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:OpenAiTranscriptionModel = "whisper-1"
