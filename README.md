@@ -122,6 +122,9 @@ Recommended setup for normal local use:
 - `Read Only` is not enough because Media Manglers sends `POST /v1/chat/completions` requests for translation.
 - Service accounts are mainly for shared automation, servers, CI, or other non-personal bot identities, not normal desktop use.
 - OpenAI API usage may incur charges.
+- If OpenAI returns `429`, check the actual error details. A `429` with `insufficient_quota`, billing, credits, or balance language usually means API billing is not active for that project/account, not that you simply sent requests too quickly.
+- ChatGPT subscriptions and OpenAI API billing are separate.
+- If billing or credits are missing, add payment details / credits in the OpenAI API billing settings, wait a few minutes, and retry.
 
 Ways to provide the key on Windows:
 

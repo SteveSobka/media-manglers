@@ -1400,7 +1400,7 @@ What is included:
 - translations\<lang>\transcript.srt / .json / .txt when translation was requested
 - comments\comments.txt / .json   public comments export when available and requested
 - segment_index.csv               timestamp index for the original transcript
-- script_run.log                  processing log
+- script_run.log                  processing log, including raw OpenAI error details when available
 
 A good review order:
 1. Start with transcript\transcript_original.txt for the quick read.
@@ -1626,7 +1626,7 @@ function New-MasterReadme {
     $lines += "- comments\comments.* when available and requested"
     $lines += "- segment_index.csv"
     $lines += "- README_FOR_CODEX.txt"
-    $lines += "- script_run.log"
+    $lines += "- script_run.log (includes raw OpenAI error details when available)"
     $lines += ""
     $lines += "Processed packages:"
     foreach ($item in $ProcessedItems) {
@@ -2917,23 +2917,128 @@ function Get-OpenAiTestMode {
 
     $normalized = $rawMode.Trim().ToLowerInvariant().Replace("-", "_").Replace(" ", "_")
     switch ($normalized) {
-        "success"            { return "success" }
-        "401"                { return "unauthorized" }
-        "unauthorized"       { return "unauthorized" }
-        "invalid_key"        { return "unauthorized" }
-        "403"                { return "unauthorized" }
-        "permission"         { return "unauthorized" }
-        "429"                { return "rate_limit" }
-        "rate_limit"         { return "rate_limit" }
-        "quota"              { return "quota" }
-        "insufficient_quota" { return "quota" }
-        "500"                { return "server_error" }
-        "server_error"       { return "server_error" }
-        "timeout"            { return "timeout" }
-        "network"            { return "network" }
+        "success"              { return "success" }
+        "401"                  { return "unauthorized" }
+        "unauthorized"         { return "unauthorized" }
+        "invalid_key"          { return "unauthorized" }
+        "403"                  { return "permission_denied" }
+        "permission"           { return "permission_denied" }
+        "permission_denied"    { return "permission_denied" }
+        "429"                  { return "rate_limit" }
+        "rate_limit"           { return "rate_limit" }
+        "rate_limit_exceeded"  { return "rate_limit" }
+        "quota"                { return "quota" }
+        "billing"              { return "quota" }
+        "credits"              { return "quota" }
+        "no_credits"           { return "quota" }
+        "insufficient_quota"   { return "quota" }
+        "500"                  { return "server_error" }
+        "server_error"         { return "server_error" }
+        "timeout"              { return "timeout" }
+        "network"              { return "network" }
         default {
-            throw "Unsupported MM_TEST_OPENAI_MODE value '$rawMode'. Use success, unauthorized, rate_limit, quota, server_error, timeout, or network."
+            throw "Unsupported MM_TEST_OPENAI_MODE value '$rawMode'. Use success, unauthorized, permission_denied, rate_limit, quota, server_error, timeout, or network."
         }
+    }
+}
+
+function Get-OpenAiQuotaUserMessage {
+    return "OpenAI rejected this request because API billing or credits are not available for this project or account. ChatGPT subscriptions and API billing are separate. Add payment details / credits in the OpenAI API billing settings, wait a few minutes, then try again."
+}
+
+function Get-OpenAiQuotaNextStep {
+    return "After API billing is active, retry the translation, or rerun with -TranslationProvider Local to keep going without OpenAI."
+}
+
+function Get-OpenAiFailureCategoryLabel {
+    param([string]$Category)
+
+    switch ($Category) {
+        "Quota"            { return "quota/billing" }
+        "RateLimit"        { return "rate limit" }
+        "Unauthorized"     { return "unauthorized/bad key" }
+        "PermissionDenied" { return "permission denied" }
+        "Timeout"          { return "timeout" }
+        "Network"          { return "network" }
+        "ServerError"      { return "server error" }
+        default            { return "unknown" }
+    }
+}
+
+function Get-OpenAiHeaderValue {
+    param(
+        $Headers,
+        [string[]]$Names
+    )
+
+    if ($null -eq $Headers -or $null -eq $Names) {
+        return ""
+    }
+
+    foreach ($name in $Names) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+
+        try {
+            $values = $null
+            if ($Headers.TryGetValues($name, [ref]$values)) {
+                $joined = @($values) -join ", "
+                if (-not [string]::IsNullOrWhiteSpace($joined)) {
+                    return $joined
+                }
+            }
+        }
+        catch {
+        }
+
+        try {
+            $value = $Headers[$name]
+            if ($null -ne $value) {
+                $joined = if ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+                    @($value) -join ", "
+                }
+                else {
+                    [string]$value
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($joined)) {
+                    return $joined
+                }
+            }
+        }
+        catch {
+        }
+
+        try {
+            $values = $Headers.GetValues($name)
+            if ($values) {
+                $joined = @($values) -join ", "
+                if (-not [string]::IsNullOrWhiteSpace($joined)) {
+                    return $joined
+                }
+            }
+        }
+        catch {
+        }
+    }
+
+    return ""
+}
+
+function Normalize-OpenAiResponseText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ""
+    }
+
+    $trimmed = $Text.Trim()
+    try {
+        return (($trimmed | ConvertFrom-Json) | ConvertTo-Json -Depth 20 -Compress)
+    }
+    catch {
+        return (($trimmed -replace "\r\n", " ") -replace "\n", " ").Trim()
     }
 }
 
@@ -2986,107 +3091,262 @@ function Get-OpenAiFailureDetails {
         return $null
     }
 
-    if ($Exception.Data -and $Exception.Data.Contains("OpenAiFailureCategory")) {
-        return [PSCustomObject]@{
-            Category          = [string]$Exception.Data["OpenAiFailureCategory"]
-            Recoverable       = [bool]$Exception.Data["OpenAiRecoverable"]
-            StatusCode        = [int]$Exception.Data["OpenAiStatusCode"]
-            ErrorCode         = [string]$Exception.Data["OpenAiErrorCode"]
-            UserMessage       = [string]$Exception.Data["OpenAiUserMessage"]
-            NextStep          = [string]$Exception.Data["OpenAiNextStep"]
-            ShowSetupGuidance = [bool]$Exception.Data["OpenAiShowSetupGuidance"]
-        }
-    }
-
     $statusCode = 0
-    $response = $Exception.Response
-    if ($response) {
-        try {
-            if ($response.StatusCode) {
-                $statusCode = [int]$response.StatusCode
-            }
-        }
-        catch {
-            $statusCode = 0
-        }
-    }
-
-    $responseBody = Get-OpenAiErrorResponseText -Exception $Exception
-    $serviceMessage = ""
+    $statusDescription = ""
     $errorCode = ""
-    if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
-        try {
-            $parsed = $responseBody | ConvertFrom-Json
-            if ($parsed.error) {
-                $serviceMessage = [string]$parsed.error.message
-                $errorCode = [string]$parsed.error.code
-            }
-        }
-        catch {
-        }
-    }
-
-    $combinedMessage = @([string]$Exception.Message, $serviceMessage) -join " "
-    $category = "Unknown"
+    $errorType = ""
+    $errorParam = ""
+    $serviceMessage = ""
+    $responseBody = ""
+    $requestId = ""
+    $category = ""
     $recoverable = $false
     $userMessage = if ([string]::IsNullOrWhiteSpace($Exception.Message)) { "The OpenAI request failed." } else { [string]$Exception.Message }
-    $nextStep = "Check script_run.log for more detail, then try again or rerun with -TranslationProvider Local."
+    $nextStep = "Check script_run.log for the OpenAI response details, then try again or rerun with -TranslationProvider Local."
     $showSetupGuidance = $false
 
-    if (($statusCode -eq 401) -or (($statusCode -eq 403) -and ($combinedMessage -notmatch '(?i)quota|billing|credit|balance')) -or ($combinedMessage -match '(?i)unauthorized|invalid api key|incorrect api key|forbidden|permission')) {
-        $category = "Unauthorized"
-        $recoverable = $true
-        if ($statusCode -eq 403) {
-            $userMessage = "OpenAI rejected the request because this API key or project is not allowed to call Chat Completions."
+    if ($Exception.Data -and $Exception.Data.Contains("OpenAiFailureCategory")) {
+        $category = [string]$Exception.Data["OpenAiFailureCategory"]
+        $recoverable = [bool]$Exception.Data["OpenAiRecoverable"]
+        $statusCode = [int]$Exception.Data["OpenAiStatusCode"]
+        $statusDescription = [string]$Exception.Data["OpenAiStatusDescription"]
+        $errorCode = [string]$Exception.Data["OpenAiErrorCode"]
+        $errorType = [string]$Exception.Data["OpenAiErrorType"]
+        $errorParam = [string]$Exception.Data["OpenAiErrorParam"]
+        $serviceMessage = [string]$Exception.Data["OpenAiServiceMessage"]
+        $responseBody = Normalize-OpenAiResponseText -Text ([string]$Exception.Data["OpenAiResponseBody"])
+        $requestId = [string]$Exception.Data["OpenAiRequestId"]
+        $userMessage = [string]$Exception.Data["OpenAiUserMessage"]
+        $nextStep = [string]$Exception.Data["OpenAiNextStep"]
+        $showSetupGuidance = [bool]$Exception.Data["OpenAiShowSetupGuidance"]
+    }
+    else {
+        $response = $Exception.Response
+        if ($response) {
+            try {
+                if ($response.StatusCode) {
+                    $statusCode = [int]$response.StatusCode
+                }
+            }
+            catch {
+                $statusCode = 0
+            }
+
+            try {
+                if ($response.ReasonPhrase) {
+                    $statusDescription = [string]$response.ReasonPhrase
+                }
+            }
+            catch {
+            }
+
+            if ([string]::IsNullOrWhiteSpace($statusDescription)) {
+                try {
+                    if ($response.StatusDescription) {
+                        $statusDescription = [string]$response.StatusDescription
+                    }
+                }
+                catch {
+                }
+            }
+
+            $requestId = Get-OpenAiHeaderValue -Headers $response.Headers -Names @("x-request-id", "request-id")
+            if ([string]::IsNullOrWhiteSpace($requestId) -and $response.Content) {
+                $requestId = Get-OpenAiHeaderValue -Headers $response.Content.Headers -Names @("x-request-id", "request-id")
+            }
+        }
+
+        $responseBody = Normalize-OpenAiResponseText -Text (Get-OpenAiErrorResponseText -Exception $Exception)
+        if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+            try {
+                $parsed = $responseBody | ConvertFrom-Json
+                if ($parsed.error) {
+                    $serviceMessage = [string]$parsed.error.message
+                    $errorCode = [string]$parsed.error.code
+                    $errorType = [string]$parsed.error.type
+                    $errorParam = [string]$parsed.error.param
+                }
+            }
+            catch {
+            }
+        }
+
+        $messageParts = New-Object System.Collections.Generic.List[string]
+        $currentException = $Exception
+        while ($currentException) {
+            if (-not [string]::IsNullOrWhiteSpace($currentException.Message)) {
+                [void]$messageParts.Add([string]$currentException.Message)
+            }
+            $currentException = $currentException.InnerException
+        }
+        foreach ($detail in @($serviceMessage, $errorCode, $errorType, $errorParam, $statusDescription, $responseBody)) {
+            if (-not [string]::IsNullOrWhiteSpace($detail)) {
+                [void]$messageParts.Add([string]$detail)
+            }
+        }
+
+        $combinedMessage = $messageParts -join " "
+
+        if (($statusCode -eq 429) -and ($combinedMessage -match '(?i)insufficient_quota|quota|billing|credit|credits|balance|payment|billing_hard_limit|billing_not_active')) {
+            $category = "Quota"
+            $recoverable = $true
+            $userMessage = Get-OpenAiQuotaUserMessage
+            $nextStep = Get-OpenAiQuotaNextStep
+        }
+        elseif (($statusCode -eq 401) -or ($combinedMessage -match '(?i)unauthorized|invalid api key|incorrect api key|invalid_api_key|authentication')) {
+            $category = "Unauthorized"
+            $recoverable = $true
+            $userMessage = "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project."
+            $nextStep = "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions."
+            $showSetupGuidance = $true
+        }
+        elseif (($statusCode -eq 403) -or ($combinedMessage -match '(?i)permission denied|permission_denied|forbidden|access denied|does not have access|insufficient permissions|not allowed')) {
+            $category = "PermissionDenied"
+            $recoverable = $true
+            $userMessage = "OpenAI rejected the request because this API key or project does not have permission to call Chat Completions."
+            $nextStep = "Check the OpenAI Platform project, model access, and Request permission for Chat Completions, then try again."
+            $showSetupGuidance = $true
+        }
+        elseif (($statusCode -eq 429) -or ($combinedMessage -match '(?i)rate limit|rate_limit|rate_limit_exceeded|too many requests|requests per min|tokens per min|requests per day|tokens per day')) {
+            $category = "RateLimit"
+            $recoverable = $true
+            $userMessage = "OpenAI rate-limited the translation request because too many API requests were sent in a short time (429 Too Many Requests)."
+            $nextStep = "Wait a moment, then retry, or rerun with -TranslationProvider Local."
+        }
+        elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
+            $category = "ServerError"
+            $recoverable = $true
+            $userMessage = ("OpenAI returned a server error ({0})." -f $statusCode)
+            $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+        }
+        elseif ($combinedMessage -match '(?i)timed out|timeout|operation has timed out') {
+            $category = "Timeout"
+            $recoverable = $true
+            $userMessage = "The OpenAI request timed out before translation completed."
+            $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+        }
+        elseif ($combinedMessage -match '(?i)no such host is known|name or service not known|could not resolve|unable to connect|connection.*failed|connection.*closed|network') {
+            $category = "Network"
+            $recoverable = $true
+            $userMessage = "The OpenAI request failed before a response came back from the service."
+            $nextStep = "Check the network connection, then retry or rerun with -TranslationProvider Local."
+        }
+        elseif ($statusCode -gt 0) {
+            if (-not [string]::IsNullOrWhiteSpace($serviceMessage)) {
+                $userMessage = ("OpenAI returned HTTP {0}. {1}" -f $statusCode, $serviceMessage)
+            }
+            else {
+                $userMessage = ("OpenAI returned HTTP {0}." -f $statusCode)
+            }
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($serviceMessage)) {
+            $userMessage = ("The OpenAI request failed. {0}" -f $serviceMessage)
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($category)) {
+        $category = "Unknown"
+    }
+
+    $categoryLabel = Get-OpenAiFailureCategoryLabel -Category $category
+    $diagnosticParts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($categoryLabel)) {
+        [void]$diagnosticParts.Add($categoryLabel)
+    }
+    if ($statusCode -gt 0) {
+        if ([string]::IsNullOrWhiteSpace($statusDescription)) {
+            [void]$diagnosticParts.Add(("HTTP {0}" -f $statusCode))
         }
         else {
-            $userMessage = "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project."
+            [void]$diagnosticParts.Add(("HTTP {0} {1}" -f $statusCode, $statusDescription))
         }
-        $nextStep = "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions."
-        $showSetupGuidance = $true
     }
-    elseif (($statusCode -eq 429) -and ($combinedMessage -match '(?i)quota|billing|credit|balance|insufficient_quota')) {
-        $category = "Quota"
-        $recoverable = $true
-        $userMessage = "OpenAI rejected the request because the project appears to be out of quota or blocked by billing."
-        $nextStep = "Check OpenAI project billing and quota, or rerun with -TranslationProvider Local."
+    if (-not [string]::IsNullOrWhiteSpace($errorCode)) {
+        [void]$diagnosticParts.Add(("error.code={0}" -f $errorCode))
     }
-    elseif ($statusCode -eq 429) {
-        $category = "RateLimit"
-        $recoverable = $true
-        $userMessage = "OpenAI rate-limited the translation request (429 Too Many Requests)."
-        $nextStep = "Wait a moment and retry, or rerun with -TranslationProvider Local."
+    if (-not [string]::IsNullOrWhiteSpace($errorType)) {
+        [void]$diagnosticParts.Add(("error.type={0}" -f $errorType))
     }
-    elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
-        $category = "ServerError"
-        $recoverable = $true
-        $userMessage = ("OpenAI returned a server error ({0})." -f $statusCode)
-        $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+    if (-not [string]::IsNullOrWhiteSpace($errorParam)) {
+        [void]$diagnosticParts.Add(("error.param={0}" -f $errorParam))
     }
-    elseif ($combinedMessage -match '(?i)timed out|timeout|operation has timed out') {
-        $category = "Timeout"
-        $recoverable = $true
-        $userMessage = "The OpenAI request timed out before translation completed."
-        $nextStep = "Retry later, or rerun with -TranslationProvider Local."
-    }
-    elseif ($combinedMessage -match '(?i)no such host is known|name or service not known|could not resolve|unable to connect|connection.*failed|connection.*closed|network') {
-        $category = "Network"
-        $recoverable = $true
-        $userMessage = "The OpenAI request failed before a response came back from the service."
-        $nextStep = "Check the network connection, then retry or rerun with -TranslationProvider Local."
-    }
-    elseif ($statusCode -gt 0) {
-        $userMessage = ("OpenAI returned HTTP {0}." -f $statusCode)
+    if (-not [string]::IsNullOrWhiteSpace($requestId)) {
+        [void]$diagnosticParts.Add(("request_id={0}" -f $requestId))
     }
 
     return [PSCustomObject]@{
         Category          = $category
+        CategoryLabel     = $categoryLabel
         Recoverable       = $recoverable
         StatusCode        = $statusCode
+        StatusDescription = $statusDescription
         ErrorCode         = $errorCode
+        ErrorType         = $errorType
+        ErrorParam        = $errorParam
+        ServiceMessage    = $serviceMessage
+        ResponseBody      = $responseBody
+        RequestId         = $requestId
         UserMessage       = $userMessage
         NextStep          = $nextStep
+        DiagnosticSummary = ($diagnosticParts -join "; ")
         ShowSetupGuidance = $showSetupGuidance
+    }
+}
+
+function Get-OpenAiProviderFailureText {
+    param([PSCustomObject]$FailureDetails)
+
+    if ($null -eq $FailureDetails) {
+        return "OpenAI failed"
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($FailureDetails.CategoryLabel)) {
+        [void]$parts.Add($FailureDetails.CategoryLabel)
+    }
+    if ($FailureDetails.StatusCode -gt 0) {
+        [void]$parts.Add(("HTTP {0}" -f $FailureDetails.StatusCode))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FailureDetails.ErrorCode)) {
+        [void]$parts.Add(("code={0}" -f $FailureDetails.ErrorCode))
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($FailureDetails.ErrorType)) {
+        [void]$parts.Add(("type={0}" -f $FailureDetails.ErrorType))
+    }
+
+    if ($parts.Count -eq 0) {
+        return "OpenAI failed"
+    }
+
+    return ("OpenAI failed ({0})" -f ($parts -join ", "))
+}
+
+function Write-OpenAiFailureDiagnostics {
+    param(
+        [string]$TargetLanguage,
+        [PSCustomObject]$FailureDetails
+    )
+
+    if ($null -eq $FailureDetails) {
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FailureDetails.DiagnosticSummary)) {
+        Write-Log ("OpenAI failure details for '{0}': {1}" -f $TargetLanguage, $FailureDetails.DiagnosticSummary) "WARN"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FailureDetails.ServiceMessage)) {
+        Write-Log ("OpenAI service message for '{0}': {1}" -f $TargetLanguage, $FailureDetails.ServiceMessage) "WARN"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FailureDetails.ResponseBody)) {
+        $bodyLine = ("OpenAI raw response body for '{0}': {1}" -f $TargetLanguage, $FailureDetails.ResponseBody)
+        if ($bodyLine.Length -le 700 -or -not $script:CurrentLogFile) {
+            Write-Log $bodyLine "WARN"
+        }
+        else {
+            Write-Log ("OpenAI raw response body for '{0}' was captured in script_run.log." -f $TargetLanguage) "WARN"
+            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            Add-Content -LiteralPath $script:CurrentLogFile -Value ("[{0}] [WARN] {1}" -f $timestamp, $bodyLine)
+        }
     }
 }
 
@@ -3097,7 +3357,13 @@ function New-OpenAiTranslationException {
         [string]$UserMessage,
         [string]$NextStep,
         [int]$StatusCode = 0,
+        [string]$StatusDescription = "",
         [string]$ErrorCode = "",
+        [string]$ErrorType = "",
+        [string]$ErrorParam = "",
+        [string]$ServiceMessage = "",
+        [string]$ResponseBody = "",
+        [string]$RequestId = "",
         [bool]$Recoverable = $false,
         [bool]$ShowSetupGuidance = $false,
         [System.Exception]$InnerException = $null
@@ -3114,7 +3380,13 @@ function New-OpenAiTranslationException {
     $exception.Data["OpenAiFailureCategory"] = $FailureCategory
     $exception.Data["OpenAiRecoverable"] = $Recoverable
     $exception.Data["OpenAiStatusCode"] = $StatusCode
+    $exception.Data["OpenAiStatusDescription"] = $StatusDescription
     $exception.Data["OpenAiErrorCode"] = $ErrorCode
+    $exception.Data["OpenAiErrorType"] = $ErrorType
+    $exception.Data["OpenAiErrorParam"] = $ErrorParam
+    $exception.Data["OpenAiServiceMessage"] = $ServiceMessage
+    $exception.Data["OpenAiResponseBody"] = $ResponseBody
+    $exception.Data["OpenAiRequestId"] = $RequestId
     $exception.Data["OpenAiUserMessage"] = $UserMessage
     $exception.Data["OpenAiNextStep"] = $NextStep
     $exception.Data["OpenAiShowSetupGuidance"] = $ShowSetupGuidance
@@ -3866,41 +4138,80 @@ function Invoke-OpenAiSegmentTranslation {
                 $translatedText = ("[MM_TEST_OPENAI_SUCCESS:{0}] {1}" -f $TargetLanguage, $text).Trim()
             }
             elseif ($testMode -eq "unauthorized") {
+                $responseBody = '{"error":{"message":"Incorrect API key provided: sk-test-invalid","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}'
                 throw (New-OpenAiTranslationException `
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "Unauthorized" `
                         -UserMessage "OpenAI rejected the request with 401 Unauthorized. The API key is missing, invalid, or not usable for this project." `
                         -NextStep "Check OPENAI_API_KEY, make sure the key belongs to the intended OpenAI Platform project, and turn on Request permission for Chat Completions." `
                         -StatusCode 401 `
+                        -StatusDescription "Unauthorized" `
+                        -ErrorCode "invalid_api_key" `
+                        -ErrorType "invalid_request_error" `
+                        -ServiceMessage "Incorrect API key provided: sk-test-invalid" `
+                        -ResponseBody $responseBody `
+                        -Recoverable:$true `
+                        -ShowSetupGuidance:$true)
+            }
+            elseif ($testMode -eq "permission_denied") {
+                $responseBody = '{"error":{"message":"You do not have permission to access Chat Completions for this project.","type":"invalid_request_error","param":"model","code":"permission_denied"}}'
+                throw (New-OpenAiTranslationException `
+                        -TargetLanguage $TargetLanguage `
+                        -FailureCategory "PermissionDenied" `
+                        -UserMessage "OpenAI rejected the request because this API key or project does not have permission to call Chat Completions." `
+                        -NextStep "Check the OpenAI Platform project, model access, and Request permission for Chat Completions, then try again." `
+                        -StatusCode 403 `
+                        -StatusDescription "Forbidden" `
+                        -ErrorCode "permission_denied" `
+                        -ErrorType "invalid_request_error" `
+                        -ErrorParam "model" `
+                        -ServiceMessage "You do not have permission to access Chat Completions for this project." `
+                        -ResponseBody $responseBody `
                         -Recoverable:$true `
                         -ShowSetupGuidance:$true)
             }
             elseif ($testMode -eq "rate_limit") {
+                $responseBody = '{"error":{"message":"Rate limit reached for requests per min. Please try again in 20s.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}'
                 throw (New-OpenAiTranslationException `
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "RateLimit" `
-                        -UserMessage "OpenAI rate-limited the translation request (429 Too Many Requests)." `
-                        -NextStep "Wait a moment and retry, or rerun with -TranslationProvider Local." `
+                        -UserMessage "OpenAI rate-limited the translation request because too many API requests were sent in a short time (429 Too Many Requests)." `
+                        -NextStep "Wait a moment, then retry, or rerun with -TranslationProvider Local." `
                         -StatusCode 429 `
+                        -StatusDescription "Too Many Requests" `
+                        -ErrorCode "rate_limit_exceeded" `
+                        -ErrorType "rate_limit_error" `
+                        -ServiceMessage "Rate limit reached for requests per min. Please try again in 20s." `
+                        -ResponseBody $responseBody `
                         -Recoverable:$true)
             }
             elseif ($testMode -eq "quota") {
+                $responseBody = '{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","param":null,"code":"insufficient_quota"}}'
                 throw (New-OpenAiTranslationException `
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "Quota" `
-                        -UserMessage "OpenAI rejected the request because the project appears to be out of quota or blocked by billing." `
-                        -NextStep "Check OpenAI project billing and quota, or rerun with -TranslationProvider Local." `
+                        -UserMessage (Get-OpenAiQuotaUserMessage) `
+                        -NextStep (Get-OpenAiQuotaNextStep) `
                         -StatusCode 429 `
+                        -StatusDescription "Too Many Requests" `
                         -ErrorCode "insufficient_quota" `
+                        -ErrorType "insufficient_quota" `
+                        -ServiceMessage "You exceeded your current quota, please check your plan and billing details." `
+                        -ResponseBody $responseBody `
                         -Recoverable:$true)
             }
             elseif ($testMode -eq "server_error") {
+                $responseBody = '{"error":{"message":"The server had an error while processing your request.","type":"server_error","param":null,"code":null}}'
                 throw (New-OpenAiTranslationException `
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "ServerError" `
                         -UserMessage "OpenAI returned a server error (500)." `
                         -NextStep "Retry later, or rerun with -TranslationProvider Local." `
                         -StatusCode 500 `
+                        -StatusDescription "Internal Server Error" `
+                        -ErrorType "server_error" `
+                        -ServiceMessage "The server had an error while processing your request." `
+                        -ResponseBody $responseBody `
                         -Recoverable:$true)
             }
             elseif ($testMode -eq "timeout") {
@@ -3927,6 +4238,7 @@ function Invoke-OpenAiSegmentTranslation {
         catch {
             $failureDetails = Get-OpenAiFailureDetails -Exception $_.Exception
             if ($failureDetails) {
+                Write-OpenAiFailureDiagnostics -TargetLanguage $TargetLanguage -FailureDetails $failureDetails
                 if ($_.Exception.Data -and $_.Exception.Data.Contains("OpenAiFailureCategory")) {
                     throw $_.Exception
                 }
@@ -3937,7 +4249,13 @@ function Invoke-OpenAiSegmentTranslation {
                         -UserMessage $failureDetails.UserMessage `
                         -NextStep $failureDetails.NextStep `
                         -StatusCode $failureDetails.StatusCode `
+                        -StatusDescription $failureDetails.StatusDescription `
                         -ErrorCode $failureDetails.ErrorCode `
+                        -ErrorType $failureDetails.ErrorType `
+                        -ErrorParam $failureDetails.ErrorParam `
+                        -ServiceMessage $failureDetails.ServiceMessage `
+                        -ResponseBody $failureDetails.ResponseBody `
+                        -RequestId $failureDetails.RequestId `
                         -Recoverable:$failureDetails.Recoverable `
                         -ShowSetupGuidance:$failureDetails.ShowSetupGuidance `
                         -InnerException $_.Exception)
@@ -4658,6 +4976,7 @@ function Process-Audio {
             catch {
                 $failureDetails = if ($providerUsed -eq "OpenAI") { Get-OpenAiFailureDetails -Exception $_.Exception } else { $null }
                 if ($providerUsed -eq "OpenAI" -and $failureDetails -and $failureDetails.Recoverable) {
+                    [void]$translationProviderDetails.Add(("{0}={1}" -f $targetLanguage, (Get-OpenAiProviderFailureText -FailureDetails $failureDetails)))
                     if ($activeTranslationMode -eq "Auto") {
                         Write-Log ("OpenAI translation for '{0}' hit a recoverable problem. {1}" -f $targetLanguage, $failureDetails.UserMessage) "WARN"
                         $activeTranslationMode = "Local"
@@ -4766,11 +5085,11 @@ function Process-Audio {
 
     $rawPresent = if ($DoCopyRaw) { "Yes" } else { "No" }
     $missingTranslationTargets = @($normalizedTargets | Where-Object { $completedTargets -notcontains $_ })
-    $translationProviderText = if ($completedTargets.Count -eq 0) {
-        "none"
+    $translationProviderText = if ($translationProviderDetails.Count -gt 0) {
+        ($translationProviderDetails | Select-Object -Unique) -join "; "
     }
     else {
-        $translationProviderDetails -join "; "
+        "none"
     }
     $translationStatusParts = New-Object System.Collections.Generic.List[string]
     if ($normalizedTargets.Count -eq 0) {
@@ -4799,6 +5118,9 @@ function Process-Audio {
 
     if ($packageStatus -eq "PARTIAL_SUCCESS") {
         Write-Log ("Package marked as partial success. Translation status: {0}" -f $translationStatusText) "WARN"
+        if (-not [string]::IsNullOrWhiteSpace($translationProviderText) -and $translationProviderText -ne "none") {
+            Write-Log ("Translation path used: {0}" -f $translationProviderText) "WARN"
+        }
         if (-not [string]::IsNullOrWhiteSpace($translationNotesText)) {
             Write-Log ("Translation notes: {0}" -f $translationNotesText) "WARN"
         }
