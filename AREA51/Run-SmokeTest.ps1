@@ -3,14 +3,16 @@ param(
     [string]$VideoPath,
     [string]$RemoteSampleUrl = "https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm",
     [double]$FrameIntervalSeconds = 0.5,
-    [string]$WhisperModel = "base.en",
+    [string]$WhisperModel = "base",
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawVideo,
     [switch]$SkipEstimate,
     [switch]$AllMedia,
     [string]$TranslateTo,
-    [ValidateSet("Auto", "OpenAI", "Local")]
-    [string]$TranslationProvider = "Auto",
+    [ValidateSet("Local", "AI")]
+    [string]$ProcessingMode = "Local",
+    [ValidateSet("Private", "Public")]
+    [string]$OpenAiProject = "Private",
     [switch]$IncludeComments,
     [switch]$KeepTestOutput
 )
@@ -105,6 +107,11 @@ elseif ($AllMedia) {
 else {
     Write-Host ("Video under test:       {0}" -f $selectedFiles[0].FullName) -ForegroundColor Cyan
 }
+Write-Host ("Processing mode:        {0}" -f $ProcessingMode) -ForegroundColor Cyan
+if ($ProcessingMode -eq "AI") {
+    Write-Host ("AI project mode:        {0}" -f $OpenAiProject) -ForegroundColor Cyan
+}
+Write-Host ("Translation targets:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($TranslateTo)) { "none" } else { $TranslateTo })) -ForegroundColor Cyan
 
 $args = New-Object System.Collections.Generic.List[string]
 [void]$args.Add("-NoProfile")
@@ -128,12 +135,17 @@ else {
 [void]$args.Add("-HeartbeatSeconds")
 [void]$args.Add($HeartbeatSeconds.ToString())
 [void]$args.Add("-NoPrompt")
+[void]$args.Add("-ProcessingMode")
+[void]$args.Add($ProcessingMode)
+
+if ($ProcessingMode -eq "AI") {
+    [void]$args.Add("-OpenAiProject")
+    [void]$args.Add($OpenAiProject)
+}
 
 if (-not [string]::IsNullOrWhiteSpace($TranslateTo)) {
     [void]$args.Add("-TranslateTo")
     [void]$args.Add($TranslateTo)
-    [void]$args.Add("-TranslationProvider")
-    [void]$args.Add($TranslationProvider)
 }
 
 if ($CopyRawVideo) {

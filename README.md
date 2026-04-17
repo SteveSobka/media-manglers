@@ -24,7 +24,7 @@ The same idea expanded into spoken-content workflows. Sometimes the pictures mat
 
 YouTube comments turned out to be part of the same workflow too. They are often useful context, but reviewing them in the browser is awkward. Exporting them to text or JSON makes them much easier to search, review, and include in an AI workflow.
 
-Interactive YouTube runs now ask `If comments are available for a YouTube source, save them in the package too? (y/N):`. Pressing Enter keeps comments on by default. Type `N` or `No` if you want to skip them.
+Interactive YouTube runs now ask `If comments are available for a YouTube source, save them in the package too? (Y/n):`. Pressing Enter keeps comments on by default. Type `N` or `No` if you want to skip them.
 
 ## A Note On How It Was Built
 
@@ -94,63 +94,75 @@ What to pick:
 The apps are compiled as Windows executables, but they still rely on a few external tools:
 
 - `FFmpeg` for media processing
-- Python plus `openai-whisper` for transcription
+- Python plus `openai-whisper` for local transcription
 - `yt-dlp` for YouTube and other supported remote downloads
 
-Optional translation setup:
+The main operator choice is now `ProcessingMode`:
 
-- `OPENAI_API_KEY_PRIVATE` for the default/safest OpenAI translation path
-- `OPENAI_API_KEY_PUBLIC` plus `-OpenAiProject Public` if you intentionally use a separate Public OpenAI project
-- `OPENAI_API_KEY` still works as a legacy Private fallback for older setups
-- `argostranslate` if you want the free local fallback for non-English translation targets
+- `Local`: local transcription plus local translation
+- `AI`: an OpenAI-assisted path that changes slightly depending on `OpenAiProject`
 
-The apps will explain what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things.
+Mode details:
+
+- `AI Private = OpenAI transcription + OpenAI translation`
+- `AI Public = local transcription + OpenAI translation on the Public/shared project`
+
+That difference matters. Public AI mode does not behave the same way as Private AI mode, and it does not imply that source audio is always uploaded to OpenAI.
+
+For Local mode you may also need:
+
+- `argostranslate` for non-English local translation targets
+- matching Argos language packages for the source and target languages you request
+
+The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
 ## OpenAI Integration
 
-OpenAI translation is optional. Media Manglers can still work without OpenAI, and `Auto` or `Local` can stay on local tooling when those dependencies are installed.
+OpenAI is optional. Local mode keeps both transcription and translation on your machine once the local dependencies are installed.
 
-ChatGPT subscriptions and OpenAI API billing are separate. Media Manglers uses the OpenAI API, so OpenAI translation needs API billing/credits on the OpenAI Platform project tied to the key you use.
+ChatGPT subscriptions and OpenAI API billing are separate. Media Manglers uses the OpenAI API, so AI mode needs API billing/credits on the OpenAI Platform project tied to the key you use.
 
-Current OpenAI path in code:
+Current OpenAI paths in code:
 
-- Media Manglers currently sends translation requests to `POST /v1/chat/completions`.
-- It does not use the Responses API for translation today.
+- AI translation uses `POST /v1/chat/completions`
+- AI Private transcription uses `POST /v1/audio/transcriptions`
 
 ### Private/Public OpenAI Project Guidance
 
 If you want a Private/Public split, create two separate OpenAI Platform projects:
 
 - one Private project
-- one Public project
+- one Public/shared project
 
 Important rules:
 
 - Sharing behavior is controlled by the OpenAI project configuration, not by the environment variable name alone.
 - Create one API key per project.
 - Recommended environment variable names are `OPENAI_API_KEY_PRIVATE` and `OPENAI_API_KEY_PUBLIC`.
-- Private is the default and safest mode.
-- Public only happens when you explicitly run `-OpenAiProject Public`.
+- Private is the default and safest AI mode.
+- Public only happens when you explicitly run `-ProcessingMode AI -OpenAiProject Public`.
 - `OPENAI_API_KEY` is still accepted as a legacy Private fallback for older setups.
 - The scripts cannot look at a pasted key and magically tell whether it is Private or Public.
 - Use Private for confidential, sensitive, internal, client, or proprietary media.
 - Use Public only for media you are allowed to share with OpenAI.
-- Public mode may qualify for complimentary shared-traffic tokens on eligible models, but it is not unlimited free usage.
+- Public/shared complimentary tokens only apply when the OpenAI project is configured for shared traffic and the request uses an eligible model. They are not unlimited free usage.
+- If a request would cross the remaining complimentary daily quota, OpenAI bills the whole request normally.
 - If you are unsure, use Private.
 
 ### How To Create An OpenAI API Key
 
-If you want the OpenAI translation path, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for Media Manglers. You do not need the ChatGPT consumer app for this.
+If you want AI mode, create a new secret key in your OpenAI Platform account on the [API Keys page](https://platform.openai.com/api-keys). That is the right place for Media Manglers. You do not need the ChatGPT consumer app for this.
 
-Recommended setup for normal local use:
+Recommended setup for normal desktop use:
 
 - Create the key in your OpenAI Platform account.
 - Choose `Owned by you`.
 - Put Media Manglers in a dedicated project.
 - Choose `Restricted`.
-- In the current OpenAI Platform UI, turn on `Request` for `Chat Completions` (`/v1/chat/completions`).
+- Turn on `Request` for `Chat Completions` (`/v1/chat/completions`) because AI translation uses it.
+- For AI Private, also turn on `Request` for audio transcription access (`/v1/audio/transcriptions`) because Private AI mode sends source audio to OpenAI for transcription.
 - Leave unrelated permissions like Images, Embeddings, Files, Fine-tuning, Vector Stores, Assistants, Batches, and similar extras off or set to `None` unless you actually use them.
-- `Read Only` is not enough because Media Manglers sends `POST /v1/chat/completions` requests for translation.
+- `Read Only` is not enough because Media Manglers sends `POST` requests for transcription and translation.
 - Service accounts are mainly for shared automation, servers, CI, or other non-personal bot identities, not normal desktop use.
 - OpenAI API usage may incur charges.
 - ChatGPT subscriptions and OpenAI API billing are separate.
@@ -170,7 +182,7 @@ $env:OPENAI_API_KEY_PRIVATE="sk-..."
 
 ```powershell
 $env:OPENAI_API_KEY_PUBLIC="sk-..."
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -TranslationProvider OpenAI -OpenAiProject Public
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -TranslateTo en -ProcessingMode AI -OpenAiProject Public
 ```
 
 - Legacy fallback for older setups:
@@ -203,37 +215,30 @@ Official OpenAI references:
 - [Managing projects in the API platform](https://help.openai.com/en/articles/9186755-managing-your-work-in-the-api-platform-with-projects/)
 - [Assign API key permissions](https://help.openai.com/en/articles/8867743-assign-api-key-permissions)
 
-## Translation Options
+## Mode Overview
 
-Both apps work the same way:
+Both apps now present the same two main choices:
 
-1. Build the original-language transcript from the source audio first.
-2. Optionally create translated transcript outputs from that original spoken source.
+1. `Local mode`
+2. `AI mode`
 
-That matters most for remote video. If you are processing, say, a German YouTube video, Media Manglers is meant to work from the original German speech instead of trusting a weak English auto-track or platform-generated translated captions.
+Both apps still build from the source audio first. That matters most for remote video. If you are processing a German YouTube video, Media Manglers is meant to work from the original German speech instead of trusting a weak English auto-track or platform-generated translated captions.
 
 For YouTube links, `Video Mangler` now probes the available remote audio-track metadata before the final download when the provider exposes it. If multiple spoken-language tracks are available, interactive runs offer a clean track picker and recommend the original/source spoken audio when it can be identified. `-NoPrompt` runs try to lock onto that original/source track automatically and log a best-effort warning when YouTube metadata does not clearly confirm it.
 
-Provider choices:
+Mode behavior in plain English:
 
-- `Auto`: use the best available option for each requested language
-- `OpenAI`: best quality when configured with an OpenAI Platform API key
-- `Local`: free fallback using local tools on your PC
+- `Local mode`: local transcription plus local translation
+- `AI mode` with `Private`: OpenAI transcription plus OpenAI translation
+- `AI mode` with `Public`: local transcription plus OpenAI translation on the Public/shared project
 
-Local behavior:
-
-- English translation can use Whisper locally
-- Other targets can use Argos Translate when the needed language packages are installed
-
-OpenAI is optional, not required.
-
-If OpenAI is not configured, `Auto` can still use the local path when the local dependencies are installed.
+Local mode does not depend on OpenAI. If Local mode is missing something, the apps explain what local tool or package is missing and stop safely instead of silently switching to OpenAI.
 
 ## Privacy And Local Processing
 
-- Local transcription runs on your machine.
-- Local translation stays on your machine once the local dependencies are installed.
-- OpenAI translation sends transcript text to the OpenAI API for translation.
+- Local mode keeps transcription and translation on your machine once the local dependencies are installed.
+- AI Private sends source audio plus transcript/translation content to OpenAI because it uses OpenAI for both transcription and translation.
+- AI Public keeps transcription local and only sends transcript/translation content to the Public/shared OpenAI project.
 - Remote download sources obviously depend on the site you point the app at.
 
 ## Example Inputs
@@ -248,6 +253,44 @@ Audio examples:
 - LibriVox page: `https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2`
 - Direct LibriVox MP3: `https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3`
 - Multilingual sample MP3: `https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3`
+
+## Command Examples
+
+Video / Local:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode Local
+```
+
+Video / AI Private:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode AI -OpenAiProject Private
+```
+
+Video / AI Public:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo es -ProcessingMode AI -OpenAiProject Public
+```
+
+Audio / Local:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode Local
+```
+
+Audio / AI Private:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode AI -OpenAiProject Private
+```
+
+Audio / AI Public:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputPath '.\test_audio\gettysburg_address.mp3' -TranslateTo es -ProcessingMode AI -OpenAiProject Public
+```
 
 ## Documentation
 

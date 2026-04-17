@@ -9,8 +9,10 @@ param(
     [string]$WhisperModel = "base.en",
     [string]$Language = "",
     [string]$TranslateTo = "",
+    [ValidateSet("Local", "AI")]
+    [string]$ProcessingMode = "",
     [ValidateSet("Auto", "OpenAI", "Local")]
-    [string]$TranslationProvider = "Auto",
+    [string]$TranslationProvider = "",
     [string]$OpenAiModel = "gpt-5-mini",
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
@@ -32,6 +34,9 @@ $ErrorActionPreference = "Stop"
 $script:CurrentLogFile = $null
 $script:AppName = "Video Mangler"
 $script:FallbackAppVersion = "0.5.0"
+$script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
+$script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
+$script:OpenAiTranscriptionModel = "whisper-1"
 $script:SessionOpenAiApiKey = $null
 $script:OpenAiTestModeLogged = $false
 
@@ -1974,9 +1979,12 @@ function New-CodexReadme {
         [string]$RawPresent,
         [string]$AudioPresent,
         [double]$FrameIntervalSeconds,
+        [string]$ProcessingModeSummary,
+        [string]$OpenAiProjectSummary,
+        [string]$TranscriptionPathDetails,
         [string]$DetectedLanguage,
         [string[]]$TranslationTargets,
-        [string]$TranslationProviderDetails,
+        [string]$TranslationPathDetails,
         [string]$CommentsSummary,
         [string]$RemoteAudioTrackSummary,
         [string]$PackageStatus = "SUCCESS",
@@ -2018,11 +2026,14 @@ Notes:
 - Frames folder: $framesFolderName
 - Raw video present: $RawPresent
 - Audio present in source: $AudioPresent
+- Processing mode used: $(if ([string]::IsNullOrWhiteSpace($ProcessingModeSummary)) { "Local" } else { $ProcessingModeSummary })
+- AI project mode: $(if ([string]::IsNullOrWhiteSpace($OpenAiProjectSummary)) { "not applicable (Local mode)" } else { $OpenAiProjectSummary })
+- Transcription path used: $(if ([string]::IsNullOrWhiteSpace($TranscriptionPathDetails)) { "none" } else { $TranscriptionPathDetails })
 - Detected source language: $(if ([string]::IsNullOrWhiteSpace($DetectedLanguage)) { "not available" } else { $DetectedLanguage })
 - Remote audio track selected: $(if ([string]::IsNullOrWhiteSpace($RemoteAudioTrackSummary)) { "not applicable (local source or provider metadata unavailable)" } else { $RemoteAudioTrackSummary })
 - Translation targets: $(if ($TranslationTargets -and $TranslationTargets.Count -gt 0) { $TranslationTargets -join ", " } else { "none" })
 - Translation status: $(if ([string]::IsNullOrWhiteSpace($TranslationStatus)) { "not requested" } else { $TranslationStatus })
-- Translation path used: $(if ([string]::IsNullOrWhiteSpace($TranslationProviderDetails)) { "none" } else { $TranslationProviderDetails })
+- Translation path used: $(if ([string]::IsNullOrWhiteSpace($TranslationPathDetails)) { "none" } else { $TranslationPathDetails })
 - Translation notes: $(if ([string]::IsNullOrWhiteSpace($TranslationNotes)) { "none" } else { $TranslationNotes })
 - Next steps: $(if ([string]::IsNullOrWhiteSpace($NextSteps)) { "none" } else { $NextSteps })
 - Comments: $(if ([string]::IsNullOrWhiteSpace($CommentsSummary)) { "not included" } else { $CommentsSummary })
@@ -2393,6 +2404,224 @@ function Get-OpenAiKeyPreference {
     }
 }
 
+function Get-InteractiveProcessingMode {
+    param([string]$DefaultValue = "Local")
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Processing mode" -ForegroundColor Cyan
+        Write-Host "Choose the full workflow you want Video Mangler to use." -ForegroundColor Cyan
+        Write-Host "  1. Local   transcription and translation stay on this PC" -ForegroundColor Cyan
+        Write-Host "  2. AI      uses OpenAI where the selected AI project mode allows it" -ForegroundColor Cyan
+
+        $choice = Read-Host "Press Enter for Local, or type 1 or 2"
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            return $DefaultValue
+        }
+
+        switch ($choice.Trim()) {
+            "1" { return "Local" }
+            "2" { return "AI" }
+            default { Write-Host "Please enter 1, 2, or just press Enter for Local." -ForegroundColor Yellow }
+        }
+    }
+}
+
+function Get-InteractiveOpenAiProjectMode {
+    param([string]$DefaultValue = "Private")
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "AI project mode" -ForegroundColor Cyan
+        Write-Host "  1. Private  OpenAI transcription + OpenAI translation (default)" -ForegroundColor Cyan
+        Write-Host "  2. Public   local transcription + OpenAI translation on the shared project" -ForegroundColor Cyan
+
+        $choice = Read-Host "Press Enter for Private, or type 1 or 2"
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            return $DefaultValue
+        }
+
+        switch ($choice.Trim()) {
+            "1" { return "Private" }
+            "2" { return "Public" }
+            default { Write-Host "Please enter 1, 2, or just press Enter for Private." -ForegroundColor Yellow }
+        }
+    }
+}
+
+function Get-ProcessingModeSummary {
+    param(
+        [string]$EffectiveMode,
+        [string]$ProjectMode
+    )
+
+    if ($EffectiveMode -ne "AI") {
+        return "Local"
+    }
+
+    if ($ProjectMode -eq "Public") {
+        return "AI Public"
+    }
+
+    return "AI Private"
+}
+
+function Get-TranscriptionProviderDetails {
+    param(
+        [string]$EffectiveMode,
+        [string]$ProjectMode
+    )
+
+    if ($EffectiveMode -ne "AI") {
+        return "Local (Whisper transcription)"
+    }
+
+    if ($ProjectMode -eq "Public") {
+        return "Local (Whisper transcription, AI Public keeps audio on this PC)"
+    }
+
+    return "OpenAI (whisper-1 transcription)"
+}
+
+function Get-TranslationModeSummary {
+    param(
+        [string]$EffectiveMode,
+        [string]$ProjectMode,
+        [string]$Model,
+        [bool]$TranslationRequested = $true
+    )
+
+    if (-not $TranslationRequested) {
+        return "not requested"
+    }
+
+    if ($EffectiveMode -eq "AI") {
+        $projectLabel = if ([string]::IsNullOrWhiteSpace($ProjectMode)) { "Private" } else { $ProjectMode }
+        if ([string]::IsNullOrWhiteSpace($Model)) {
+            return ("OpenAI translation ({0} project)" -f $projectLabel)
+        }
+
+        return ("OpenAI translation via {0} ({1} project)" -f $Model, $projectLabel)
+    }
+
+    return "Local translation on this PC"
+}
+
+function Get-TranslationModeForProcessingMode {
+    param([string]$EffectiveMode)
+
+    if ($EffectiveMode -eq "AI") {
+        return "OpenAI"
+    }
+
+    return "Local"
+}
+
+function Resolve-ProcessingModeRequest {
+    param(
+        [string]$RequestedMode = "",
+        [switch]$WasExplicitlySet,
+        [string]$RequestedLegacyTranslationProvider = "",
+        [switch]$LegacyProviderWasExplicitlySet,
+        [switch]$InteractiveMode
+    )
+
+    $requestedModeValue = if ([string]::IsNullOrWhiteSpace($RequestedMode)) {
+        ""
+    }
+    else {
+        $RequestedMode.Trim()
+    }
+
+    $legacyProviderValue = if ([string]::IsNullOrWhiteSpace($RequestedLegacyTranslationProvider)) {
+        ""
+    }
+    else {
+        $RequestedLegacyTranslationProvider.Trim()
+    }
+
+    $selectionSource = "default"
+    $effectiveMode = $requestedModeValue
+    $resolutionNotes = New-Object System.Collections.Generic.List[string]
+
+    if ($WasExplicitlySet) {
+        $selectionSource = "explicit"
+        if ([string]::IsNullOrWhiteSpace($effectiveMode)) {
+            $effectiveMode = "Local"
+        }
+
+        if ($LegacyProviderWasExplicitlySet) {
+            $legacyMappedMode = switch ($legacyProviderValue) {
+                "Local"  { "Local" }
+                "OpenAI" { "AI" }
+                "Auto"   { if (Test-OpenAiTranslationAvailable) { "AI" } else { "Local" } }
+                default  { "" }
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($legacyMappedMode) -and $legacyMappedMode -ne $effectiveMode) {
+                [void]$resolutionNotes.Add(("ProcessingMode {0} overrides legacy TranslationProvider {1}." -f $effectiveMode, $legacyProviderValue))
+            }
+        }
+    }
+    elseif ($LegacyProviderWasExplicitlySet) {
+        $selectionSource = "legacy TranslationProvider"
+        switch ($legacyProviderValue) {
+            "Local" {
+                $effectiveMode = "Local"
+                [void]$resolutionNotes.Add("Legacy TranslationProvider Local maps to ProcessingMode Local.")
+            }
+            "OpenAI" {
+                $effectiveMode = "AI"
+                [void]$resolutionNotes.Add("Legacy TranslationProvider OpenAI maps to ProcessingMode AI.")
+            }
+            "Auto" {
+                if (Test-OpenAiTranslationAvailable) {
+                    $effectiveMode = "AI"
+                    [void]$resolutionNotes.Add("Legacy TranslationProvider Auto mapped to ProcessingMode AI because an OpenAI key is available.")
+                }
+                else {
+                    $effectiveMode = "Local"
+                    [void]$resolutionNotes.Add("Legacy TranslationProvider Auto mapped to ProcessingMode Local because no OpenAI key is available.")
+                }
+            }
+            default {
+                $effectiveMode = "Local"
+                [void]$resolutionNotes.Add(("Unknown legacy TranslationProvider value '{0}' was treated as Local." -f $legacyProviderValue))
+            }
+        }
+    }
+    elseif ($InteractiveMode) {
+        $effectiveMode = Get-InteractiveProcessingMode -DefaultValue "Local"
+        $selectionSource = "interactive"
+    }
+    else {
+        $effectiveMode = "Local"
+        [void]$resolutionNotes.Add("Processing mode defaulted to Local because no explicit mode was provided.")
+    }
+
+    return [PSCustomObject]@{
+        RequestedMode        = $requestedModeValue
+        EffectiveMode        = $effectiveMode
+        SelectionSource      = $selectionSource
+        ResolutionNote       = ($resolutionNotes -join " ")
+        RequestedLegacyValue = $legacyProviderValue
+    }
+}
+
+function Resolve-EffectiveOpenAiTranslationModel {
+    param([switch]$WasExplicitlySet)
+
+    if ($WasExplicitlySet -and -not [string]::IsNullOrWhiteSpace($OpenAiModel)) {
+        return $OpenAiModel.Trim()
+    }
+
+    if ($OpenAiProject -eq "Public") {
+        return $script:OpenAiPublicTranslationDefaultModel
+    }
+
+    return $script:OpenAiPrivateTranslationDefaultModel
+}
+
 function Find-EnvironmentVariableValue {
     param([string]$Name)
 
@@ -2419,12 +2648,14 @@ function Get-OpenAiProjectModeSummary {
 }
 
 function Get-OpenAiKeyRequirementText {
+    param([string]$ProviderLabel = "OpenAI translation")
+
     $keyPreference = Get-OpenAiKeyPreference
     if ($keyPreference.AllowLegacyFallback) {
-        return ("OpenAI translation cannot continue until {0} is set, or legacy {1} is available." -f $keyPreference.PrimaryVariable, $keyPreference.LegacyVariable)
+        return ("{0} cannot continue until {1} is set, or legacy {2} is available." -f $ProviderLabel, $keyPreference.PrimaryVariable, $keyPreference.LegacyVariable)
     }
 
-    return ("OpenAI translation cannot continue until {0} is set. Public mode requires an explicit Public project key." -f $keyPreference.PrimaryVariable)
+    return ("{0} cannot continue until {1} is set. Public mode requires an explicit Public project key." -f $ProviderLabel, $keyPreference.PrimaryVariable)
 }
 
 function Get-OpenAiKeyTroubleshootingText {
@@ -2445,7 +2676,7 @@ function Get-OpenAiSetupInstructionLines {
         ("Current key profile: {0}" -f (Get-OpenAiProjectModeSummary)),
         ("Preferred environment variable: {0}" -f $keyPreference.PrimaryVariable),
         "",
-        "To use OpenAI translation, create a key in your OpenAI Platform account:",
+        ("To use {0}, create a key in your OpenAI Platform account:" -f $ProviderLabel),
         "https://platform.openai.com/api-keys",
         "",
         "Recommended setup for normal use:",
@@ -2458,7 +2689,7 @@ function Get-OpenAiSetupInstructionLines {
         "",
         "Service accounts are mainly for shared or server automation, not normal personal desktop use.",
         "ChatGPT subscriptions and OpenAI API billing are separate.",
-        "If API billing or credits are missing, OpenAI translation will not run.",
+        ("If API billing or credits are missing, {0} will not run." -f $ProviderLabel.ToLowerInvariant()),
         "OpenAI API usage may cost money.",
         "If you are unsure, use Private."
     )
@@ -2483,13 +2714,13 @@ function Get-OpenAiSetupInstructionLines {
     }
     else {
         if ($keyPreference.ProjectMode -eq "Public") {
-            $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI -OpenAiProject Public."
+            $lines += "Then open a new PowerShell window and rerun with -ProcessingMode AI -OpenAiProject Public."
         }
         else {
-            $lines += "Then open a new PowerShell window and rerun with -TranslationProvider OpenAI."
+            $lines += "Then open a new PowerShell window and rerun with -ProcessingMode AI -OpenAiProject Private."
         }
         $lines += "Do not hardcode the key or commit it to GitHub."
-        $lines += "If you do not want OpenAI, rerun with -TranslationProvider Auto or Local."
+        $lines += "If you do not want OpenAI, rerun with -ProcessingMode Local."
     }
 
     return $lines
@@ -2727,7 +2958,7 @@ function Get-OpenAiQuotaUserMessage {
 }
 
 function Get-OpenAiQuotaNextStep {
-    return "After API billing is active, retry the translation, or rerun with -TranslationProvider Local to keep going without OpenAI."
+    return "After API billing is active, retry the translation, or rerun with -ProcessingMode Local to keep everything on this PC."
 }
 
 function Get-OpenAiFailureCategoryLabel {
@@ -2891,7 +3122,7 @@ function Get-OpenAiFailureDetails {
     $category = ""
     $recoverable = $false
     $userMessage = if ([string]::IsNullOrWhiteSpace($Exception.Message)) { "The OpenAI request failed." } else { [string]$Exception.Message }
-    $nextStep = "Check script_run.log for the OpenAI response details, then try again or rerun with -TranslationProvider Local."
+    $nextStep = "Check script_run.log for the OpenAI response details, then try again or rerun with -ProcessingMode Local."
     $showSetupGuidance = $false
 
     if ($Exception.Data -and $Exception.Data.Contains("OpenAiFailureCategory")) {
@@ -3002,25 +3233,25 @@ function Get-OpenAiFailureDetails {
             $category = "RateLimit"
             $recoverable = $true
             $userMessage = "OpenAI rate-limited the translation request because too many API requests were sent in a short time (429 Too Many Requests)."
-            $nextStep = "Wait a moment, then retry, or rerun with -TranslationProvider Local."
+            $nextStep = "Wait a moment, then retry, or rerun with -ProcessingMode Local."
         }
         elseif ($statusCode -ge 500 -and $statusCode -lt 600) {
             $category = "ServerError"
             $recoverable = $true
             $userMessage = ("OpenAI returned a server error ({0})." -f $statusCode)
-            $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+            $nextStep = "Retry later, or rerun with -ProcessingMode Local."
         }
         elseif ($combinedMessage -match '(?i)timed out|timeout|operation has timed out') {
             $category = "Timeout"
             $recoverable = $true
             $userMessage = "The OpenAI request timed out before translation completed."
-            $nextStep = "Retry later, or rerun with -TranslationProvider Local."
+            $nextStep = "Retry later, or rerun with -ProcessingMode Local."
         }
         elseif ($combinedMessage -match '(?i)no such host is known|name or service not known|could not resolve|unable to connect|connection.*failed|connection.*closed|network') {
             $category = "Network"
             $recoverable = $true
             $userMessage = "The OpenAI request failed before a response came back from the service."
-            $nextStep = "Check the network connection, then retry or rerun with -TranslationProvider Local."
+            $nextStep = "Check the network connection, then retry or rerun with -ProcessingMode Local."
         }
         elseif ($statusCode -gt 0) {
             if (-not [string]::IsNullOrWhiteSpace($serviceMessage)) {
@@ -3318,7 +3549,10 @@ function Get-InteractiveOpenAiRuntimeRecoveryDecision {
 }
 
 function Get-OpenAiApiKey {
-    param([switch]$Required)
+    param(
+        [switch]$Required,
+        [string]$ProviderLabel = "OpenAI translation"
+    )
 
     $testMode = Get-OpenAiTestMode
     if (-not [string]::IsNullOrWhiteSpace($testMode)) {
@@ -3335,8 +3569,8 @@ function Get-OpenAiApiKey {
     }
 
     if ($Required -and [string]::IsNullOrWhiteSpace($apiKey)) {
-        Show-OpenAiSetupGuidance -ProviderLabel "OpenAI translation"
-        throw (Get-OpenAiKeyRequirementText)
+        Show-OpenAiSetupGuidance -ProviderLabel $ProviderLabel
+        throw (Get-OpenAiKeyRequirementText -ProviderLabel $ProviderLabel)
     }
 
     if ([string]::IsNullOrWhiteSpace($apiKey)) {
@@ -3446,7 +3680,7 @@ function Get-TranslationProviderPreflightNotes {
     }
 
     if (($normalizedTargets -contains "en") -and -not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-        throw ("Local translation to English needs a multilingual Whisper model. The selected model '{0}' is English-only. Use a model like 'base' or 'small', or rerun with -TranslationProvider Auto or OpenAI." -f $ModelName)
+        throw ("Local translation to English needs a multilingual Whisper model. The selected model '{0}' is English-only. Use a model like 'base' or 'small', or rerun with -ProcessingMode AI." -f $ModelName)
     }
 
     $needsArgos = (@($normalizedTargets | Where-Object { $_ -ne "en" })).Count -gt 0
@@ -3465,7 +3699,7 @@ function Get-TranslationProviderPreflightNotes {
         "Install it with:",
         ("  {0} -m pip install argostranslate" -f (Quote-Argument $PythonCommand)),
         "Once the source language is detected, Media Manglers can then prepare the needed Argos language packages.",
-        "You can also rerun with -TranslationProvider Auto or OpenAI."
+        "You can also rerun with -ProcessingMode AI."
     )
 
     if (-not $InteractiveMode) {
@@ -3743,7 +3977,7 @@ function Ensure-ArgosTranslationSupport {
     $targetCode = [string]$TargetLanguageCode
 
     if ([string]::IsNullOrWhiteSpace($sourceCode) -or $sourceCode -eq "unknown") {
-        throw "Local translation needs a known source language code. Try -TranslationProvider OpenAI, or rerun with -Language if you know the source language."
+        throw "Local translation needs a known source language code. Try -ProcessingMode AI, or rerun with -Language if you know the source language."
     }
 
     $probe = Invoke-ArgosProbe `
@@ -3838,7 +4072,7 @@ function Resolve-TranslationTargetProvider {
     if ($TranslationMode -eq "Local") {
         if ($TargetLanguage -eq "en") {
             if (-not (Test-WhisperModelSupportsTranslation -ModelName $ModelName)) {
-                throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -TranslationProvider OpenAI."
+                throw "Local translation to English needs a multilingual Whisper model. Pick a model like 'base' or 'small', or use -ProcessingMode AI."
             }
 
             return [PSCustomObject]@{
@@ -4000,7 +4234,7 @@ function Invoke-OpenAiSegmentTranslation {
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "RateLimit" `
                         -UserMessage "OpenAI rate-limited the translation request because too many API requests were sent in a short time (429 Too Many Requests)." `
-                        -NextStep "Wait a moment, then retry, or rerun with -TranslationProvider Local." `
+                        -NextStep "Wait a moment, then retry, or rerun with -ProcessingMode Local." `
                         -StatusCode 429 `
                         -StatusDescription "Too Many Requests" `
                         -ErrorCode "rate_limit_exceeded" `
@@ -4030,7 +4264,7 @@ function Invoke-OpenAiSegmentTranslation {
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "ServerError" `
                         -UserMessage "OpenAI returned a server error (500)." `
-                        -NextStep "Retry later, or rerun with -TranslationProvider Local." `
+                        -NextStep "Retry later, or rerun with -ProcessingMode Local." `
                         -StatusCode 500 `
                         -StatusDescription "Internal Server Error" `
                         -ErrorType "server_error" `
@@ -4043,7 +4277,7 @@ function Invoke-OpenAiSegmentTranslation {
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "Timeout" `
                         -UserMessage "The OpenAI request timed out before translation completed." `
-                        -NextStep "Retry later, or rerun with -TranslationProvider Local." `
+                        -NextStep "Retry later, or rerun with -ProcessingMode Local." `
                         -Recoverable:$true)
             }
             elseif ($testMode -eq "network") {
@@ -4051,7 +4285,7 @@ function Invoke-OpenAiSegmentTranslation {
                         -TargetLanguage $TargetLanguage `
                         -FailureCategory "Network" `
                         -UserMessage "The OpenAI request failed before a response came back from the service." `
-                        -NextStep "Check the network connection, then retry or rerun with -TranslationProvider Local." `
+                        -NextStep "Check the network connection, then retry or rerun with -ProcessingMode Local." `
                         -Recoverable:$true)
             }
             else {
@@ -4164,7 +4398,7 @@ except Exception:
     sys.exit(10)
 
 try:
-    with open(input_path, "r", encoding="utf-8") as f:
+    with open(input_path, "r", encoding="utf-8-sig") as f:
         payload = json.load(f)
 
     translation = argostranslate.translate.get_translation_from_codes(from_code, to_code)
@@ -4327,8 +4561,11 @@ function Add-SummaryRow {
         [string]$RawCopied,
         [string]$AudioPresent,
         [string]$DetectedLanguage,
+        [string]$ProcessingModeSummary,
+        [string]$OpenAiProjectSummary,
+        [string]$TranscriptionPath,
         [string]$TranslationTargets,
-        [string]$TranslationProvider,
+        [string]$TranslationPath,
         [string]$CommentsText,
         [string]$CommentsJson,
         [string]$CommentsSummary,
@@ -4358,8 +4595,12 @@ function Add-SummaryRow {
         raw_copied             = $RawCopied
         audio_present          = $AudioPresent
         detected_language      = $DetectedLanguage
+        processing_mode        = $ProcessingModeSummary
+        openai_project         = $OpenAiProjectSummary
+        transcription_path     = $TranscriptionPath
         translation_targets    = $TranslationTargets
-        translation_provider   = $TranslationProvider
+        translation_path       = $TranslationPath
+        translation_provider   = $TranslationPath
         package_status         = $PackageStatus
         translation_status     = $TranslationStatus
         translation_notes      = $TranslationNotes
@@ -4597,6 +4838,245 @@ finally:
     finally {
         if (Test-Path $tempPy) {
             Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-OpenAiAudioTranscriptionRequest {
+    param(
+        [string]$AudioPath,
+        [string]$LanguageCode,
+        [string]$Model = ""
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+    $apiKey = Get-OpenAiApiKey -Required -ProviderLabel "OpenAI transcription"
+    $endpoint = "https://api.openai.com/v1/audio/transcriptions"
+    $resolvedModel = if ([string]::IsNullOrWhiteSpace($Model)) { $script:OpenAiTranscriptionModel } else { $Model.Trim() }
+    $httpClient = New-Object System.Net.Http.HttpClient
+    $httpClient.Timeout = [System.TimeSpan]::FromMinutes(20)
+    $httpClient.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", $apiKey)
+
+    $fileStream = [System.IO.File]::OpenRead($AudioPath)
+    $form = New-Object System.Net.Http.MultipartFormDataContent
+
+    try {
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("audio/mpeg")
+        $form.Add($fileContent, "file", [System.IO.Path]::GetFileName($AudioPath))
+        $form.Add((New-Object System.Net.Http.StringContent($resolvedModel, [System.Text.Encoding]::UTF8)), "model")
+        $form.Add((New-Object System.Net.Http.StringContent("verbose_json", [System.Text.Encoding]::UTF8)), "response_format")
+
+        if (-not [string]::IsNullOrWhiteSpace($LanguageCode)) {
+            $form.Add((New-Object System.Net.Http.StringContent($LanguageCode.Trim(), [System.Text.Encoding]::UTF8)), "language")
+        }
+
+        $response = $httpClient.PostAsync($endpoint, $form).GetAwaiter().GetResult()
+        $responseText = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $response.IsSuccessStatusCode) {
+            $requestId = ""
+            try {
+                $requestId = ($response.Headers.GetValues("x-request-id") | Select-Object -First 1)
+            }
+            catch {
+            }
+
+            $normalizedResponseBody = Normalize-OpenAiResponseText -Text $responseText
+            if (-not [string]::IsNullOrWhiteSpace($normalizedResponseBody)) {
+                Write-Log ("OpenAI raw response body for transcription: {0}" -f $normalizedResponseBody) "WARN"
+            }
+
+            $errorText = if ([string]::IsNullOrWhiteSpace($normalizedResponseBody)) {
+                ("OpenAI transcription failed with HTTP {0} {1}." -f ([int]$response.StatusCode), [string]$response.ReasonPhrase)
+            }
+            else {
+                ("OpenAI transcription failed with HTTP {0} {1}. {2}" -f ([int]$response.StatusCode), [string]$response.ReasonPhrase, $normalizedResponseBody)
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($requestId)) {
+                $errorText = ("{0} request_id={1}" -f $errorText, $requestId)
+            }
+
+            throw $errorText
+        }
+
+        return ($responseText | ConvertFrom-Json)
+    }
+    finally {
+        if ($form) {
+            $form.Dispose()
+        }
+        if ($fileStream) {
+            $fileStream.Dispose()
+        }
+        if ($httpClient) {
+            $httpClient.Dispose()
+        }
+    }
+}
+
+function New-OpenAiTranscriptionChunkPlan {
+    param(
+        [string]$AudioPath,
+        [string]$FFmpegExe,
+        [string]$FFprobeExe,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    $maxUploadBytes = 24MB
+    $audioItem = Get-Item -LiteralPath $AudioPath
+    $durationSeconds = Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $AudioPath
+    if ($audioItem.Length -le $maxUploadBytes) {
+        return [PSCustomObject]@{
+            TempRoot = ""
+            Chunks   = @(
+                [PSCustomObject]@{
+                    Path            = $AudioPath
+                    StartSeconds    = 0.0
+                    DurationSeconds = $durationSeconds
+                }
+            )
+        }
+    }
+
+    if ($durationSeconds -le 0) {
+        throw "Could not determine audio duration for OpenAI transcription chunking."
+    }
+
+    $bytesPerSecond = [double]$audioItem.Length / [Math]::Max($durationSeconds, 1.0)
+    $dynamicChunkSeconds = [Math]::Floor(($maxUploadBytes * 0.9) / [Math]::Max($bytesPerSecond, 1.0))
+    $chunkSeconds = [int][Math]::Min(600, [Math]::Max(60, $dynamicChunkSeconds))
+    $tempRoot = Join-Path $env:TEMP ("openai_transcription_chunks_" + [guid]::NewGuid().ToString())
+    Ensure-Directory $tempRoot
+
+    $chunks = New-Object System.Collections.Generic.List[object]
+    $chunkIndex = 0
+    for ($startSeconds = 0.0; $startSeconds -lt $durationSeconds; $startSeconds += $chunkSeconds) {
+        $chunkIndex += 1
+        $remainingSeconds = [Math]::Max(0.0, ($durationSeconds - $startSeconds))
+        $currentDuration = [Math]::Min([double]$chunkSeconds, $remainingSeconds)
+        $chunkPath = Join-Path $tempRoot ("chunk_{0:D3}.mp3" -f $chunkIndex)
+        $startText = $startSeconds.ToString("0.###", [System.Globalization.CultureInfo]::InvariantCulture)
+        $durationText = $currentDuration.ToString("0.###", [System.Globalization.CultureInfo]::InvariantCulture)
+
+        $result = Invoke-ExternalCapture `
+            -FilePath $FFmpegExe `
+            -Arguments @("-y", "-ss", $startText, "-t", $durationText, "-i", $AudioPath, "-vn", "-c:a", "libmp3lame", "-b:a", "192k", $chunkPath) `
+            -StepName ("OpenAI transcription chunk {0}" -f $chunkIndex) `
+            -HeartbeatSeconds $HeartbeatSeconds
+
+        if ($result.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $chunkPath)) {
+            throw ("OpenAI transcription chunk {0} could not be created." -f $chunkIndex)
+        }
+
+        $chunkItem = Get-Item -LiteralPath $chunkPath
+        if ($chunkItem.Length -gt $maxUploadBytes) {
+            throw ("OpenAI transcription chunk {0} is still larger than the upload limit." -f $chunkIndex)
+        }
+
+        [void]$chunks.Add([PSCustomObject]@{
+                Path            = $chunkPath
+                StartSeconds    = $startSeconds
+                DurationSeconds = $currentDuration
+            })
+    }
+
+    return [PSCustomObject]@{
+        TempRoot = $tempRoot
+        Chunks   = @($chunks)
+    }
+}
+
+function Invoke-OpenAiWhisperTranscript {
+    param(
+        [string]$AudioPath,
+        [string]$TranscriptFolder,
+        [string]$LanguageCode,
+        [string]$FFmpegExe,
+        [string]$FFprobeExe,
+        [string]$JsonName = "transcript.json",
+        [string]$SrtName = "transcript.srt",
+        [string]$TextName = "transcript.txt",
+        [int]$HeartbeatSeconds = 10
+    )
+
+    Ensure-Directory $TranscriptFolder
+    $chunkPlan = New-OpenAiTranscriptionChunkPlan `
+        -AudioPath $AudioPath `
+        -FFmpegExe $FFmpegExe `
+        -FFprobeExe $FFprobeExe `
+        -HeartbeatSeconds $HeartbeatSeconds
+
+    $segments = New-Object System.Collections.Generic.List[object]
+    $detectedLanguage = ""
+    $segmentId = 0
+
+    try {
+        foreach ($chunk in @($chunkPlan.Chunks)) {
+            Write-Log ("OpenAI transcription request: {0} (offset {1:0.###}s)" -f (Split-Path -Path $chunk.Path -Leaf), [double]$chunk.StartSeconds)
+            $payload = Invoke-OpenAiAudioTranscriptionRequest `
+                -AudioPath $chunk.Path `
+                -LanguageCode $LanguageCode `
+                -Model $script:OpenAiTranscriptionModel
+
+            if ([string]::IsNullOrWhiteSpace($detectedLanguage) -and -not [string]::IsNullOrWhiteSpace([string]$payload.language)) {
+                $detectedLanguage = [string]$payload.language
+            }
+
+            $payloadSegments = @($payload.segments)
+            if ($payloadSegments.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$payload.text)) {
+                $payloadSegments = @(
+                    [PSCustomObject]@{
+                        start = 0.0
+                        end   = [double]$chunk.DurationSeconds
+                        text  = [string]$payload.text
+                    }
+                )
+            }
+
+            foreach ($segment in $payloadSegments) {
+                $text = [string]$segment.text
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    continue
+                }
+
+                [void]$segments.Add([PSCustomObject]@{
+                        id    = $segmentId
+                        start = [double]$chunk.StartSeconds + [double]$segment.start
+                        end   = [double]$chunk.StartSeconds + [double]$segment.end
+                        text  = $text
+                    })
+                $segmentId += 1
+            }
+        }
+
+        if ($segments.Count -eq 0) {
+            throw "OpenAI transcription completed but returned no transcript segments."
+        }
+
+        $artifacts = Write-TranscriptArtifactsFromSegments `
+            -OutputFolder $TranscriptFolder `
+            -Segments @($segments) `
+            -Language $(if ([string]::IsNullOrWhiteSpace($detectedLanguage)) { $LanguageCode } else { $detectedLanguage }) `
+            -SourceLanguage $(if ([string]::IsNullOrWhiteSpace($detectedLanguage)) { $LanguageCode } else { $detectedLanguage }) `
+            -Task "transcribe" `
+            -JsonName $JsonName `
+            -SrtName $SrtName `
+            -TextName $TextName
+
+        return [PSCustomObject]@{
+            Device   = "openai"
+            Fp16     = $false
+            JsonPath = $artifacts.JsonPath
+            SrtPath  = $artifacts.SrtPath
+            TextPath = $artifacts.TextPath
+            Language = $(if ([string]::IsNullOrWhiteSpace($detectedLanguage)) { [string]$LanguageCode } else { [string]$detectedLanguage })
+            GpuError = ""
+        }
+    }
+    finally {
+        if ($chunkPlan -and -not [string]::IsNullOrWhiteSpace($chunkPlan.TempRoot) -and (Test-Path -LiteralPath $chunkPlan.TempRoot)) {
+            Remove-Item -LiteralPath $chunkPlan.TempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -5026,6 +5506,11 @@ function Process-Video {
         [bool]$CanUseFfmpegGpu,
         [bool]$CanUseWhisperGpu,
         [bool]$InteractiveMode,
+        [string]$RequestedProcessingMode,
+        [string]$ProcessingModeSelectionSource,
+        [string]$ProcessingModeResolutionNote,
+        [string]$ProcessingMode,
+        [string]$OpenAiProject,
         [string]$RequestedTranslationProvider,
         [string]$TranslationProviderSelectionSource,
         [string]$TranslationProviderResolutionNote,
@@ -5081,6 +5566,9 @@ function Process-Video {
     Write-Log "Processing video: $($videoItem.FullName)"
     Write-Log "Output folder: $videoOutputRoot"
     Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
+    $processingModeSummary = Get-ProcessingModeSummary -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
+    $openAiProjectSummary = if ($ProcessingMode -eq "AI") { $OpenAiProject } else { "" }
+    $transcriptionPathDetails = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
     $diagnosticsSetting = [Environment]::GetEnvironmentVariable("MM_OPENAI_DIAGNOSTICS")
     if (-not [string]::IsNullOrWhiteSpace($diagnosticsSetting)) {
         $normalizedDiagnosticsSetting = $diagnosticsSetting.Trim()
@@ -5098,6 +5586,31 @@ function Process-Video {
             Ensure-Directory $openAiDiagnosticsFolder
             Write-Log ("OpenAI segment diagnostics: {0}" -f $openAiDiagnosticsFolder)
         }
+    }
+    $loggedRequestedProcessingMode = if ([string]::IsNullOrWhiteSpace($RequestedProcessingMode)) {
+        $ProcessingMode
+    }
+    else {
+        $RequestedProcessingMode
+    }
+    $loggedProcessingSelectionSource = if ([string]::IsNullOrWhiteSpace($ProcessingModeSelectionSource)) {
+        "default"
+    }
+    else {
+        $ProcessingModeSelectionSource
+    }
+    Write-Log ("Requested processing mode: {0} ({1})" -f $loggedRequestedProcessingMode, $loggedProcessingSelectionSource)
+    if ($ProcessingMode -ne $loggedRequestedProcessingMode) {
+        Write-Log ("Effective processing mode request: {0}" -f $processingModeSummary)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProcessingModeResolutionNote)) {
+        Write-Log $ProcessingModeResolutionNote "WARN"
+    }
+    Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
+    Write-Log ("Transcription path selected: {0}" -f $transcriptionPathDetails)
+    if ($ProcessingMode -eq "AI") {
+        Write-Log ("AI project mode: {0}" -f $OpenAiProject)
+        Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
     }
     if ($TranslationTargets.Count -gt 0) {
         $loggedRequestedProvider = if ([string]::IsNullOrWhiteSpace($RequestedTranslationProvider)) {
@@ -5175,6 +5688,7 @@ function Process-Video {
     }
 
     $whisperMode = "SKIPPED_NO_AUDIO"
+    $transcriptionUsesOpenAi = ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private")
 
     if ($hasAudio) {
         Invoke-PhaseAction -Name "Audio" -Detail $videoItem.Name -Action {
@@ -5185,7 +5699,7 @@ function Process-Video {
         $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $videoItem.Name -Action {
             Ensure-Directory $transcriptFolder
             if ((Test-Path -LiteralPath $transcriptSrt) -and (Test-Path -LiteralPath $transcriptJson) -and (Test-Path -LiteralPath $transcriptText)) {
-                Write-Log "Transcript files already exist. Skipping Whisper transcription."
+                Write-Log "Transcript files already exist. Skipping new transcription."
                 return [PSCustomObject]@{
                     Device   = "existing"
                     JsonPath = $transcriptJson
@@ -5196,21 +5710,37 @@ function Process-Video {
                 }
             }
 
-            Write-Log ("Generating transcript with Whisper on {0}..." -f $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
+            if ($transcriptionUsesOpenAi) {
+                Write-Log ("Generating transcript with OpenAI transcription ({0})..." -f $script:OpenAiTranscriptionModel)
 
-            $phaseTranscriptResult = Invoke-PythonWhisperTranscript `
-                -PythonCommand $PythonCommand `
-                -AudioPath $audioFile `
-                -TranscriptFolder $transcriptFolder `
-                -ModelName $ModelName `
-                -LanguageCode $LanguageCode `
-                -FFmpegExe $FFmpegExe `
-                -PreferGpu $CanUseWhisperGpu `
-                -Task "transcribe" `
-                -JsonName "transcript.json" `
-                -SrtName "transcript.srt" `
-                -TextName "transcript.txt" `
-                -HeartbeatSeconds $HeartbeatSeconds
+                $phaseTranscriptResult = Invoke-OpenAiWhisperTranscript `
+                    -AudioPath $audioFile `
+                    -TranscriptFolder $transcriptFolder `
+                    -LanguageCode $LanguageCode `
+                    -FFmpegExe $FFmpegExe `
+                    -FFprobeExe $FFprobeExe `
+                    -JsonName "transcript.json" `
+                    -SrtName "transcript.srt" `
+                    -TextName "transcript.txt" `
+                    -HeartbeatSeconds $HeartbeatSeconds
+            }
+            else {
+                Write-Log ("Generating transcript with Whisper on {0}..." -f $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
+
+                $phaseTranscriptResult = Invoke-PythonWhisperTranscript `
+                    -PythonCommand $PythonCommand `
+                    -AudioPath $audioFile `
+                    -TranscriptFolder $transcriptFolder `
+                    -ModelName $ModelName `
+                    -LanguageCode $LanguageCode `
+                    -FFmpegExe $FFmpegExe `
+                    -PreferGpu $CanUseWhisperGpu `
+                    -Task "transcribe" `
+                    -JsonName "transcript.json" `
+                    -SrtName "transcript.srt" `
+                    -TextName "transcript.txt" `
+                    -HeartbeatSeconds $HeartbeatSeconds
+            }
 
             if (-not (Test-Path -LiteralPath $transcriptSrt)) {
                 throw "Expected SRT not found: $transcriptSrt"
@@ -5227,7 +5757,10 @@ function Process-Video {
             return $phaseTranscriptResult
         }
 
-        if ($transcriptResult.Device -eq "cuda") {
+        if ($transcriptResult.Device -eq "openai") {
+            $whisperMode = "OPENAI"
+        }
+        elseif ($transcriptResult.Device -eq "cuda") {
             $whisperMode = "GPU_CUDA"
         }
         elseif ($transcriptResult.Device -eq "existing") {
@@ -5327,7 +5860,7 @@ function Process-Video {
                         }
                         else {
                             [void]$translationFailureNotes.Add($providerPlan.Note)
-                            [void]$translationNextSteps.Add(("Install local translation support or rerun with -TranslationProvider OpenAI for target '{0}'." -f $targetLanguage))
+                            [void]$translationNextSteps.Add(("Install local translation support or rerun with -ProcessingMode AI for target '{0}'." -f $targetLanguage))
                         }
 
                         Write-PhaseResult -Name "Translation" -Status "PASS" -Detail ("{0} (skipped)" -f $phaseDetail)
@@ -5620,9 +6153,12 @@ function Process-Video {
             -RawPresent $rawPresent `
             -AudioPresent $audioPresentText `
             -FrameIntervalSeconds $FrameIntervalSeconds `
+            -ProcessingModeSummary $processingModeSummary `
+            -OpenAiProjectSummary $openAiProjectSummary `
+            -TranscriptionPathDetails $transcriptionPathDetails `
             -DetectedLanguage $detectedLanguage `
             -TranslationTargets @($normalizedTargetsForSummary) `
-            -TranslationProviderDetails $translationProviderText `
+            -TranslationPathDetails $translationProviderText `
             -CommentsSummary $commentsSummary `
             -RemoteAudioTrackSummary $(if ($RemoteAudioTrackInfo) { $RemoteAudioTrackInfo.SummaryValue } else { "" }) `
             -PackageStatus $packageStatus `
@@ -5645,8 +6181,11 @@ function Process-Video {
         -RawCopied $rawPresent `
         -AudioPresent $audioPresentText `
         -DetectedLanguage $detectedLanguage `
+        -ProcessingModeSummary $processingModeSummary `
+        -OpenAiProjectSummary $openAiProjectSummary `
+        -TranscriptionPath $transcriptionPathDetails `
         -TranslationTargets ((@($normalizedTargetsForSummary)) -join ", ") `
-        -TranslationProvider $translationProviderText `
+        -TranslationPath $translationProviderText `
         -CommentsText $commentsTextPath `
         -CommentsJson $commentsJsonPath `
         -CommentsSummary $commentsSummary `
@@ -5666,9 +6205,12 @@ function Process-Video {
         OutputPath       = $videoOutputRoot
         FrameCount       = $frameCount
         AudioPresent     = $audioPresentText
+        ProcessingMode   = $processingModeSummary
+        OpenAiProject    = $openAiProjectSummary
         ProxyMode        = $proxyMode
         FrameMode        = $frameMode
         WhisperMode      = $whisperMode
+        TranscriptionPath = $transcriptionPathDetails
         DetectedLanguage = $detectedLanguage
         TranslationTargets = @($completedTargets)
         TranslationProvider = $translationProviderText
@@ -5808,11 +6350,61 @@ if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
 
 $translationTargets = Get-TranslationTargets -Value $TranslateTo
 $translationProviderWasExplicit = $PSBoundParameters.ContainsKey("TranslationProvider")
-if ($translationTargets.Count -gt 0 -and -not $PSBoundParameters.ContainsKey("TranslationProvider") -and -not $NoPrompt) {
-    $TranslationProvider = Get-InteractiveTranslationProvider -DefaultValue "Auto" -WasExplicitSelection ([ref]$translationProviderWasExplicit)
+$processingModeWasExplicit = $PSBoundParameters.ContainsKey("ProcessingMode")
+$processingModeResolution = Resolve-ProcessingModeRequest `
+    -RequestedMode $ProcessingMode `
+    -WasExplicitlySet:$processingModeWasExplicit `
+    -RequestedLegacyTranslationProvider $TranslationProvider `
+    -LegacyProviderWasExplicitlySet:$translationProviderWasExplicit `
+    -InteractiveMode:$(-not $NoPrompt)
+$ProcessingMode = $processingModeResolution.EffectiveMode
+
+if ($ProcessingMode -eq "AI" -and -not $PSBoundParameters.ContainsKey("OpenAiProject") -and -not $NoPrompt) {
+    $OpenAiProject = Get-InteractiveOpenAiProjectMode -DefaultValue "Private"
+}
+elseif ([string]::IsNullOrWhiteSpace($OpenAiProject)) {
+    $OpenAiProject = "Private"
+}
+else {
+    $OpenAiProject = $OpenAiProject.Trim()
 }
 
-if ($translationTargets.Count -gt 0) {
+$openAiProjectResolutionNote = $null
+if ($ProcessingMode -ne "AI" -and $PSBoundParameters.ContainsKey("OpenAiProject")) {
+    $openAiProjectResolutionNote = ("OpenAiProject {0} was provided, but OpenAiProject only applies in AI mode." -f $OpenAiProject)
+}
+
+$TranslationProvider = Get-TranslationModeForProcessingMode -EffectiveMode $ProcessingMode
+$requestedLegacyTranslationProvider = if ($translationProviderWasExplicit) { $PSBoundParameters["TranslationProvider"] } else { "" }
+$translationProviderResolution = [PSCustomObject]@{
+    RequestedProvider = [string]$requestedLegacyTranslationProvider
+    EffectiveProvider = $TranslationProvider
+    SelectionSource   = if ($translationProviderWasExplicit) { "legacy compatibility flag" } else { "processing mode" }
+    ResolutionNote    = if ($translationProviderWasExplicit) {
+        "TranslationProvider is a legacy compatibility flag. ProcessingMode is the primary operator-facing control."
+    }
+    else {
+        $null
+    }
+}
+
+$openAiModelWasExplicit = $PSBoundParameters.ContainsKey("OpenAiModel")
+if ($ProcessingMode -eq "AI") {
+    $OpenAiModel = Resolve-EffectiveOpenAiTranslationModel -WasExplicitlySet:$openAiModelWasExplicit
+}
+elseif (-not $openAiModelWasExplicit -or [string]::IsNullOrWhiteSpace($OpenAiModel)) {
+    $OpenAiModel = $script:OpenAiPrivateTranslationDefaultModel
+}
+
+$processingModeSummary = Get-ProcessingModeSummary -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
+$transcriptionPathSummary = Get-TranscriptionProviderDetails -EffectiveMode $ProcessingMode -ProjectMode $OpenAiProject
+$translationModeSummary = Get-TranslationModeSummary `
+    -EffectiveMode $ProcessingMode `
+    -ProjectMode $OpenAiProject `
+    -Model $OpenAiModel `
+    -TranslationRequested:($translationTargets.Count -gt 0)
+
+if (($ProcessingMode -eq "Local" -or ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Public")) -and $translationTargets.Count -gt 0) {
     if (-not $PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
         $originalModel = $WhisperModel
         $WhisperModel = $WhisperModel -replace '\.en$', ''
@@ -5821,20 +6413,6 @@ if ($translationTargets.Count -gt 0) {
     elseif ($PSBoundParameters.ContainsKey("WhisperModel") -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
         throw "Translation needs a multilingual Whisper model. The selected model '$WhisperModel' is English-only. Use a model like 'base' or 'small' instead."
     }
-}
-
-$translationProviderResolution = [PSCustomObject]@{
-    RequestedProvider = $TranslationProvider
-    EffectiveProvider = $TranslationProvider
-    SelectionSource   = if ($translationProviderWasExplicit) { "explicit" } else { "default" }
-    ResolutionNote    = $null
-}
-if ($translationTargets.Count -gt 0) {
-    $translationProviderResolution = Resolve-TranslationProviderRequest `
-        -RequestedProvider $TranslationProvider `
-        -WasExplicitlySet:$translationProviderWasExplicit `
-        -InteractiveMode:$(-not $NoPrompt)
-    $TranslationProvider = $translationProviderResolution.EffectiveProvider
 }
 
 $translationProviderPreflightNotes = @()
@@ -5864,10 +6442,27 @@ $script:CurrentLogFile = $bootstrapLog
 "==== Bootstrap started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ====" | Set-Content -Path $bootstrapLog -Encoding UTF8
 Write-Log "Selected frame interval: $FrameIntervalSeconds seconds"
 Write-Log "Output folder root: $OutputFolder"
+Write-Log ("Requested processing mode: {0} ({1})" -f $(if ([string]::IsNullOrWhiteSpace($processingModeResolution.RequestedMode)) { $ProcessingMode } else { $processingModeResolution.RequestedMode }), $processingModeResolution.SelectionSource)
+if ($ProcessingMode -ne $processingModeResolution.RequestedMode -and -not [string]::IsNullOrWhiteSpace($processingModeResolution.RequestedMode)) {
+    Write-Log ("Effective processing mode request: {0}" -f $processingModeSummary)
+}
+if (-not [string]::IsNullOrWhiteSpace($processingModeResolution.ResolutionNote)) {
+    Write-Log $processingModeResolution.ResolutionNote "WARN"
+}
+if (-not [string]::IsNullOrWhiteSpace($openAiProjectResolutionNote)) {
+    Write-Log $openAiProjectResolutionNote "WARN"
+}
+Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
+Write-Log ("Transcription path selected: {0}" -f $transcriptionPathSummary)
+if ($ProcessingMode -eq "AI") {
+    Write-Log ("AI project mode: {0}" -f $OpenAiProject)
+    Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+}
 if ($translationTargets.Count -gt 0) {
     Write-Log ("Translation targets selected: {0}" -f ($translationTargets -join ", "))
-    Write-Log ("Requested translation provider: {0} ({1})" -f $translationProviderResolution.RequestedProvider, $translationProviderResolution.SelectionSource)
-    if ($TranslationProvider -ne $translationProviderResolution.RequestedProvider) {
+    Write-Log ("Translation path selected: {0}" -f $translationModeSummary)
+    if (-not [string]::IsNullOrWhiteSpace($translationProviderResolution.RequestedProvider)) {
+        Write-Log ("Requested legacy TranslationProvider: {0} ({1})" -f $translationProviderResolution.RequestedProvider, $translationProviderResolution.SelectionSource)
         Write-Log ("Effective translation provider request: {0}" -f $TranslationProvider)
     }
     if (-not [string]::IsNullOrWhiteSpace($translationProviderResolution.ResolutionNote)) {
@@ -5894,7 +6489,7 @@ try {
     $downloadCacheFolder = $InputFolder
     $doIncludeComments = $IncludeComments.IsPresent
     if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
-        $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N):"
+        $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (Y/n):"
         if ([string]::IsNullOrWhiteSpace($value)) {
             $doIncludeComments = $true
         }
@@ -5965,7 +6560,7 @@ else {
             $downloadCacheFolder = $InputFolder
             $doIncludeComments = $IncludeComments.IsPresent
             if (-not $PSBoundParameters.ContainsKey("IncludeComments") -and -not $NoPrompt) {
-                $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (y/N):"
+                $value = Read-Host "If comments are available for a YouTube source, save them in the package too? (Y/n):"
                 if ([string]::IsNullOrWhiteSpace($value)) {
                     $doIncludeComments = $true
                 }
@@ -6046,7 +6641,18 @@ foreach ($video in $videos) {
     }
 }
 
-if ($videosWithAudio.Count -gt 0) {
+if ($ProcessingMode -eq "AI" -and (($OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) -or $translationTargets.Count -gt 0)) {
+    $requiredOpenAiLabel = if ($OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
+        "AI mode"
+    }
+    else {
+        "OpenAI translation"
+    }
+    $null = Get-OpenAiApiKey -Required -ProviderLabel $requiredOpenAiLabel
+}
+
+$requiresLocalWhisper = ($ProcessingMode -ne "AI" -or $OpenAiProject -eq "Public")
+if ($videosWithAudio.Count -gt 0 -and $requiresLocalWhisper) {
     Test-PythonWhisper -PythonCommand $PythonExe
 }
 
@@ -6090,7 +6696,7 @@ if ($whisperProbe.Error) {
 Write-Host ""
 Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
 Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
-Write-Host ("Whisper path selected:           {0}" -f $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
+Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
 Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
 Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
 Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
@@ -6100,8 +6706,13 @@ if ($downloadedInputPaths.Count -gt 0) {
     Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
 }
 Write-Host ("Output folder:                   {0}" -f $OutputFolder)
+Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
+if ($ProcessingMode -eq "AI") {
+    Write-Host ("AI project mode:                 {0}" -f $OpenAiProject)
+}
+Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
 Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
-Write-Host ("Translation provider:            {0}" -f $TranslationProvider)
+Write-Host ("Translation path selected:       {0}" -f $translationModeSummary)
 Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
 Write-Host ""
 Write-Host "Videos to process:"
@@ -6173,6 +6784,11 @@ foreach ($video in $videos) {
             -CanUseFfmpegGpu $canUseFfmpegGpu `
             -CanUseWhisperGpu $canUseWhisperGpu `
             -InteractiveMode:$(-not $NoPrompt) `
+            -RequestedProcessingMode $processingModeResolution.RequestedMode `
+            -ProcessingModeSelectionSource $processingModeResolution.SelectionSource `
+            -ProcessingModeResolutionNote $processingModeResolution.ResolutionNote `
+            -ProcessingMode $ProcessingMode `
+            -OpenAiProject $OpenAiProject `
             -RequestedTranslationProvider $translationProviderResolution.RequestedProvider `
             -TranslationProviderSelectionSource $translationProviderResolution.SelectionSource `
             -TranslationProviderResolutionNote $translationProviderResolution.ResolutionNote `
@@ -6235,12 +6851,17 @@ foreach ($item in $processedItems) {
         Write-Host ("PASS {0}" -f $item.SourceVideoName) -ForegroundColor Green
     }
     Write-Host ("  Output:  {0}" -f $item.OutputPath)
+    Write-Host ("  Mode:    {0}" -f $item.ProcessingMode)
+    if (-not [string]::IsNullOrWhiteSpace($item.OpenAiProject)) {
+        Write-Host ("  AI:      {0}" -f $item.OpenAiProject)
+    }
     Write-Host ("  Proxy:   {0}" -f $item.ProxyMode)
     Write-Host ("  Frames:  {0}" -f $item.FrameMode)
-    Write-Host ("  Whisper: {0}" -f $item.WhisperMode)
+    Write-Host ("  Trans:   {0}" -f $item.TranscriptionPath)
+    Write-Host ("  Engine:  {0}" -f $item.WhisperMode)
     Write-Host ("  Lang:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($item.DetectedLanguage)) { "n/a" } else { $item.DetectedLanguage }))
     Write-Host ("  Xlate:   {0}" -f $(if ($item.TranslationTargets.Count -gt 0) { $item.TranslationTargets -join ", " } else { "none" }))
-    Write-Host ("  Provider:{0}" -f $(if ([string]::IsNullOrWhiteSpace($item.TranslationProvider) -or $item.TranslationProvider -eq "none") { " none" } else { " $($item.TranslationProvider)" }))
+    Write-Host ("  Path:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($item.TranslationProvider) -or $item.TranslationProvider -eq "none") { "none" } else { $item.TranslationProvider }))
     if (-not [string]::IsNullOrWhiteSpace($item.TranslationStatus)) {
         Write-Host ("  Status:  {0}" -f $item.TranslationStatus)
     }
