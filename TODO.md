@@ -16,11 +16,15 @@ No open GitHub issues are currently active in this repo.
 
 ## Repo-Only Active Work
 
-- [ ] Verify broader `Video Mangler.ps1` simulated OpenAI failure modes after PR #11
-  Status: needs verification
-  Current note: PR #11 validation explicitly covered `MM_TEST_OPENAI_MODE=quota` for `Video Mangler.ps1`, but the newly added unauthorized, permission-denied, timeout, network, rate-limit, and server-error branches were not all listed as validated for the video path during this merge pass.
+- [ ] Consider partial-success-aware validation for `AREA51\Validate-VideoToCodexPackage.ps1`
+  Status: repo-only follow-up
+  Current note: The current validator assumes translated transcript files exist whenever `translations\<lang>\` exists, so expected partial-success OpenAI failure packages report missing translation artifacts instead of validating the operator-facing partial-package outputs.
 
 ## Recently Completed
+
+- [x] Repo-only: verify `Video Mangler.ps1` simulated OpenAI failure-mode parity after PR #11
+  Status: completed on 2026-04-16
+  Current note: Verified `MM_TEST_OPENAI_MODE=unauthorized`, `permission_denied`, `timeout`, `network`, `rate_limit`, and `server_error` against `Video Mangler.ps1`. For every case, `script_run.log`, `README_FOR_CODEX.txt`, `PROCESSING_SUMMARY.csv`, and the final console summary reported the expected category-specific provider text, operator note, next step, and partial-success status. No operator-facing audio/video mismatch was observed in this pass.
 
 - [x] Repo-only: merge validated OpenAI error-classification and quota-messaging work from PR #11
   Status: completed on 2026-04-16
