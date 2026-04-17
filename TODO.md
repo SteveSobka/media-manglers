@@ -20,9 +20,9 @@ No open GitHub issues are currently active in this repo.
   Status: repo-only follow-up
   Current note: The current validator assumes translated transcript files exist whenever `translations\<lang>\` exists, so expected partial-success OpenAI failure packages report missing translation artifacts instead of validating the operator-facing partial-package outputs.
 
-- [ ] Review remaining Audio Mangler OpenAI parity after this pass
+- [ ] Re-run AI Private validation with a key/project that has transcription permission
   Status: repo-only follow-up
-  Current note: This pass aligned key-selection and comments-prompt behavior across both apps, but the verified live Windows PowerShell 5.1 UTF-8/non-ASCII fix and the `MM_OPENAI_DIAGNOSTICS` troubleshooting path were only validated in `Video Mangler.ps1`. `Audio Mangler.ps1` already passed a live OpenAI run in this workstream, but a narrower parity review is still open before claiming full troubleshooting parity.
+  Current note: The redesigned AI Private path is implemented in both apps, but the current machine only exposes `OPENAI_API_KEY` as a legacy Private fallback and that key returns `401 Unauthorized` with missing `model.request` on `POST /v1/audio/transcriptions`. Supply a proper Private key/project with transcription access, then rerun the AI Private matrix rows end-to-end.
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
   Status: repo-only follow-up
@@ -30,13 +30,21 @@ No open GitHub issues are currently active in this repo.
 
 ## Recently Completed
 
+- [x] Repo-only: simplify Video Mangler and Audio Mangler to Local vs AI processing modes
+  Status: completed on 2026-04-16
+  Current note: Added `docs/plans/2026-04-16-ai-vs-local-mode-simplification.md`, promoted `-ProcessingMode Local|AI` to the primary operator-facing control in both apps, kept `TranslationProvider` as compatibility-only, updated package/operator docs, added `AREA51\Run-AI-Local-Mode-Matrix.ps1`, and verified the matrix evidence that was possible on this machine. Verified passes: Video Local English, Video Local foreign, Audio Local English, Audio Local foreign, Audio AI Public English, and Video AI Public foreign. Remaining unverified success path: AI Private end-to-end, which is currently blocked by the machine's available Private key/project returning `401 Unauthorized` with missing `model.request` on transcription.
+
 - [x] Repo-only: document OpenAI integration, Private/Public guidance, and safe key selection defaults
   Status: completed on 2026-04-16
   Current note: `README.md`, `docs/guides/VIDEO_MANGLER.txt`, and `docs/guides/AUDIO_MANGLER.txt` now explain that OpenAI API use is optional, separate from ChatGPT subscriptions, and depends on API billing/credits. Both scripts now default to Private via `OPENAI_API_KEY_PRIVATE`, require an explicit `-OpenAiProject Public` choice for `OPENAI_API_KEY_PUBLIC`, and keep `OPENAI_API_KEY` as a legacy Private fallback for older setups.
 
 - [x] Repo-only: change the interactive YouTube comments prompt to default Yes on Enter
   Status: completed on 2026-04-16
-  Current note: `Video Mangler.ps1` and `Audio Mangler.ps1` now keep the prompt text `If comments are available for a YouTube source, save them in the package too? (y/N):`, but pressing Enter accepts comments by default and explicit `No` still skips them. The README and operator guides were updated to match.
+  Current note: `Video Mangler.ps1` and `Audio Mangler.ps1` now show `If comments are available for a YouTube source, save them in the package too? (Y/n):`, and pressing Enter accepts comments by default. The README and operator guides were updated to match the real behavior.
+
+- [x] Repo-only: align Audio Mangler with the live UTF-8-safe OpenAI path and diagnostics behavior
+  Status: completed on 2026-04-16
+  Current note: `Audio Mangler.ps1` now reads transcript JSON as UTF-8, sends OpenAI translation bodies as UTF-8 bytes, writes OpenAI diagnostics parity files, and uses the same PowerShell 5.1-safe Argos JSON handling as `Video Mangler.ps1`. Local English and foreign rows passed after the BOM fix. AI Public also passed with local transcription plus OpenAI translation. AI Private currently stops only at the external transcription-permission blocker noted above.
 
 - [x] Repo-only: fix live OpenAI video translation HTTP 400 in `Video Mangler.ps1`
   Status: completed on 2026-04-16
