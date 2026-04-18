@@ -90,15 +90,26 @@ Mode behavior:
 - AI Public: local transcription plus OpenAI translation on the Public/shared
   project
 
-Local mode now defaults to Whisper large. That is intentional: local accuracy
-and nuance are prioritized over speed, so Local runs will be slower and heavier
-than smaller Whisper models. Advanced users can still choose a different
-supported local Whisper model with -WhisperModel.
+Interactive Local runs now ask which Whisper model to use. The beginner-friendly
+default on Enter is medium, and the prompt shows small, medium, and large with
+rough CPU-only transcription-time tradeoffs so operators are not surprised by
+the Local runtime cost. Scripted or -NoPrompt Local runs still keep the current
+accuracy-first default of large unless you explicitly pass -WhisperModel.
 
-On CPU-only systems, both apps now warn before Local Whisper large runs at or
-above about 15 minutes because the current Whisper watchdog is still 1800
-seconds. If that warning appears, rerun with GPU, split the media, or choose a
-smaller -WhisperModel.
+Interactive translation now asks:
+
+  Translate the transcript into another language? (Y/n):
+
+If you answer Yes or just press Enter, the next prompt asks for the target
+language code and defaults to en on Enter.
+
+Local Whisper no longer uses one fixed wall-clock timeout for every run. Before
+a Local Whisper run starts, the apps now log the source duration, selected
+model, whether the Local path looks CPU-only or GPU-capable, the estimated
+transcription duration, the resolved adaptive timeout, and the separate stall
+watchdog. Very long interactive Local runs offer a simple continue/switch-
+smaller/cancel prompt, while -NoPrompt runs stay non-interactive. You can still
+force a manual runtime budget with -WhisperTimeoutSeconds when needed.
 
 Local mode does not depend on OpenAI. If local translation support is missing,
 the apps explain what is missing, why it helps, and how to install it. They do
@@ -234,7 +245,9 @@ Current main behavior:
 - ProcessingMode is the primary operator-facing switch.
 - If you do not pass -ProcessingMode, both apps default to Local.
 - If you do not explicitly pass -WhisperModel and the resolved mode is Local,
-  both apps upgrade the literal script default to large for accuracy.
+  interactive runs prompt for small, medium, or large and default to medium on
+  Enter. -NoPrompt and other scripted Local runs still keep the current large
+  default unless you set -WhisperModel yourself.
 - -OpenAiProject Private = OpenAI transcription + OpenAI translation.
 - -OpenAiProject Public = local transcription + OpenAI translation on the
   Public/shared project.
@@ -284,6 +297,12 @@ The build keeps the live output layout minimal by default:
 - dist\release\Video-Mangler-v0.6.1.zip
 - dist\release\Audio-Mangler-v0.6.1.zip
 
+During the Python-core migration, the release zips now carry a shared
+python-core sidecar inside the app folder. That gives the tracked Python
+helper path a stable packaged home without forcing the standalone exe assets to
+depend on it yet. If the sidecar is not present, the wrappers still keep the
+current compatibility fallback.
+
 Legacy release clutter is moved under dist\archive\release\ instead of being
 left mixed into the live release folder. Temporary packaging folders are also
 removed automatically after a successful build.
@@ -296,6 +315,12 @@ Smoke tests:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+
+The smoke scripts now prefer short local fixtures under AREA51\TestData before
+they fall back to test_media, test_audio, or the older remote sample URLs. The
+standard fast path is the local 1_min_test_Video.mp4, and audio
+translation-to-English smoke coverage also prefers a short local
+foreign-language clip when one is present.
 
 License
 -------

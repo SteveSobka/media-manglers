@@ -13,6 +13,8 @@ $stagingRoot = Join-Path $distFolder "staging"
 $archiveRoot = Join-Path $distFolder "archive"
 $releaseArchiveRoot = Join-Path $archiveRoot "release"
 $versionFile = Join-Path $repoRoot "VERSION"
+$pyprojectFile = Join-Path $repoRoot "pyproject.toml"
+$pythonCoreSourceRoot = Join-Path $repoRoot "src"
 $docsRoot = Join-Path $repoRoot "docs"
 $guidesRoot = Join-Path $docsRoot "guides"
 $releaseNotesRoot = Join-Path $docsRoot "release-notes"
@@ -43,6 +45,105 @@ function Remove-DirectoryIfEmpty {
             Remove-Item -LiteralPath $Path -Force
         }
     }
+}
+
+function Copy-DirectoryContents {
+    param(
+        [string]$SourceRoot,
+        [string]$DestinationRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+        throw "Directory copy source not found: $SourceRoot"
+    }
+
+    Ensure-Directory $DestinationRoot
+
+    foreach ($directory in @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -Directory -Force)) {
+        $relativePath = $directory.FullName.Substring($SourceRoot.Length).TrimStart('\', '/')
+        if (-not [string]::IsNullOrWhiteSpace($relativePath)) {
+            Ensure-Directory (Join-Path $DestinationRoot $relativePath)
+        }
+    }
+
+    foreach ($file in @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -Force)) {
+        $relativePath = $file.FullName.Substring($SourceRoot.Length).TrimStart('\', '/')
+        $destinationFile = Join-Path $DestinationRoot $relativePath
+        Ensure-Directory ([System.IO.Path]::GetDirectoryName($destinationFile))
+        [System.IO.File]::Copy($file.FullName, $destinationFile, $true)
+    }
+}
+
+function Assert-PythonCoreSidecar {
+    param([string]$PythonCoreRoot)
+
+    $requiredFiles = @(
+        "pyproject.toml",
+        "src\media_manglers\__init__.py",
+        "src\media_manglers\__main__.py",
+        "src\media_manglers\cli.py",
+        "src\media_manglers\contracts.py"
+    )
+
+    foreach ($requiredRelativePath in $requiredFiles) {
+        $requiredPath = Join-Path $PythonCoreRoot $requiredRelativePath
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "Python core sidecar is missing required file: $requiredPath"
+        }
+    }
+
+    $unexpectedArtifacts = @(
+        Get-ChildItem -LiteralPath $PythonCoreRoot -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.PSIsContainer -and $_.Name -eq "__pycache__") -or
+                (-not $_.PSIsContainer -and $_.Extension -eq ".pyc")
+            }
+    )
+    if ($unexpectedArtifacts.Count -gt 0) {
+        $artifactList = ($unexpectedArtifacts | Select-Object -ExpandProperty FullName) -join ", "
+        throw "Python core sidecar still contains compiled Python artifacts: $artifactList"
+    }
+}
+
+function Copy-PythonCoreSidecar {
+    param(
+        [string]$PythonCoreSourceRoot,
+        [string]$PyprojectFile,
+        [string]$DestinationRoot
+    )
+
+    $sourcePackageRoot = Join-Path $PythonCoreSourceRoot "media_manglers"
+    if (-not (Test-Path -LiteralPath $sourcePackageRoot)) {
+        throw "Python core package not found: $sourcePackageRoot"
+    }
+
+    if (-not (Test-Path -LiteralPath $PyprojectFile)) {
+        throw "Python core pyproject not found: $PyprojectFile"
+    }
+
+    $destinationPythonCoreRoot = Join-Path $DestinationRoot "python-core"
+    $destinationSourceRoot = Join-Path $destinationPythonCoreRoot "src"
+    $destinationPackageRoot = Join-Path $destinationSourceRoot "media_manglers"
+
+    Remove-PathIfPresent -Path $destinationPythonCoreRoot
+    Ensure-Directory $destinationSourceRoot
+    Ensure-Directory $destinationPackageRoot
+
+    Copy-DirectoryContents -SourceRoot $sourcePackageRoot -DestinationRoot $destinationPackageRoot
+    [System.IO.File]::Copy($PyprojectFile, (Join-Path $destinationPythonCoreRoot "pyproject.toml"), $true)
+
+    foreach ($cacheDirectory in @(Get-ChildItem -LiteralPath $destinationPythonCoreRoot -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $cacheDirectory.FullName -Recurse -Force
+    }
+
+    foreach ($compiledFile in @(
+        Get-ChildItem -LiteralPath $destinationPythonCoreRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -eq ".pyc" }
+    )) {
+        Remove-Item -LiteralPath $compiledFile.FullName -Force
+    }
+
+    Assert-PythonCoreSidecar -PythonCoreRoot $destinationPythonCoreRoot
 }
 
 function Move-ItemToArchive {
@@ -167,7 +268,7 @@ foreach ($appConfig in $selectedApps) {
     $appGuideSource = Join-Path $guidesRoot $appConfig.AppGuide
     $readmeTextSource = Join-Path $guidesRoot "README.txt"
 
-    foreach ($requiredPath in @($inputFile, $iconFile, $appGuideSource, $readmeTextSource, (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"))) {
+    foreach ($requiredPath in @($inputFile, $iconFile, $appGuideSource, $readmeTextSource, (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"), $pyprojectFile, (Join-Path $pythonCoreSourceRoot "media_manglers"))) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Required file not found: $requiredPath"
         }
@@ -195,9 +296,11 @@ foreach ($appConfig in $selectedApps) {
     try {
         Ensure-Directory $appFolder
         Ensure-Directory $docsFolder
+        Ensure-Directory $releaseRoot
 
         Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
         Copy-Item -LiteralPath $outputFile -Destination $releaseExe -Force
+        Copy-PythonCoreSidecar -PythonCoreSourceRoot $pythonCoreSourceRoot -PyprojectFile $pyprojectFile -DestinationRoot $appFolder
         Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
         Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
         Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
@@ -216,6 +319,7 @@ foreach ($appConfig in $selectedApps) {
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
     Write-Host ("Release exe: {0}" -f $releaseExe) -ForegroundColor Green
     Write-Host ("Release zip: {0}" -f $releaseZip) -ForegroundColor Green
+    Write-Host "Python core sidecar: included in the release zip app folder" -ForegroundColor Green
     if ($KeepPackageStaging) {
         Write-Host ("Package staging kept: {0}" -f $stagingFolder) -ForegroundColor Yellow
     }

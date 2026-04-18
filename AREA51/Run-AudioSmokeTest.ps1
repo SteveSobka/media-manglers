@@ -1,6 +1,8 @@
 param(
     [string]$TestAudioFolder = (Join-Path $PSScriptRoot "..\test_audio"),
     [string]$AudioPath,
+    [string]$PreferredShortAudioPath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
+    [string]$PreferredShortForeignAudioPath = (Join-Path $PSScriptRoot "TestData\German_audio_short_45s.mp3"),
     [string]$RemoteSampleUrl = "https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3",
     [string]$RemoteSampleFallbackUrl = "https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2",
     [string]$TranslationSampleUrl = "https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3",
@@ -38,7 +40,7 @@ function Get-RepresentativeSmokeTestAudio {
         }
     }
 
-    return $Files | Sort-Object Length -Descending | Select-Object -First 1
+    return $Files | Sort-Object Length | Select-Object -First 1
 }
 
 function Invoke-AudioPackaging {
@@ -146,6 +148,14 @@ elseif ($AllAudio) {
     }
     $selectedFiles = $audioFiles
     $inputTarget = (Resolve-Path -LiteralPath $TestAudioFolder).ProviderPath
+}
+elseif ($TranslateToEnglish -and -not [string]::IsNullOrWhiteSpace($PreferredShortForeignAudioPath) -and (Test-Path -LiteralPath $PreferredShortForeignAudioPath)) {
+    $selectedFiles = @((Get-Item -LiteralPath $PreferredShortForeignAudioPath))
+    $inputTarget = $selectedFiles[0].FullName
+}
+elseif (-not [string]::IsNullOrWhiteSpace($PreferredShortAudioPath) -and (Test-Path -LiteralPath $PreferredShortAudioPath)) {
+    $selectedFiles = @((Get-Item -LiteralPath $PreferredShortAudioPath))
+    $inputTarget = $selectedFiles[0].FullName
 }
 elseif ($audioFiles.Count -gt 0 -and -not $TranslateToEnglish) {
     $representative = Get-RepresentativeSmokeTestAudio -Files $audioFiles

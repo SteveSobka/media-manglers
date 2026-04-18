@@ -87,7 +87,12 @@ Release assets usually include:
 What to pick:
 
 - `*.exe`: just the app
-- `*.zip`: the app plus the plain-text guides, release notes, version file, license, and notices
+- `*.zip`: the app plus the plain-text guides, release notes, version file, license, notices, and the tracked `python-core` sidecar used by the migration path
+
+Current migration note:
+
+- The release zips now carry `python-core\src\media_manglers` beside the app so the tracked Python helper path has a stable packaged home during the transition.
+- Standalone `.exe` assets still keep the current compatibility path because the PowerShell wrapper can fall back to the legacy inline helper logic when that sidecar is not present.
 
 ## Setup Notes
 
@@ -114,9 +119,11 @@ For Local mode you may also need:
 - `argostranslate` for non-English local translation targets
 - matching Argos language packages for the source and target languages you request
 
-Local mode now defaults to Whisper `large`. That is intentional: local accuracy and nuance are prioritized over speed, so Local runs will be slower and heavier than smaller Whisper models. Advanced users can still choose a different supported local Whisper model with `-WhisperModel`.
+Interactive Local runs now ask which Whisper model to use. The beginner-friendly default on Enter is `medium`, and the prompt shows `small`, `medium`, and `large` with rough CPU-only transcription-time tradeoffs so operators are not surprised by the Local runtime cost. Scripted or `-NoPrompt` Local runs still keep the current accuracy-first default of `large` unless you explicitly pass `-WhisperModel`.
 
-On CPU-only systems, both apps now warn before Local Whisper `large` runs at or above about 15 minutes because the current Whisper watchdog is still `1800` seconds. If that warning appears, rerun with GPU, split the media, or choose a smaller `-WhisperModel`.
+Interactive translation now asks `Translate the transcript into another language? (Y/n):`. If you answer Yes or just press Enter, the next prompt asks for the target language code and defaults to `en` on Enter.
+
+Local Whisper no longer uses one fixed wall-clock cutoff for every run. Before a Local Whisper run starts, the apps now log the source duration, selected model, whether the Local path looks CPU-only or GPU-capable, the estimated transcription duration, the resolved adaptive timeout, and the separate stall watchdog. Very long interactive Local runs offer a simple continue/switch-smaller/cancel prompt, while `-NoPrompt` runs stay non-interactive. `-WhisperTimeoutSeconds` remains available as an explicit manual override when you need one.
 
 The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
@@ -278,7 +285,7 @@ Audio examples:
 ### Shared behavior
 
 - `-ProcessingMode` is the main operator-facing control. If you do not pass it, both apps default to `Local`.
-- If you do not explicitly pass `-WhisperModel` and the resolved mode is `Local`, both apps upgrade the literal script default to `large` for accuracy.
+- If you do not explicitly pass `-WhisperModel` and the resolved mode is `Local`, interactive runs prompt for `small`, `medium`, or `large` and default to `medium` on Enter. `-NoPrompt` and other scripted Local runs still keep the current `large` default unless you set `-WhisperModel` yourself.
 - `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project.
 - `-OpenAiModel` only matters when AI translation is requested. Current main queries `GET /v1/models`, keeps only the repo-approved allowlist for the chosen mode/project, auto-selects the first visible approved model, and only uses an approved fallback when discovery is skipped or only hits network / timeout / server-style failures.
 - `-NoPrompt` disables the interactive questions. Without `-NoPrompt`, the apps prompt for missing inputs and treat Enter as Yes for `CopyRaw*`, `CreateChatGptZip`, `OpenOutputInExplorer`, and supported YouTube comments prompts.
@@ -292,15 +299,16 @@ Audio examples:
 - `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
 - `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
 - `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs. Default: `yt-dlp`.
-- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base.en`. Real current-main Local default: `large` when you do not explicitly set the parameter. For translation work, use a multilingual model such as `large`.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base.en`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter.
 - `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
-- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs.
+- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs in scripted runs. Interactive runs now ask a yes/no question first and default the follow-up target-code prompt to `en`.
 - `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
 - `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
 - `-FrameIntervalSeconds`: Extract one frame every N seconds. Real default: `0.5`. Interactive runs prompt with `0.5` as the default; `-NoPrompt` runs take `0.5` automatically.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
+- `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
 - `-CopyRawVideo`: Copy the original source video into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.
 - `-IncludeComments`: Request YouTube comments when the source supports them. CLI default: off. Interactive YouTube default on Enter: Yes.
 - `-CreateChatGptZip`: Build `chatgpt_review_package.zip` for each completed package. CLI default: off. Interactive default on Enter: Yes.
@@ -341,14 +349,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 - `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
 - `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
 - `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs that need it. Default: `yt-dlp`.
-- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base`. Real current-main Local default: `large` when you do not explicitly set the parameter.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter.
 - `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
-- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs.
+- `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs in scripted runs. Interactive runs now ask a yes/no question first and default the follow-up target-code prompt to `en`.
 - `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
 - `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
+- `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
 - `-CopyRawAudio`: Copy the original source audio into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.
 - `-IncludeComments`: Request YouTube comments when the source supports them. CLI default: off. Interactive YouTube default on Enter: Yes.
 - `-CreateChatGptZip`: Build `chatgpt_review_package.zip` for each completed package. CLI default: off. Interactive default on Enter: Yes.
@@ -390,6 +399,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 
 ## Testing
 
+The smoke scripts now prefer short local fixtures under `AREA51\TestData` before they fall back to `test_media`, `test_audio`, or the older remote sample URLs. The standard fast path is the local `1_min_test_Video.mp4`, and audio translation-to-English smoke coverage also prefers a short local foreign-language clip when one is present.
+
 Video:
 
 ```powershell
@@ -403,6 +414,12 @@ Audio:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
 ```
+
+## Benchmark Snapshot
+
+A one-time longer German-to-English benchmark on 2026-04-17 compared Local Whisper `small`, `medium`, and `large` against AI Public and AI Private using the same 19m35s YouTube source through the normal Audio Mangler packaging path. On this CPU-only developer box, `small` was the fastest Local lane, `medium` was the best Local balance, `large` gave the best Local detail but took more than 2 hours, AI Public was fastest overall but weakest on transcript quality in the current scripted path, and AI Private was the best convenience/quality mix with a few cleanup caveats.
+
+The short version for operators is: use `Local medium` for longer privacy-sensitive CPU-only work, use `Local large` only when you explicitly want the best Local quality and can wait, and treat AI lanes as convenience-first options with different quality/privacy tradeoffs. Full methodology, exact timings, caption-comparison limits, and caveats are in [docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md](docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md).
 
 ## License And Notices
 
