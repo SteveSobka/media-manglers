@@ -26,6 +26,7 @@ param(
     [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
     [switch]$SkipEstimate,
+    [switch]$WhisperHealthCheck,
     [Alias("ShowVersion")]
     [switch]$Version,
     [int]$ChatGptZipMaxMb = 500
@@ -61,6 +62,7 @@ $script:OpenAiTestModeLogged = $false
 $script:ResolvedAppBaseDirectory = $null
 $script:MediaManglersPythonCliInfo = $null
 $script:WhisperCalibrationCache = @{}
+$script:PythonInterpreterResolutionNote = $null
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -260,13 +262,32 @@ function Write-Log {
 
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$timestamp] [$Level] $Message"
+    $infoAccent = $null
+    if ($Level -eq "INFO") {
+        if ($Message -match '\[GPU->CPU\]') {
+            $infoAccent = "Yellow"
+        }
+        elseif ($Message -match '\[GPU\]') {
+            $infoAccent = "Cyan"
+        }
+        elseif ($Message -match '\[CPU\]') {
+            $infoAccent = "DarkYellow"
+        }
+    }
 
     switch ($Level) {
         "ERROR" { Write-Host $line -ForegroundColor Red }
         "FAIL"  { Write-Host $line -ForegroundColor Red }
         "PASS"  { Write-Host $line -ForegroundColor Green }
         "WARN"  { Write-Host $line -ForegroundColor Yellow }
-        default { Write-Host $line }
+        default {
+            if ($infoAccent) {
+                Write-Host $line -ForegroundColor $infoAccent
+            }
+            else {
+                Write-Host $line
+            }
+        }
     }
 
     if ($script:CurrentLogFile) {
@@ -662,6 +683,141 @@ function Resolve-PythonInterpreterPath {
     throw "Python interpreter not found. Install Python so 'python' works, or rerun with -PythonExe pointing to a usable interpreter. Automatic resolution order: explicit -PythonExe, then python, then py -3."
 }
 
+function Get-AutoPythonInterpreterCandidates {
+    param([string]$PrimaryPythonCommand)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    foreach ($candidate in @($PrimaryPythonCommand, "python")) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        try {
+            $resolvedCandidate = Resolve-CommandOrPath -Value $candidate -ToolName "Python interpreter"
+            if (-not [string]::IsNullOrWhiteSpace($resolvedCandidate)) {
+                $candidates.Add($resolvedCandidate)
+            }
+        }
+        catch {
+        }
+    }
+
+    $pyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source) {
+        $probe = Invoke-ExternalCapture `
+            -FilePath $pyLauncher.Source `
+            -Arguments @("-3", "-c", "import sys; print(sys.executable)") `
+            -StepName "Resolve Python interpreter via py -3" `
+            -IgnoreExitCode `
+            -TimeoutSeconds 120
+
+        if ($probe.ExitCode -eq 0) {
+            $resolvedInterpreter = ($probe.StdOut -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($resolvedInterpreter) -and (Test-Path -LiteralPath $resolvedInterpreter)) {
+                $candidates.Add((Resolve-Path -LiteralPath $resolvedInterpreter).ProviderPath)
+            }
+        }
+    }
+
+    $whereExe = Get-Command "where.exe" -ErrorAction SilentlyContinue
+    if ($whereExe -and $whereExe.Source) {
+        $whereResult = Invoke-ExternalCapture `
+            -FilePath $whereExe.Source `
+            -Arguments @("python") `
+            -StepName "Enumerate Python interpreter candidates" `
+            -IgnoreExitCode `
+            -TimeoutSeconds 30
+
+        if ($whereResult.ExitCode -eq 0) {
+            foreach ($match in ($whereResult.StdOut -split "`r?`n")) {
+                $trimmedMatch = $match.Trim()
+                if (-not [string]::IsNullOrWhiteSpace($trimmedMatch) -and (Test-Path -LiteralPath $trimmedMatch)) {
+                    $candidates.Add((Resolve-Path -LiteralPath $trimmedMatch).ProviderPath)
+                }
+            }
+        }
+    }
+
+    return @($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Select-PreferredWhisperPythonInterpreter {
+    param([string]$PrimaryPythonCommand)
+
+    $candidatePaths = @(Get-AutoPythonInterpreterCandidates -PrimaryPythonCommand $PrimaryPythonCommand)
+    if ($candidatePaths.Count -eq 0) {
+        return [PSCustomObject]@{
+            Path  = $PrimaryPythonCommand
+            Probe = $null
+            Note  = $null
+        }
+    }
+
+    $candidateResults = New-Object System.Collections.Generic.List[object]
+    $candidateIndex = 0
+
+    foreach ($candidatePath in $candidatePaths) {
+        $probe = Get-WhisperExecutionMode -PythonCommand $candidatePath
+        $resolvedPath = $candidatePath
+        if (-not [string]::IsNullOrWhiteSpace($probe.PythonPath) -and (Test-Path -LiteralPath $probe.PythonPath)) {
+            $resolvedPath = (Resolve-Path -LiteralPath $probe.PythonPath).ProviderPath
+        }
+
+        $score = 0
+        if ($probe.WhisperImportOk) {
+            $score += 20
+        }
+        if ($probe.TorchImportOk) {
+            $score += 20
+        }
+        if ($probe.CudaAvailable) {
+            $score += 100
+        }
+        elseif ($probe.TorchImportOk) {
+            $score += 10
+        }
+
+        $candidateResults.Add([PSCustomObject]@{
+                Index = $candidateIndex
+                RequestedPath = $candidatePath
+                Path = $resolvedPath
+                Probe = $probe
+                Score = $score
+            })
+        $candidateIndex += 1
+    }
+
+    $selected = $candidateResults | Sort-Object -Property @{ Expression = "Score"; Descending = $true }, @{ Expression = "Index"; Descending = $false } | Select-Object -First 1
+    $primaryCandidate = $candidateResults | Where-Object { $_.Index -eq 0 } | Select-Object -First 1
+    $note = $null
+    $cudaReadyCandidates = @($candidateResults | Where-Object { $_.Probe -and $_.Probe.CudaAvailable })
+    $whisperReadyCandidates = @($candidateResults | Where-Object { $_.Probe -and $_.Probe.WhisperImportOk })
+    $primaryResolvedPath = if ($primaryCandidate) { [string]$primaryCandidate.Path } else { [string]$PrimaryPythonCommand }
+    $changedInterpreter = -not [string]::Equals([string]$selected.Path, $primaryResolvedPath, [System.StringComparison]::OrdinalIgnoreCase)
+
+    if ($changedInterpreter) {
+        if ($selected.Probe -and $selected.Probe.CudaAvailable) {
+            $note = ("Auto-selected Python interpreter '{0}' because it reported Whisper with CUDA enabled. Default auto-detected runtime '{1}' was not kept." -f $selected.Path, $primaryResolvedPath)
+        }
+        elseif ($selected.Probe -and $selected.Probe.WhisperImportOk) {
+            $note = ("Auto-selected Python interpreter '{0}' because it reported a healthier Whisper runtime than default auto-detected runtime '{1}'." -f $selected.Path, $primaryResolvedPath)
+        }
+    }
+    elseif ($cudaReadyCandidates.Count -eq 0 -and $whisperReadyCandidates.Count -gt 0) {
+        $note = ("No available Python interpreter reported CUDA during startup probing. Local Whisper will run on CPU with interpreter '{0}'." -f $selected.Path)
+    }
+    elseif ($whisperReadyCandidates.Count -eq 0) {
+        $note = ("No probed Python interpreter reported a healthy Whisper runtime. Using '{0}' and continuing with existing fallback behavior." -f $selected.Path)
+    }
+
+    return [PSCustomObject]@{
+        Path  = [string]$selected.Path
+        Probe = $selected.Probe
+        Note  = $note
+    }
+}
+
 function Invoke-MediaManglersPythonCli {
     param(
         [string]$PythonCommand,
@@ -672,7 +828,8 @@ function Invoke-MediaManglersPythonCli {
         [int]$TimeoutSeconds = 1800,
         [int]$StallTimeoutSeconds = 0,
         [double]$EstimatedTotalSeconds = 0,
-        [string]$ProgressStateFilePath = ""
+        [string]$ProgressStateFilePath = "",
+        [psobject]$CpuFallbackRuntimePlan = $null
     )
 
     $cliInfo = Get-MediaManglersPythonCliInfo
@@ -705,7 +862,8 @@ function Invoke-MediaManglersPythonCli {
             -TimeoutSeconds $TimeoutSeconds `
             -StallTimeoutSeconds $StallTimeoutSeconds `
             -EstimatedTotalSeconds $EstimatedTotalSeconds `
-            -ProgressStateFilePath $ProgressStateFilePath
+            -ProgressStateFilePath $ProgressStateFilePath `
+            -CpuFallbackRuntimePlan $CpuFallbackRuntimePlan
 
         $parsedResult = $null
         if (Test-Path -LiteralPath $tempResultJson) {
@@ -1407,12 +1565,50 @@ function Read-ProgressStateFile {
             ElapsedSeconds = [double]$parsed.elapsed_seconds
             UpdatedAtUtc   = $updatedAtUtc
             Device         = [string]$parsed.device
+            SelectedDevice = [string]$parsed.selected_device
+            RequestedDevice = [string]$parsed.requested_device
+            DeviceEvent    = [string]$parsed.device_event
+            DeviceSwitchCount = [int]$parsed.device_switch_count
+            GpuError       = [string]$parsed.gpu_error
             ModelName      = [string]$parsed.model_name
             TaskName       = [string]$parsed.task_name
         }
     }
     catch {
         return $null
+    }
+}
+
+function Get-ProgressDeviceValue {
+    param([psobject]$ProgressState)
+
+    if ($null -eq $ProgressState) {
+        return ""
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProgressState.SelectedDevice) -and $ProgressState.SelectedDevice -ne "pending") {
+        return [string]$ProgressState.SelectedDevice
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProgressState.Device) -and $ProgressState.Device -ne "pending") {
+        return [string]$ProgressState.Device
+    }
+
+    return ""
+}
+
+function Get-ProgressDeviceTag {
+    param([string]$Device)
+
+    if ([string]::IsNullOrWhiteSpace($Device)) {
+        return ""
+    }
+
+    switch ($Device.Trim().ToLowerInvariant()) {
+        "cuda" { return "[GPU]" }
+        "gpu"  { return "[GPU]" }
+        "cpu"  { return "[CPU]" }
+        default { return "" }
     }
 }
 
@@ -1424,17 +1620,38 @@ function Get-ProgressStateSummary {
     }
 
     $parts = New-Object System.Collections.Generic.List[string]
+    $deviceValue = Get-ProgressDeviceValue -ProgressState $ProgressState
+    $deviceTag = Get-ProgressDeviceTag -Device $deviceValue
+    if (-not [string]::IsNullOrWhiteSpace($deviceTag)) {
+        [void]$parts.Add($deviceTag)
+    }
     if (-not [string]::IsNullOrWhiteSpace($ProgressState.Stage)) {
         [void]$parts.Add(("stage {0}" -f $ProgressState.Stage))
     }
     if (-not [string]::IsNullOrWhiteSpace($ProgressState.Message)) {
         [void]$parts.Add([string]$ProgressState.Message)
     }
-    if (-not [string]::IsNullOrWhiteSpace($ProgressState.Device) -and $ProgressState.Device -ne "pending") {
-        [void]$parts.Add(("device {0}" -f $ProgressState.Device))
+    if (-not [string]::IsNullOrWhiteSpace($deviceValue)) {
+        [void]$parts.Add(("device {0}" -f $deviceValue))
     }
 
     return ($parts -join "; ")
+}
+
+function Get-ProgressStateSignature {
+    param([psobject]$ProgressState)
+
+    if ($null -eq $ProgressState) {
+        return ""
+    }
+
+    return ("{0}|{1}|{2}|{3}|{4}|{5}" -f `
+        [string]$ProgressState.Stage, `
+        [string]$ProgressState.Message, `
+        (Get-ProgressDeviceValue -ProgressState $ProgressState), `
+        [string]$ProgressState.DeviceEvent, `
+        [int]$ProgressState.DeviceSwitchCount, `
+        [string]$ProgressState.GpuError)
 }
 
 function Invoke-ExternalCapture {
@@ -1525,7 +1742,8 @@ function Invoke-ExternalStreaming {
         [int]$TimeoutSeconds = 1800,
         [int]$StallTimeoutSeconds = 0,
         [double]$EstimatedTotalSeconds = 0,
-        [string]$ProgressStateFilePath = ""
+        [string]$ProgressStateFilePath = "",
+        [psobject]$CpuFallbackRuntimePlan = $null
     )
 
     $argString = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join " ")
@@ -1552,6 +1770,11 @@ function Invoke-ExternalStreaming {
 
         $start = Get-Date
         $nextHeartbeat = if ($HeartbeatSeconds -gt 0) { (Get-Date).AddSeconds($HeartbeatSeconds) } else { $null }
+        $effectiveEstimatedTotalSeconds = [double]$EstimatedTotalSeconds
+        $effectiveTimeoutSeconds = [double]$TimeoutSeconds
+        $lastProgressSignature = ""
+        $lastKnownDevice = ""
+        $gpuFallbackHandled = $false
 
         while (-not $proc.HasExited) {
             Start-Sleep -Milliseconds 500
@@ -1559,6 +1782,62 @@ function Invoke-ExternalStreaming {
             $now = Get-Date
             $elapsed = ($now - $start).TotalSeconds
             $progressState = Read-ProgressStateFile -Path $ProgressStateFilePath
+            $progressSignature = Get-ProgressStateSignature -ProgressState $progressState
+            $currentProgressDevice = Get-ProgressDeviceValue -ProgressState $progressState
+            $progressRequestedDevice = if ($progressState) { [string]$progressState.RequestedDevice } else { "" }
+            $progressDeviceEvent = if ($progressState) { [string]$progressState.DeviceEvent } else { "" }
+            $progressIndicatesGpuFallback = (
+                $progressRequestedDevice -eq "cuda" -and
+                $currentProgressDevice -eq "cpu" -and
+                (
+                    $lastKnownDevice -eq "cuda" -or
+                    $progressDeviceEvent -eq "gpu_to_cpu_fallback"
+                )
+            )
+
+            if (-not [string]::IsNullOrWhiteSpace($currentProgressDevice)) {
+                $lastKnownDevice = $currentProgressDevice
+            }
+
+            if ($progressState -and $progressSignature -ne $lastProgressSignature) {
+                if (-not $gpuFallbackHandled -and $progressIndicatesGpuFallback) {
+                    $gpuReason = if (-not [string]::IsNullOrWhiteSpace($progressState.GpuError)) {
+                        [string]$progressState.GpuError
+                    }
+                    else {
+                        "reason not reported by the helper"
+                    }
+
+                    if ($CpuFallbackRuntimePlan) {
+                        $previousBudgetLabel = if ($effectiveTimeoutSeconds -gt 0) {
+                            Format-DurationHuman -Seconds $effectiveTimeoutSeconds
+                        }
+                        else {
+                            "none"
+                        }
+                        $rebasedEstimatedTotalSeconds = [math]::Ceiling($elapsed + [double]$CpuFallbackRuntimePlan.EstimatedRuntimeSeconds)
+                        $rebasedTimeoutSeconds = [math]::Ceiling($elapsed + [double]$CpuFallbackRuntimePlan.ResolvedTimeoutSeconds)
+                        $effectiveEstimatedTotalSeconds = [math]::Max($effectiveEstimatedTotalSeconds, [double]$rebasedEstimatedTotalSeconds)
+                        $effectiveTimeoutSeconds = [math]::Max($effectiveTimeoutSeconds, [double]$rebasedTimeoutSeconds)
+                        Write-Log ("[GPU->CPU] Local Whisper switched from GPU to CPU after {0}. GPU failure reason: {1}. The helper restarted the full source on CPU, so the runtime budget was rebased from {2} to {3}; estimated total is now {4}." -f `
+                            (Format-DurationHuman -Seconds $elapsed), `
+                            $gpuReason, `
+                            $previousBudgetLabel, `
+                            (Format-DurationHuman -Seconds $effectiveTimeoutSeconds), `
+                            (Format-DurationHuman -Seconds $effectiveEstimatedTotalSeconds)) "WARN"
+                    }
+                    else {
+                        Write-Log ("[GPU->CPU] Local Whisper switched from GPU to CPU after {0}. GPU failure reason: {1}. The current timeout remains active because this run is using an explicit override." -f `
+                            (Format-DurationHuman -Seconds $elapsed), `
+                            $gpuReason) "WARN"
+                    }
+
+                    $gpuFallbackHandled = $true
+                }
+
+                $lastProgressSignature = $progressSignature
+            }
+
             $progressUpdatedAtUtc = $null
             if ($progressState -and $progressState.UpdatedAtUtc) {
                 $progressUpdatedAtUtc = $progressState.UpdatedAtUtc
@@ -1575,20 +1854,20 @@ function Invoke-ExternalStreaming {
             }
 
             if ($nextHeartbeat -and $now -ge $nextHeartbeat) {
-                $estimatedTotalLabel = if ($EstimatedTotalSeconds -gt 0) {
-                    Format-DurationHuman -Seconds $EstimatedTotalSeconds
+                $estimatedTotalLabel = if ($effectiveEstimatedTotalSeconds -gt 0) {
+                    Format-DurationHuman -Seconds $effectiveEstimatedTotalSeconds
                 }
                 else {
                     "unknown"
                 }
-                $estimatedRemainingLabel = if ($EstimatedTotalSeconds -gt 0) {
-                    Format-DurationHuman -Seconds ([math]::Max(0.0, $EstimatedTotalSeconds - $elapsed))
+                $estimatedRemainingLabel = if ($effectiveEstimatedTotalSeconds -gt 0) {
+                    Format-DurationHuman -Seconds ([math]::Max(0.0, $effectiveEstimatedTotalSeconds - $elapsed))
                 }
                 else {
                     "unknown"
                 }
-                $runtimeBudgetLabel = if ($TimeoutSeconds -gt 0) {
-                    Format-DurationHuman -Seconds $TimeoutSeconds
+                $runtimeBudgetLabel = if ($effectiveTimeoutSeconds -gt 0) {
+                    Format-DurationHuman -Seconds $effectiveTimeoutSeconds
                 }
                 else {
                     "none"
@@ -1613,7 +1892,15 @@ function Invoke-ExternalStreaming {
                     ("; helper state {0}" -f $progressSummary)
                 }
 
-                Write-Log ("{0} still working... elapsed {1}; estimated total {2}; estimated remaining {3}; runtime budget {4}; last progress update {5} ago; stall watchdog {6}{7}" -f $StepName, (Format-DurationHuman -Seconds $elapsed), $estimatedTotalLabel, $estimatedRemainingLabel, $runtimeBudgetLabel, $progressAgeLabel, $stallWatchdogLabel, $progressSuffix)
+                $deviceTag = Get-ProgressDeviceTag -Device $currentProgressDevice
+                $stepLabel = if ([string]::IsNullOrWhiteSpace($deviceTag)) {
+                    $StepName
+                }
+                else {
+                    ("{0} {1}" -f $deviceTag, $StepName)
+                }
+
+                Write-Log ("{0} still working... elapsed {1}; estimated total {2}; estimated remaining {3}; runtime budget {4}; last progress update {5} ago; stall watchdog {6}{7}" -f $stepLabel, (Format-DurationHuman -Seconds $elapsed), $estimatedTotalLabel, $estimatedRemainingLabel, $runtimeBudgetLabel, $progressAgeLabel, $stallWatchdogLabel, $progressSuffix)
                 $nextHeartbeat = $now.AddSeconds($HeartbeatSeconds)
             }
 
@@ -1626,13 +1913,13 @@ function Invoke-ExternalStreaming {
                 throw "$StepName stopped reporting progress for $(Format-DurationHuman -Seconds $progressAgeSeconds). The stall watchdog is $(Format-DurationHuman -Seconds $StallTimeoutSeconds). Last helper state: $progressSummary"
             }
 
-            if ($TimeoutSeconds -gt 0 -and $elapsed -ge $TimeoutSeconds) {
+            if ($effectiveTimeoutSeconds -gt 0 -and $elapsed -ge $effectiveTimeoutSeconds) {
                 try { $proc.Kill() } catch { }
                 $progressSummary = Get-ProgressStateSummary -ProgressState $progressState
                 if ([string]::IsNullOrWhiteSpace($progressSummary)) {
-                    throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $TimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed)."
+                    throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $effectiveTimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed)."
                 }
-                throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $TimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed). Last helper state: $progressSummary"
+                throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $effectiveTimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed). Last helper state: $progressSummary"
             }
         }
 
@@ -2767,8 +3054,14 @@ function Get-WhisperExecutionMode {
                 TorchImportOk   = [bool]$data.torch_import_ok
                 CudaAvailable   = [bool]$data.cuda_available
                 Device          = [string]$data.device
+                SelectedDevice  = [string]$data.selected_device
+                SelectedDeviceName = [string]$data.selected_device_name
+                CudaDeviceCount = [int]$data.cuda_device_count
+                CudaDeviceNames = @($data.cuda_device_names | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
                 TorchVersion    = [string]$data.torch_version
                 CudaVersion     = [string]$data.cuda_version
+                PythonPath      = [string]$data.python_path
+                PythonVersion   = [string]$data.python_version
                 Error           = [string]$data.error
             }
         }
@@ -2784,15 +3077,22 @@ function Get-WhisperExecutionMode {
 
     $tempPy = Join-Path $env:TEMP ("whisper_probe_" + [guid]::NewGuid().ToString() + ".py")
 
-    $pyCode = @'
+$pyCode = @'
 print("[PY-PROBE] Python process started", flush=True)
 import json
+import sys
 
 result = {
+    "python_path": sys.executable,
+    "python_version": sys.version.split()[0],
     "whisper_import_ok": False,
     "torch_import_ok": False,
     "cuda_available": False,
     "device": "cpu",
+    "selected_device": "cpu",
+    "selected_device_name": "",
+    "cuda_device_count": 0,
+    "cuda_device_names": [],
     "torch_version": None,
     "cuda_version": None,
     "error": None
@@ -2812,7 +3112,22 @@ try:
     result["torch_version"] = getattr(torch, "__version__", None)
     result["cuda_version"] = getattr(torch.version, "cuda", None)
     result["cuda_available"] = bool(torch.cuda.is_available())
-    result["device"] = "cuda" if result["cuda_available"] else "cpu"
+    result["selected_device"] = "cuda" if result["cuda_available"] else "cpu"
+    result["device"] = result["selected_device"]
+    try:
+        result["cuda_device_count"] = int(torch.cuda.device_count())
+    except Exception:
+        result["cuda_device_count"] = 0
+    if result["cuda_available"] and result["cuda_device_count"] > 0:
+        for index in range(result["cuda_device_count"]):
+            try:
+                device_name = str(torch.cuda.get_device_name(index) or "").strip()
+            except Exception:
+                device_name = ""
+            if device_name:
+                result["cuda_device_names"].append(device_name)
+        if result["cuda_device_names"]:
+            result["selected_device_name"] = result["cuda_device_names"][0]
 except Exception as ex:
     if result["error"]:
         result["error"] += f" | torch import failed: {ex}"
@@ -2837,8 +3152,14 @@ print(json.dumps(result), flush=True)
                 TorchImportOk   = $false
                 CudaAvailable   = $false
                 Device          = "cpu"
+                SelectedDevice  = "cpu"
+                SelectedDeviceName = ""
+                CudaDeviceCount = 0
+                CudaDeviceNames = @()
                 TorchVersion    = ""
                 CudaVersion     = ""
+                PythonPath      = $PythonCommand
+                PythonVersion   = ""
                 Error           = "Python probe failed. See log."
             }
         }
@@ -2855,8 +3176,14 @@ print(json.dumps(result), flush=True)
             TorchImportOk   = [bool]$parsed.torch_import_ok
             CudaAvailable   = [bool]$parsed.cuda_available
             Device          = [string]$parsed.device
+            SelectedDevice  = [string]$parsed.selected_device
+            SelectedDeviceName = [string]$parsed.selected_device_name
+            CudaDeviceCount = [int]$parsed.cuda_device_count
+            CudaDeviceNames = @($parsed.cuda_device_names | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
             TorchVersion    = [string]$parsed.torch_version
             CudaVersion     = [string]$parsed.cuda_version
+            PythonPath      = [string]$parsed.python_path
+            PythonVersion   = [string]$parsed.python_version
             Error           = [string]$parsed.error
         }
     }
@@ -2866,8 +3193,14 @@ print(json.dumps(result), flush=True)
             TorchImportOk   = $false
             CudaAvailable   = $false
             Device          = "cpu"
+            SelectedDevice  = "cpu"
+            SelectedDeviceName = ""
+            CudaDeviceCount = 0
+            CudaDeviceNames = @()
             TorchVersion    = ""
             CudaVersion     = ""
+            PythonPath      = $PythonCommand
+            PythonVersion   = ""
             Error           = $_.Exception.Message
         }
     }
@@ -2876,6 +3209,173 @@ print(json.dumps(result), flush=True)
             Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
         }
     }
+}
+
+function Get-WhisperProbeDeviceNames {
+    param([psobject]$WhisperProbe)
+
+    $deviceNames = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $WhisperProbe) {
+        return @()
+    }
+
+    if ($null -ne $WhisperProbe.PSObject.Properties["CudaDeviceNames"]) {
+        foreach ($deviceName in @($WhisperProbe.CudaDeviceNames)) {
+            $trimmed = [string]$deviceName
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $deviceNames.Add($trimmed.Trim())
+            }
+        }
+    }
+
+    if ($deviceNames.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$WhisperProbe.SelectedDeviceName)) {
+        $deviceNames.Add(([string]$WhisperProbe.SelectedDeviceName).Trim())
+    }
+
+    return @($deviceNames | Select-Object -Unique)
+}
+
+function Get-WhisperProbeAssessment {
+    param([psobject]$WhisperProbe)
+
+    $deviceNames = @(Get-WhisperProbeDeviceNames -WhisperProbe $WhisperProbe)
+    $deviceNamesText = if ($deviceNames.Count -gt 0) { $deviceNames -join ", " } else { "none" }
+
+    $code = "misconfigured_or_uncertain"
+    $label = "Local Whisper runtime misconfigured or uncertain"
+    $summary = "The selected Python runtime is not ready for a trustworthy Local Whisper run yet."
+    $action = "Fix the selected Python runtime before starting a long Local Whisper run."
+    $isReady = $false
+
+    if ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and $WhisperProbe.TorchImportOk -and $WhisperProbe.CudaAvailable) {
+        if ($deviceNames.Count -gt 0 -or [int]$WhisperProbe.CudaDeviceCount -gt 0) {
+            $code = "gpu_capable_for_whisper"
+            $label = "GPU-capable for Local Whisper"
+            $summary = "This machine can run Local Whisper on CUDA in the selected Python runtime."
+            $action = "You can use this box for real CUDA Local Whisper runs."
+            $isReady = $true
+        }
+        else {
+            $summary = "PyTorch reported CUDA available, but no CUDA devices were reported by the selected Python runtime."
+            $action = "Treat this machine as uncertain and repair the Python/CUDA runtime before a long Local Whisper run."
+        }
+    }
+    elseif ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and $WhisperProbe.TorchImportOk) {
+        $code = "cpu_only_for_whisper"
+        $label = "CPU-only for Local Whisper"
+        $summary = "This machine can run Local Whisper on CPU, but CUDA is not available in the selected Python runtime."
+        $action = "CPU-only validation is fine here. Use a separate GPU-capable box for real CUDA sign-off."
+        $isReady = $true
+    }
+    elseif ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and -not $WhisperProbe.TorchImportOk) {
+        $summary = "Whisper imported, but PyTorch did not import cleanly in the selected Python runtime."
+        $action = "Repair the PyTorch install or pick a different Python interpreter before starting Local Whisper."
+    }
+    elseif ($WhisperProbe -and $WhisperProbe.TorchImportOk -and -not $WhisperProbe.WhisperImportOk) {
+        $summary = "PyTorch imported, but whisper did not import cleanly in the selected Python runtime."
+        $action = "Install or repair openai-whisper before starting Local Whisper."
+    }
+
+    return [PSCustomObject]@{
+        Code            = $code
+        Label           = $label
+        Summary         = $summary
+        Action          = $action
+        IsReady         = $isReady
+        DeviceNames     = @($deviceNames)
+        DeviceNamesText = $deviceNamesText
+    }
+}
+
+function Write-WhisperProbeReport {
+    param(
+        [psobject]$WhisperProbe,
+        [bool]$IncludeNvidiaPresence = $false,
+        [bool]$NvidiaPresent = $false,
+        [bool]$EmitLogOutput = $true
+    )
+
+    $assessment = Get-WhisperProbeAssessment -WhisperProbe $WhisperProbe
+
+    if ($IncludeNvidiaPresence) {
+        Write-Host ("NVIDIA GPU detected (nvidia-smi): {0}" -f $(if ($NvidiaPresent) { "Yes" } else { "No" }))
+    }
+
+    Write-Host ("Whisper runtime health:          {0}" -f $assessment.Label)
+    Write-Host ("Whisper health summary:          {0}" -f $assessment.Summary)
+    Write-Host ("Whisper next step:               {0}" -f $assessment.Action)
+    Write-Host ("Selected Python interpreter:     {0}" -f $(if ($WhisperProbe.PythonPath) { $WhisperProbe.PythonPath } else { "unknown" }))
+    Write-Host ("Python runtime version:          {0}" -f $(if ($WhisperProbe.PythonVersion) { $WhisperProbe.PythonVersion } else { "unknown" }))
+    Write-Host ("PyTorch version:                 {0}" -f $(if ($WhisperProbe.TorchVersion) { $WhisperProbe.TorchVersion } else { "unavailable" }))
+    Write-Host ("PyTorch CUDA version:            {0}" -f $(if ($WhisperProbe.CudaVersion) { $WhisperProbe.CudaVersion } else { "unavailable" }))
+    Write-Host ("cuda_available:                  {0}" -f $(if ($WhisperProbe.CudaAvailable) { "true" } else { "false" }))
+    Write-Host ("Detected GPU devices:            {0}" -f $assessment.DeviceNamesText)
+    Write-Host ("Selected Local Whisper device:   {0}" -f $(if ($WhisperProbe.SelectedDevice) { $WhisperProbe.SelectedDevice } else { "unknown" }))
+    if ($WhisperProbe.Error) {
+        Write-Host ("Whisper probe notes:             {0}" -f $WhisperProbe.Error)
+    }
+
+    if ($EmitLogOutput) {
+        Write-Log ("Whisper runtime health: {0}. {1}" -f $assessment.Label, $assessment.Summary)
+        Write-Log ("Whisper runtime action: {0}" -f $assessment.Action)
+        Write-Log ("Whisper runtime probe: selected Python interpreter {0}; python version {1}; torch version {2}; torch CUDA version {3}; cuda_available {4}; detected GPU devices {5}; selected Local Whisper device {6}." -f `
+            $(if ($WhisperProbe.PythonPath) { $WhisperProbe.PythonPath } else { "unknown" }), `
+            $(if ($WhisperProbe.PythonVersion) { $WhisperProbe.PythonVersion } else { "unknown" }), `
+            $(if ($WhisperProbe.TorchVersion) { $WhisperProbe.TorchVersion } else { "unavailable" }), `
+            $(if ($WhisperProbe.CudaVersion) { $WhisperProbe.CudaVersion } else { "unavailable" }), `
+            $(if ($WhisperProbe.CudaAvailable) { "true" } else { "false" }), `
+            $assessment.DeviceNamesText, `
+            $(if ($WhisperProbe.SelectedDevice) { $WhisperProbe.SelectedDevice } else { "unknown" }))
+        if ($WhisperProbe.Error) {
+            Write-Log ("Whisper runtime probe notes: {0}" -f $WhisperProbe.Error) "WARN"
+        }
+    }
+
+    return $assessment
+}
+
+function Invoke-WhisperHealthCheck {
+    param(
+        [string]$PythonCommand,
+        [bool]$PythonLauncherWasExplicit = $false
+    )
+
+    $nvidiaPresent = Test-NvidiaSmiAvailable
+    $whisperProbe = $null
+    if (-not $PythonLauncherWasExplicit) {
+        $pythonSelection = Select-PreferredWhisperPythonInterpreter -PrimaryPythonCommand $PythonCommand
+        if ($pythonSelection) {
+            if (-not [string]::IsNullOrWhiteSpace($pythonSelection.Path)) {
+                $PythonCommand = $pythonSelection.Path
+            }
+            $whisperProbe = $pythonSelection.Probe
+            $script:PythonInterpreterResolutionNote = $pythonSelection.Note
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:PythonInterpreterResolutionNote)) {
+        Write-Log $script:PythonInterpreterResolutionNote "WARN"
+    }
+
+    if ($null -eq $whisperProbe) {
+        $whisperProbe = Get-WhisperExecutionMode -PythonCommand $PythonCommand
+    }
+
+    Write-Host ""
+    Write-Host "Local Whisper Runtime Health"
+    Write-Host "----------------------------"
+    $assessment = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent -EmitLogOutput $false
+    Write-Host ""
+    if ($assessment.IsReady) {
+        Write-Host ("Health check result:            {0}" -f $assessment.Label) -ForegroundColor Green
+        return [PSCustomObject]@{
+            PythonCommand = $PythonCommand
+            Probe         = $whisperProbe
+            Assessment    = $assessment
+        }
+    }
+
+    throw "Local Whisper runtime health check did not pass. $($assessment.Summary)"
 }
 
 function New-CodexReadme {
@@ -6178,7 +6678,8 @@ function Invoke-PythonWhisperTranscriptProcess {
         [int]$StallTimeoutSeconds = 0,
         [double]$EstimatedTotalSeconds = 0,
         [string]$ProgressStateFilePath = "",
-        [string]$StepName = "Python Whisper transcription"
+        [string]$StepName = "Python Whisper transcription",
+        [psobject]$CpuFallbackRuntimePlan = $null
     )
 
     Ensure-Directory $TranscriptFolder
@@ -6205,7 +6706,8 @@ function Invoke-PythonWhisperTranscriptProcess {
         -TimeoutSeconds $TimeoutSeconds `
         -StallTimeoutSeconds $StallTimeoutSeconds `
         -EstimatedTotalSeconds $EstimatedTotalSeconds `
-        -ProgressStateFilePath $ProgressStateFilePath
+        -ProgressStateFilePath $ProgressStateFilePath `
+        -CpuFallbackRuntimePlan $CpuFallbackRuntimePlan
 
     if ($cliResult) {
         if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
@@ -6218,6 +6720,9 @@ function Invoke-PythonWhisperTranscriptProcess {
                 TextPath = [string]$data.text_path
                 Language = [string]$data.language
                 GpuError = [string]$data.gpu_error
+                RequestedDevice = [string]$data.requested_device
+                SelectedDevice = [string]$data.selected_device
+                DeviceSwitchCount = [int]$data.device_switch_count
             }
         }
 
@@ -6233,7 +6738,7 @@ function Invoke-PythonWhisperTranscriptProcess {
     $ffmpegDir = Split-Path $FFmpegExe -Parent
     $tempPy = Join-Path $env:TEMP ("whisper_transcribe_" + [guid]::NewGuid().ToString() + ".py")
 
-    $pyCode = @'
+$pyCode = @'
 print("[PY] Python process started", flush=True)
 
 import json
@@ -6243,6 +6748,15 @@ import traceback
 import time
 import threading
 from datetime import datetime, timezone
+
+for stream_name in ("stdout", "stderr"):
+    stream = getattr(sys, stream_name, None)
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 audio_path = sys.argv[1]
 output_dir = sys.argv[2]
@@ -6269,15 +6783,23 @@ progress_state = {
     "stage": "starting",
     "message": "Preparing Whisper helper",
     "device": "pending",
+    "selected_device": "pending",
+    "requested_device": "cuda" if prefer_gpu else "cpu",
+    "device_event": "starting",
+    "device_switch_count": 0,
+    "gpu_error": "",
 }
 
-def write_progress(stage=None, message=None, device=None):
+def write_progress(stage=None, message=None, device=None, extra=None):
     if stage is not None:
         progress_state["stage"] = stage
     if message is not None:
         progress_state["message"] = message
     if device:
         progress_state["device"] = device
+        progress_state["selected_device"] = device
+    if extra:
+        progress_state.update(extra)
 
     if not progress_file:
         return
@@ -6288,6 +6810,11 @@ def write_progress(stage=None, message=None, device=None):
         "elapsed_seconds": round(max(0.0, time.time() - started_at), 1),
         "updated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "device": progress_state["device"],
+        "selected_device": progress_state["selected_device"],
+        "requested_device": progress_state["requested_device"],
+        "device_event": progress_state["device_event"],
+        "device_switch_count": progress_state["device_switch_count"],
+        "gpu_error": progress_state["gpu_error"],
         "model_name": model_name,
         "task_name": task_name,
     }
@@ -6344,16 +6871,26 @@ def fmt_srt_time(seconds):
 
 def run_transcription(device_name):
     fp16 = device_name == "cuda"
-    write_progress("loading_model", f"Loading Whisper model '{model_name}' on {device_name}", device_name)
+    write_progress(
+        "loading_model",
+        f"Loading Whisper model '{model_name}' on {device_name}",
+        device_name,
+        {"requested_device": progress_state["requested_device"]},
+    )
     log(f"[PY] Loading model '{model_name}' on device '{device_name}'...")
     model = whisper.load_model(model_name, device=device_name)
-    write_progress("transcribing", f"Running Whisper {task_name} on {device_name}", device_name)
+    write_progress(
+        "transcribing",
+        f"Running Whisper {task_name} on {device_name}",
+        device_name,
+        {"requested_device": progress_state["requested_device"]},
+    )
     log(f"[PY] Starting {task_name} on {device_name}...")
     result = model.transcribe(
         audio_path,
         language=language_code if language_code else None,
         task=task_name,
-        verbose=True,
+        verbose=False,
         fp16=fp16
     )
     return result, fp16
@@ -6366,16 +6903,41 @@ result = None
 try:
     log(f"[PY] Audio input: {audio_path}")
     log(f"[PY] Output dir: {output_dir}")
+    log(f"[PY] Python executable: {sys.executable}")
+    log(f"[PY] Python version: {sys.version.split()[0]}")
 
     if prefer_gpu and torch is not None and torch.cuda.is_available():
+        try:
+            log(f"[PY] Torch version: {getattr(torch, '__version__', '') or 'unavailable'}")
+            log(f"[PY] Torch CUDA version: {getattr(torch.version, 'cuda', '') or 'unavailable'}")
+            log(f"[PY] CUDA available: {bool(torch.cuda.is_available())}")
+            log(f"[PY] CUDA device count: {int(torch.cuda.device_count())}")
+            if int(torch.cuda.device_count()) > 0:
+                log(f"[PY] CUDA device[0]: {torch.cuda.get_device_name(0)}")
+        except Exception:
+            pass
+        log("[PY] Requested device: cuda")
         try:
             device = "cuda"
             result, fp16 = run_transcription("cuda")
         except Exception as ex:
             gpu_error = str(ex)
             log(f"[PY] GPU transcription failed. Retrying on CPU. {ex}")
+            write_progress(
+                "fallback_to_cpu",
+                f"GPU failed. Retrying on CPU. {gpu_error}",
+                "cpu",
+                {
+                    "selected_device": "cpu",
+                    "device_event": "gpu_to_cpu_fallback",
+                    "device_switch_count": 1,
+                    "gpu_error": gpu_error,
+                },
+            )
             traceback.print_exc(file=sys.stderr)
             device = "cpu"
+    else:
+        log("[PY] Requested device: cpu")
 
     if result is None:
         result, fp16 = run_transcription("cpu")
@@ -6416,7 +6978,10 @@ try:
         "srt_path": srt_path,
         "text_path": text_path,
         "language": result.get("language", ""),
-        "gpu_error": gpu_error
+        "gpu_error": gpu_error,
+        "requested_device": progress_state["requested_device"],
+        "selected_device": progress_state["selected_device"],
+        "device_switch_count": progress_state["device_switch_count"]
     }), flush=True)
 
 except Exception:
@@ -6452,7 +7017,8 @@ finally:
             -TimeoutSeconds $TimeoutSeconds `
             -StallTimeoutSeconds $StallTimeoutSeconds `
             -EstimatedTotalSeconds $EstimatedTotalSeconds `
-            -ProgressStateFilePath $ProgressStateFilePath
+            -ProgressStateFilePath $ProgressStateFilePath `
+            -CpuFallbackRuntimePlan $CpuFallbackRuntimePlan
 
         if ($result.ExitCode -ne 0) {
             throw "Python Whisper transcription failed. See script_run.log for the exact Python error."
@@ -6474,6 +7040,9 @@ finally:
             TextPath = [string]$parsed.text_path
             Language = [string]$parsed.language
             GpuError = [string]$parsed.gpu_error
+            RequestedDevice = [string]$parsed.requested_device
+            SelectedDevice = [string]$parsed.selected_device
+            DeviceSwitchCount = [int]$parsed.device_switch_count
         }
     }
     finally {
@@ -6696,6 +7265,19 @@ function Invoke-PythonWhisperTranscript {
 
     Write-LocalWhisperRuntimePlanLog -Task $Task -ModelName $resolvedModelName -Plan $runtimePlan
 
+    $cpuFallbackRuntimePlan = $null
+    if ($PreferGpu -and $runtimePlan.TimeoutSource -eq "adaptive_runtime_budget") {
+        $cpuFallbackRuntimePlan = Get-LocalWhisperAdaptiveRuntimePlan `
+            -PythonCommand $PythonCommand `
+            -SourceDurationSeconds $SourceDurationSeconds `
+            -ModelName $resolvedModelName `
+            -CanUseWhisperGpu $false `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -WhisperTimeoutSeconds 0 `
+            -Task $Task `
+            -CalibrationStatus "GPU plan was used initially; CPU fallback now uses the conservative CPU heuristic."
+    }
+
     $progressStateFilePath = Join-Path $env:TEMP ("whisper_progress_" + [guid]::NewGuid().ToString() + ".json")
     $stepName = if ($Task -eq "translate") { "Python Whisper translation" } else { "Python Whisper transcription" }
 
@@ -6717,7 +7299,8 @@ function Invoke-PythonWhisperTranscript {
             -StallTimeoutSeconds $runtimePlan.StallTimeoutSeconds `
             -EstimatedTotalSeconds $runtimePlan.EstimatedRuntimeSeconds `
             -ProgressStateFilePath $progressStateFilePath `
-            -StepName $stepName
+            -StepName $stepName `
+            -CpuFallbackRuntimePlan $cpuFallbackRuntimePlan
 
         $result | Add-Member -NotePropertyName ModelNameUsed -NotePropertyValue $resolvedModelName -Force
         $result | Add-Member -NotePropertyName RuntimePlan -NotePropertyValue $runtimePlan -Force
@@ -7685,7 +8268,11 @@ function Process-Video {
         }
 
         if ($transcriptResult.GpuError) {
-            Write-Log "Whisper GPU fallback note: $($transcriptResult.GpuError)" "WARN"
+            Write-Log ("[GPU->CPU] Whisper GPU fallback reason: {0}" -f $transcriptResult.GpuError) "WARN"
+        }
+
+        if ($transcriptResult.Device -ne "openai" -and $transcriptResult.Device -ne "existing") {
+            Write-Log ("Whisper transcript completed using {0} {1}." -f (Get-ProgressDeviceTag -Device $transcriptResult.Device), $transcriptResult.Device)
         }
     }
     else {
@@ -8165,6 +8752,17 @@ if ($Version) {
 }
 
 Write-Host ("{0} v{1}" -f $script:AppName, $appVersion) -ForegroundColor Cyan
+$pythonLauncherWasExplicit = $PSBoundParameters.ContainsKey("PythonExe")
+$PythonExe = Resolve-PythonInterpreterPath `
+    -RequestedValue $PythonExe `
+    -WasExplicitlySet:$pythonLauncherWasExplicit
+
+if ($WhisperHealthCheck) {
+    Write-Phase -Name "Local Whisper Health" -Detail "Validating the Local Whisper runtime on this machine"
+    $null = Invoke-WhisperHealthCheck -PythonCommand $PythonExe -PythonLauncherWasExplicit:$pythonLauncherWasExplicit
+    return
+}
+
 Write-Phase -Name "Preflight" -Detail "Resolving tools and inputs"
 
 $FFmpegPath = Resolve-ExecutablePath `
@@ -8173,10 +8771,6 @@ $FFmpegPath = Resolve-ExecutablePath `
     -FallbackPaths @("D:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\Program Files\digiKam\ffmpeg.exe") `
     -ToolName "FFmpeg"
 $FFprobePath = Get-FFprobePath -FFmpegExe $FFmpegPath
-$pythonLauncherWasExplicit = $PSBoundParameters.ContainsKey("PythonExe")
-$PythonExe = Resolve-PythonInterpreterPath `
-    -RequestedValue $PythonExe `
-    -WasExplicitlySet:$pythonLauncherWasExplicit
 
 $resolvedDefaults = Resolve-DefaultInputOutputFolders `
     -CurrentInputFolder $InputFolder `
@@ -8420,6 +9014,9 @@ if (-not [string]::IsNullOrWhiteSpace($processingModeResolution.ResolutionNote))
 if (-not [string]::IsNullOrWhiteSpace($openAiProjectResolutionNote)) {
     Write-Log $openAiProjectResolutionNote "WARN"
 }
+if (-not [string]::IsNullOrWhiteSpace($script:PythonInterpreterResolutionNote)) {
+    Write-Log $script:PythonInterpreterResolutionNote "WARN"
+}
 if (-not [string]::IsNullOrWhiteSpace($whisperModelResolutionNote)) {
     Write-Log $whisperModelResolutionNote
 }
@@ -8644,6 +9241,21 @@ if ($ProcessingMode -eq "AI" -and (($OpenAiProject -eq "Private" -and $videosWit
 }
 
 $requiresLocalWhisper = ($ProcessingMode -ne "AI" -or $OpenAiProject -eq "Public")
+$whisperProbe = $null
+if ($videosWithAudio.Count -gt 0 -and $requiresLocalWhisper -and -not $pythonLauncherWasExplicit) {
+    $pythonSelection = Select-PreferredWhisperPythonInterpreter -PrimaryPythonCommand $PythonExe
+    if ($pythonSelection) {
+        if (-not [string]::IsNullOrWhiteSpace($pythonSelection.Path)) {
+            $PythonExe = $pythonSelection.Path
+        }
+        $whisperProbe = $pythonSelection.Probe
+        $script:PythonInterpreterResolutionNote = $pythonSelection.Note
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($script:PythonInterpreterResolutionNote)) {
+    Write-Log $script:PythonInterpreterResolutionNote "WARN"
+}
+
 if ($videosWithAudio.Count -gt 0 -and $requiresLocalWhisper) {
     Test-PythonWhisper -PythonCommand $PythonExe
 }
@@ -8651,7 +9263,9 @@ if ($videosWithAudio.Count -gt 0 -and $requiresLocalWhisper) {
 $nvencSupported = Test-FFmpegNvencSupport -FFmpegExe $FFmpegPath
 $cudaHwaccelSupported = Test-FFmpegCudaHwaccelSupport -FFmpegExe $FFmpegPath
 $nvidiaPresent = Test-NvidiaSmiAvailable
-$whisperProbe = Get-WhisperExecutionMode -PythonCommand $PythonExe
+if ($null -eq $whisperProbe) {
+    $whisperProbe = Get-WhisperExecutionMode -PythonCommand $PythonExe
+}
 
 $canUseFfmpegGpu = $false
 if ($nvencSupported -and $cudaHwaccelSupported -and $nvidiaPresent) {
@@ -8672,19 +9286,10 @@ Write-Host ("Python:   {0}" -f $PythonExe)
 Write-Host ""
 Write-Host "Hardware Acceleration Detection"
 Write-Host "-------------------------------"
-Write-Host ("NVIDIA GPU detected (nvidia-smi): {0}" -f $(if ($nvidiaPresent) { "Yes" } else { "No" }))
 Write-Host ("FFmpeg CUDA hwaccel support:     {0}" -f $(if ($cudaHwaccelSupported) { "Yes" } else { "No" }))
 Write-Host ("FFmpeg NVENC support:            {0}" -f $(if ($nvencSupported) { "Yes" } else { "No" }))
 Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($canUseWhisperGpu) { "Yes" } else { "No" }))
-if ($whisperProbe.TorchVersion) {
-    Write-Host ("PyTorch version:                 {0}" -f $whisperProbe.TorchVersion)
-}
-if ($whisperProbe.CudaVersion) {
-    Write-Host ("PyTorch CUDA version:            {0}" -f $whisperProbe.CudaVersion)
-}
-if ($whisperProbe.Error) {
-    Write-Host ("Whisper probe notes:             {0}" -f $whisperProbe.Error)
-}
+$null = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent
 Write-Host ""
 Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
 Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
