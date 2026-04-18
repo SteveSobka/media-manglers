@@ -2671,7 +2671,7 @@ function Get-WhisperProbeAssessment {
         $code = "cpu_only_for_whisper"
         $label = "CPU-only for Local Whisper"
         $summary = "This machine can run Local Whisper on CPU, but CUDA is not available in the selected Python runtime."
-        $action = "CPU-only validation is fine here. Use a separate GPU-capable box for real CUDA sign-off."
+        $action = "CPU-only validation is fine here. Use a GPU-capable box when you need CUDA-backed Local Whisper runs."
         $isReady = $true
     }
     elseif ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and -not $WhisperProbe.TorchImportOk) {

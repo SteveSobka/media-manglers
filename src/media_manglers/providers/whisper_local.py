@@ -129,8 +129,8 @@ def _classify_probe_environment(result: dict[str, Any]) -> None:
             "the selected Python runtime."
         )
         classification_action = (
-            "CPU-only validation is fine here. Use a separate GPU-capable box for real "
-            "CUDA sign-off."
+            "CPU-only validation is fine here. Use a GPU-capable box when you need "
+            "CUDA-backed Local Whisper runs."
         )
         can_run_local_whisper = True
     elif whisper_import_ok and not torch_import_ok:

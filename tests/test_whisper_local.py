@@ -99,6 +99,10 @@ class WhisperLocalProviderTests(unittest.TestCase):
         self.assertEqual(result["cuda_device_names"], ["Fake RTX 0", "Fake RTX 1"])
         self.assertEqual(result["selected_device_name"], "Fake RTX 0")
         self.assertEqual(result["classification_code"], "gpu_capable_for_whisper")
+        self.assertEqual(
+            result["classification_action"],
+            "You can use this box for real CUDA Local Whisper runs.",
+        )
         self.assertTrue(result["can_run_local_whisper"])
         self.assertTrue(str(result["python_path"]).lower().endswith("python.exe") or "python" in str(result["python_path"]).lower())
         self.assertTrue(result["python_version"])
@@ -122,6 +126,10 @@ class WhisperLocalProviderTests(unittest.TestCase):
         self.assertEqual(result["cuda_device_names"], [])
         self.assertEqual(result["classification_code"], "cpu_only_for_whisper")
         self.assertEqual(result["classification_label"], "CPU-only for Local Whisper")
+        self.assertEqual(
+            result["classification_action"],
+            "CPU-only validation is fine here. Use a GPU-capable box when you need CUDA-backed Local Whisper runs.",
+        )
         self.assertTrue(result["can_run_local_whisper"])
 
     def test_transcribe_from_request_records_gpu_fallback_progress(self) -> None:
