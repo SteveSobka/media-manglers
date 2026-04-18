@@ -34,6 +34,10 @@ No open GitHub issues are currently active in this repo.
 
 ## Recently Completed
 
+- [x] Track canonical repo-control docs so GitHub checkouts receive the same project context
+  Status: completed on 2026-04-18
+  Current note: Root cause was DevBox-local `.git/info/exclude` entries for `AGENTS.md`, `PROJECT_CHAT_PLAYBOOK.md`, and `governance/`, which kept those canonical control docs untracked and absent from both `origin/main` and `origin/wip/fix-estimate-stage-warning-2026-04-18`. This pass removed the local exclude trap on DevBox, promoted `AGENTS.md`, `PROJECT_CHAT_PLAYBOOK.md`, `governance/CURRENT_PROJECT_TRUTH.md`, `governance/LATEST_EVIDENCE_POINTER.md`, and the newly added `governance/FOREGROUND_VISUAL_WORK_PROTOCOL.md` into Git tracking, and normalized `AREA51/` casing in repo-control docs to match the actual tracked folder name and `.gitignore`. Verification for this fix is `git ls-tree` against the updated local branch and remote branch for the control-doc paths.
+
 - [x] Add an operator-friendly Local Whisper runtime health check and classify this developer box correctly
   Status: completed on 2026-04-18
   Current note: `Audio Mangler.ps1`, `Video Mangler.ps1`, and `src/media_manglers/providers/whisper_local.py` now expose `-WhisperHealthCheck`, report the selected Python interpreter, Python version, torch version, torch CUDA version, `cuda_available`, detected GPU device names, selected Local Whisper device, and a plain-English classification of the current machine as `CPU-only for Local Whisper`, `GPU-capable for Local Whisper`, or `Local Whisper runtime misconfigured or uncertain`. Verified on the current 2026-04-18 developer box that both apps report `CPU-only for Local Whisper` using `C:\Users\LocalDevAdmin\AppData\Local\Python\pythoncore-3.14-64\python.exe`, `torch 2.11.0+cpu`, torch CUDA `unavailable`, `cuda_available false`, no detected GPU devices, and selected device `cpu`.
