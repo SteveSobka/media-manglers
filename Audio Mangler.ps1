@@ -17,6 +17,7 @@ param(
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
     [int]$HeartbeatSeconds = 10,
+    [int]$WhisperTimeoutSeconds = 0,
     [switch]$CopyRawAudio,
     [switch]$IncludeComments,
     [switch]$CreateChatGptZip,
@@ -34,7 +35,9 @@ $script:CurrentLogFile = $null
 $script:AppName = "Audio Mangler"
 $script:FallbackAppVersion = "0.6.1"
 $script:LocalAccuracyWhisperModel = "large"
+$script:InteractiveLocalDefaultWhisperModel = "medium"
 $script:LocalCpuLongWhisperWarningThresholdSeconds = 900
+$script:LocalWhisperLongRunPromptThresholdSeconds = 2700
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
 $script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:OpenAiTranscriptionModel = "whisper-1"
@@ -54,6 +57,9 @@ $script:OpenAiPrivateTranscriptionApprovedModels = @(
 $script:OpenAiModelDiscoveryCache = @{}
 $script:SessionOpenAiApiKey = $null
 $script:OpenAiTestModeLogged = $false
+$script:ResolvedAppBaseDirectory = $null
+$script:MediaManglersPythonCliInfo = $null
+$script:WhisperCalibrationCache = @{}
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -413,6 +419,188 @@ function Normalize-UserPath {
     return $normalized
 }
 
+function Get-AppBaseDirectory {
+    if (-not [string]::IsNullOrWhiteSpace($script:ResolvedAppBaseDirectory)) {
+        return $script:ResolvedAppBaseDirectory
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $candidates.Add($PSScriptRoot)
+    }
+
+    try {
+        $processPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if (-not [string]::IsNullOrWhiteSpace($processPath)) {
+            $processDirectory = Split-Path -Path $processPath -Parent
+            if (-not [string]::IsNullOrWhiteSpace($processDirectory)) {
+                $candidates.Add($processDirectory)
+            }
+        }
+    }
+    catch {
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            $script:ResolvedAppBaseDirectory = (Resolve-Path -LiteralPath $candidate).ProviderPath
+            return $script:ResolvedAppBaseDirectory
+        }
+    }
+
+    return $null
+}
+
+function Get-MediaManglersPythonCliInfo {
+    if ($null -ne $script:MediaManglersPythonCliInfo) {
+        return $script:MediaManglersPythonCliInfo
+    }
+
+    $candidateRoots = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $candidateRoots.Add((Join-Path $PSScriptRoot "src"))
+        $candidateRoots.Add((Join-Path $PSScriptRoot "python-core\src"))
+    }
+
+    $appBaseDirectory = Get-AppBaseDirectory
+    if (-not [string]::IsNullOrWhiteSpace($appBaseDirectory)) {
+        $candidateRoots.Add((Join-Path $appBaseDirectory "src"))
+        $candidateRoots.Add((Join-Path $appBaseDirectory "python-core\src"))
+
+        $parentDirectory = Split-Path -Path $appBaseDirectory -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+            $candidateRoots.Add((Join-Path $parentDirectory "src"))
+        }
+    }
+
+    foreach ($candidateRoot in ($candidateRoots | Select-Object -Unique)) {
+        $entryPoint = Join-Path $candidateRoot "media_manglers\__main__.py"
+        if (Test-Path -LiteralPath $entryPoint) {
+            $resolvedRoot = (Resolve-Path -LiteralPath $candidateRoot).ProviderPath
+            $script:MediaManglersPythonCliInfo = [PSCustomObject]@{
+                Enabled    = $true
+                Root       = $resolvedRoot
+                EntryPoint = $entryPoint
+            }
+            return $script:MediaManglersPythonCliInfo
+        }
+    }
+
+    $script:MediaManglersPythonCliInfo = [PSCustomObject]@{
+        Enabled    = $false
+        Root       = ""
+        EntryPoint = ""
+    }
+    return $script:MediaManglersPythonCliInfo
+}
+
+function Resolve-PythonInterpreterPath {
+    param(
+        [string]$RequestedValue,
+        [switch]$WasExplicitlySet
+    )
+
+    if ($WasExplicitlySet -and -not [string]::IsNullOrWhiteSpace($RequestedValue)) {
+        try {
+            return Resolve-CommandOrPath -Value $RequestedValue -ToolName "Python interpreter"
+        }
+        catch {
+            throw ("The configured -PythonExe value '{0}' could not be resolved. Install Python or point -PythonExe to a usable interpreter." -f $RequestedValue)
+        }
+    }
+
+    try {
+        return Resolve-CommandOrPath -Value "python" -ToolName "Python interpreter"
+    }
+    catch {
+    }
+
+    $pyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($pyLauncher -and $pyLauncher.Source) {
+        $probe = Invoke-ExternalCapture `
+            -FilePath $pyLauncher.Source `
+            -Arguments @("-3", "-c", "import sys; print(sys.executable)") `
+            -StepName "Resolve Python interpreter via py -3" `
+            -IgnoreExitCode `
+            -TimeoutSeconds 120
+
+        if ($probe.ExitCode -eq 0) {
+            $resolvedInterpreter = ($probe.StdOut -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($resolvedInterpreter) -and (Test-Path -LiteralPath $resolvedInterpreter)) {
+                return (Resolve-Path -LiteralPath $resolvedInterpreter).ProviderPath
+            }
+        }
+    }
+
+    throw "Python interpreter not found. Install Python so 'python' works, or rerun with -PythonExe pointing to a usable interpreter. Automatic resolution order: explicit -PythonExe, then python, then py -3."
+}
+
+function Invoke-MediaManglersPythonCli {
+    param(
+        [string]$PythonCommand,
+        [string]$Command,
+        [hashtable]$Payload,
+        [string]$StepName,
+        [int]$HeartbeatSeconds = 10,
+        [int]$TimeoutSeconds = 1800,
+        [int]$StallTimeoutSeconds = 0,
+        [double]$EstimatedTotalSeconds = 0,
+        [string]$ProgressStateFilePath = ""
+    )
+
+    $cliInfo = Get-MediaManglersPythonCliInfo
+    if (-not $cliInfo.Enabled) {
+        return $null
+    }
+
+    $tempRequestJson = Join-Path $env:TEMP ("media_manglers_request_" + [guid]::NewGuid().ToString() + ".json")
+    $tempResultJson = Join-Path $env:TEMP ("media_manglers_result_" + [guid]::NewGuid().ToString() + ".json")
+    $requestPayload = if ($null -eq $Payload) { @{} } else { $Payload }
+    [PSCustomObject]@{ payload = $requestPayload } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $tempRequestJson -Encoding UTF8
+
+    $previousPythonPath = [Environment]::GetEnvironmentVariable("PYTHONPATH", "Process")
+    $updatedPythonPath = if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
+        $cliInfo.Root
+    }
+    else {
+        "{0};{1}" -f $cliInfo.Root, $previousPythonPath
+    }
+
+    [Environment]::SetEnvironmentVariable("PYTHONPATH", $updatedPythonPath, "Process")
+
+    try {
+        $commandResult = Invoke-ExternalStreaming `
+            -FilePath $PythonCommand `
+            -Arguments @("-m", "media_manglers", $Command, "--request-file", $tempRequestJson, "--result-file", $tempResultJson) `
+            -StepName $StepName `
+            -IgnoreExitCode `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds $TimeoutSeconds `
+            -StallTimeoutSeconds $StallTimeoutSeconds `
+            -EstimatedTotalSeconds $EstimatedTotalSeconds `
+            -ProgressStateFilePath $ProgressStateFilePath
+
+        $parsedResult = $null
+        if (Test-Path -LiteralPath $tempResultJson) {
+            $parsedResult = Get-Content -LiteralPath $tempResultJson -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+
+        return [PSCustomObject]@{
+            ExitCode = $commandResult.ExitCode
+            Result   = $parsedResult
+            Root     = $cliInfo.Root
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("PYTHONPATH", $previousPythonPath, "Process")
+        foreach ($tempPath in @($tempRequestJson, $tempResultJson)) {
+            if (Test-Path -LiteralPath $tempPath) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 function Resolve-YtDlpInvoker {
     param(
         [string]$PreferredCommand,
@@ -517,6 +705,70 @@ function Quote-Argument {
     return $Value
 }
 
+function Read-ProgressStateFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+
+        $parsed = $raw | ConvertFrom-Json
+        $updatedAtUtc = $null
+        if ($parsed.updated_at_utc) {
+            try {
+                $updatedAtUtc = [datetime]::Parse([string]$parsed.updated_at_utc).ToUniversalTime()
+            }
+            catch {
+                $updatedAtUtc = $null
+            }
+        }
+
+        if ($null -eq $updatedAtUtc) {
+            $updatedAtUtc = (Get-Item -LiteralPath $Path).LastWriteTimeUtc
+        }
+
+        return [PSCustomObject]@{
+            Stage          = [string]$parsed.stage
+            Message        = [string]$parsed.message
+            ElapsedSeconds = [double]$parsed.elapsed_seconds
+            UpdatedAtUtc   = $updatedAtUtc
+            Device         = [string]$parsed.device
+            ModelName      = [string]$parsed.model_name
+            TaskName       = [string]$parsed.task_name
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-ProgressStateSummary {
+    param([psobject]$ProgressState)
+
+    if ($null -eq $ProgressState) {
+        return ""
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($ProgressState.Stage)) {
+        [void]$parts.Add(("stage {0}" -f $ProgressState.Stage))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProgressState.Message)) {
+        [void]$parts.Add([string]$ProgressState.Message)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ProgressState.Device) -and $ProgressState.Device -ne "pending") {
+        [void]$parts.Add(("device {0}" -f $ProgressState.Device))
+    }
+
+    return ($parts -join "; ")
+}
+
 function Invoke-ExternalCapture {
     param(
         [string]$FilePath,
@@ -602,7 +854,10 @@ function Invoke-ExternalStreaming {
         [string]$StepName = "External command",
         [switch]$IgnoreExitCode,
         [int]$HeartbeatSeconds = 30,
-        [int]$TimeoutSeconds = 1800
+        [int]$TimeoutSeconds = 1800,
+        [int]$StallTimeoutSeconds = 0,
+        [double]$EstimatedTotalSeconds = 0,
+        [string]$ProgressStateFilePath = ""
     )
 
     $argString = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join " ")
@@ -628,23 +883,88 @@ function Invoke-ExternalStreaming {
         $stderrTask = $proc.StandardError.ReadToEndAsync()
 
         $start = Get-Date
-        $nextHeartbeat = (Get-Date).AddSeconds($HeartbeatSeconds)
+        $nextHeartbeat = if ($HeartbeatSeconds -gt 0) { (Get-Date).AddSeconds($HeartbeatSeconds) } else { $null }
 
         while (-not $proc.HasExited) {
             Start-Sleep -Milliseconds 500
 
             $now = Get-Date
             $elapsed = ($now - $start).TotalSeconds
-            $silence = $elapsed
+            $progressState = Read-ProgressStateFile -Path $ProgressStateFilePath
+            $progressUpdatedAtUtc = $null
+            if ($progressState -and $progressState.UpdatedAtUtc) {
+                $progressUpdatedAtUtc = $progressState.UpdatedAtUtc
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($ProgressStateFilePath) -and (Test-Path -LiteralPath $ProgressStateFilePath)) {
+                $progressUpdatedAtUtc = (Get-Item -LiteralPath $ProgressStateFilePath).LastWriteTimeUtc
+            }
 
-            if ($now -ge $nextHeartbeat) {
-                Write-Log ("{0} still working... elapsed {1:n0}s, silence {2:n0}s" -f $StepName, $elapsed, $silence)
+            $progressAgeSeconds = if ($progressUpdatedAtUtc) {
+                ((Get-Date).ToUniversalTime() - $progressUpdatedAtUtc).TotalSeconds
+            }
+            else {
+                $elapsed
+            }
+
+            if ($nextHeartbeat -and $now -ge $nextHeartbeat) {
+                $estimatedTotalLabel = if ($EstimatedTotalSeconds -gt 0) {
+                    Format-DurationHuman -Seconds $EstimatedTotalSeconds
+                }
+                else {
+                    "unknown"
+                }
+                $estimatedRemainingLabel = if ($EstimatedTotalSeconds -gt 0) {
+                    Format-DurationHuman -Seconds ([math]::Max(0.0, $EstimatedTotalSeconds - $elapsed))
+                }
+                else {
+                    "unknown"
+                }
+                $runtimeBudgetLabel = if ($TimeoutSeconds -gt 0) {
+                    Format-DurationHuman -Seconds $TimeoutSeconds
+                }
+                else {
+                    "none"
+                }
+                $progressAgeLabel = if ($progressUpdatedAtUtc) {
+                    Format-DurationHuman -Seconds $progressAgeSeconds
+                }
+                else {
+                    "not yet reported"
+                }
+                $stallWatchdogLabel = if ($StallTimeoutSeconds -gt 0) {
+                    Format-DurationHuman -Seconds $StallTimeoutSeconds
+                }
+                else {
+                    "off"
+                }
+                $progressSummary = Get-ProgressStateSummary -ProgressState $progressState
+                $progressSuffix = if ([string]::IsNullOrWhiteSpace($progressSummary)) {
+                    ""
+                }
+                else {
+                    ("; helper state {0}" -f $progressSummary)
+                }
+
+                Write-Log ("{0} still working... elapsed {1}; estimated total {2}; estimated remaining {3}; runtime budget {4}; last progress update {5} ago; stall watchdog {6}{7}" -f $StepName, (Format-DurationHuman -Seconds $elapsed), $estimatedTotalLabel, $estimatedRemainingLabel, $runtimeBudgetLabel, $progressAgeLabel, $stallWatchdogLabel, $progressSuffix)
                 $nextHeartbeat = $now.AddSeconds($HeartbeatSeconds)
+            }
+
+            if ($StallTimeoutSeconds -gt 0 -and $progressAgeSeconds -ge $StallTimeoutSeconds) {
+                try { $proc.Kill() } catch { }
+                $progressSummary = Get-ProgressStateSummary -ProgressState $progressState
+                if ([string]::IsNullOrWhiteSpace($progressSummary)) {
+                    throw "$StepName stopped reporting progress for $(Format-DurationHuman -Seconds $progressAgeSeconds). The stall watchdog is $(Format-DurationHuman -Seconds $StallTimeoutSeconds)."
+                }
+                throw "$StepName stopped reporting progress for $(Format-DurationHuman -Seconds $progressAgeSeconds). The stall watchdog is $(Format-DurationHuman -Seconds $StallTimeoutSeconds). Last helper state: $progressSummary"
             }
 
             if ($TimeoutSeconds -gt 0 -and $elapsed -ge $TimeoutSeconds) {
                 try { $proc.Kill() } catch { }
-                throw "$StepName timed out after $TimeoutSeconds seconds."
+                $progressSummary = Get-ProgressStateSummary -ProgressState $progressState
+                if ([string]::IsNullOrWhiteSpace($progressSummary)) {
+                    throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $TimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed)."
+                }
+                throw "$StepName exceeded the runtime budget of $(Format-DurationHuman -Seconds $TimeoutSeconds) after $(Format-DurationHuman -Seconds $elapsed). Last helper state: $progressSummary"
             }
         }
 
@@ -1180,6 +1500,501 @@ function Format-DurationHuman {
     }
 }
 
+function Get-LocalWhisperModelFamily {
+    param([string]$ModelName)
+
+    $normalized = if ([string]::IsNullOrWhiteSpace($ModelName)) {
+        ""
+    }
+    else {
+        $ModelName.Trim().ToLowerInvariant()
+    }
+
+    if ($normalized.EndsWith(".en")) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 3)
+    }
+
+    foreach ($family in @("tiny", "base", "small", "medium", "large", "turbo")) {
+        if ($normalized -eq $family -or
+            $normalized.StartsWith($family + "-") -or
+            $normalized.StartsWith($family + ".") -or
+            $normalized.StartsWith($family + "_")) {
+            return $family
+        }
+    }
+
+    return "default"
+}
+
+function Get-LocalWhisperRuntimeProfile {
+    param(
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu
+    )
+
+    $profiles = @{
+        cpu = @{
+            tiny    = @{ Rtf = 0.75; StartupSeconds = 15.0 }
+            base    = @{ Rtf = 1.00; StartupSeconds = 20.0 }
+            small   = @{ Rtf = 1.40; StartupSeconds = 30.0 }
+            medium  = @{ Rtf = 2.60; StartupSeconds = 45.0 }
+            large   = @{ Rtf = 5.50; StartupSeconds = 75.0 }
+            turbo   = @{ Rtf = 1.10; StartupSeconds = 25.0 }
+            default = @{ Rtf = 3.00; StartupSeconds = 45.0 }
+        }
+        gpu = @{
+            tiny    = @{ Rtf = 0.15; StartupSeconds = 10.0 }
+            base    = @{ Rtf = 0.20; StartupSeconds = 12.0 }
+            small   = @{ Rtf = 0.28; StartupSeconds = 20.0 }
+            medium  = @{ Rtf = 0.45; StartupSeconds = 30.0 }
+            large   = @{ Rtf = 0.90; StartupSeconds = 45.0 }
+            turbo   = @{ Rtf = 0.22; StartupSeconds = 18.0 }
+            default = @{ Rtf = 0.60; StartupSeconds = 30.0 }
+        }
+    }
+
+    $runtimeKey = if ($CanUseWhisperGpu) { "gpu" } else { "cpu" }
+    $modelFamily = Get-LocalWhisperModelFamily -ModelName $ModelName
+    $selected = if ($profiles[$runtimeKey].ContainsKey($modelFamily)) {
+        $profiles[$runtimeKey][$modelFamily]
+    }
+    else {
+        $profiles[$runtimeKey]["default"]
+    }
+
+    return [PSCustomObject]@{
+        RuntimeKey       = $runtimeKey
+        RuntimePathLabel = if ($CanUseWhisperGpu) { "GPU-capable" } else { "CPU-only" }
+        ModelFamily      = $modelFamily
+        Rtf              = [double]$selected.Rtf
+        StartupSeconds   = [double]$selected.StartupSeconds
+    }
+}
+
+function Get-LocalWhisperCalibrationRecommendation {
+    param(
+        [double]$SourceDurationSeconds,
+        [double]$EstimatedRuntimeSeconds,
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu
+    )
+
+    $duration = [math]::Max(0.0, [double]$SourceDurationSeconds)
+    $estimate = [math]::Max(0.0, [double]$EstimatedRuntimeSeconds)
+    $modelFamily = Get-LocalWhisperModelFamily -ModelName $ModelName
+
+    if ($duration -le 0) {
+        return [PSCustomObject]@{
+            Recommended   = $false
+            SampleSeconds = 0
+            Reason        = "source duration was unavailable"
+        }
+    }
+
+    if ($duration -lt 900.0) {
+        return [PSCustomObject]@{
+            Recommended   = $false
+            SampleSeconds = 0
+            Reason        = "source media is short enough that a calibration pass would add unnecessary overhead"
+        }
+    }
+
+    $shouldForce = (-not $CanUseWhisperGpu -and $modelFamily -eq "large" -and $duration -ge 600.0)
+    if (-not $shouldForce -and $estimate -lt 1800.0) {
+        return [PSCustomObject]@{
+            Recommended   = $false
+            SampleSeconds = 0
+            Reason        = "the heuristic estimate is not long enough to justify a separate calibration sample"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Recommended   = $true
+        SampleSeconds = [int][math]::Round([math]::Min(60.0, [math]::Max(30.0, $duration * 0.02)))
+        Reason        = "long local runs benefit from a short machine-local calibration sample"
+    }
+}
+
+function Test-LocalWhisperCalibrationStatusIsWarningWorthy {
+    param([string]$Status)
+
+    if ([string]::IsNullOrWhiteSpace($Status)) {
+        return $false
+    }
+
+    $normalized = $Status.Trim().ToLowerInvariant()
+    foreach ($marker in @(
+            "short enough",
+            "not long enough",
+            "used short-sample calibration",
+            "explicit -whispertimeoutseconds override"
+        )) {
+        if ($normalized.Contains($marker)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Get-LocalWhisperAdaptiveRuntimePlanFallback {
+    param(
+        [double]$SourceDurationSeconds,
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu,
+        [int]$HeartbeatSeconds = 10,
+        [int]$WhisperTimeoutSeconds = 0,
+        [string]$Task = "transcribe",
+        [psobject]$CalibrationData = $null,
+        [string]$CalibrationStatus = ""
+    )
+
+    $duration = [math]::Max(0.0, [double]$SourceDurationSeconds)
+    $heartbeat = [math]::Max(1, [int]$HeartbeatSeconds)
+    $explicitTimeout = [math]::Max(0, [int]$WhisperTimeoutSeconds)
+    $profile = Get-LocalWhisperRuntimeProfile -ModelName $ModelName -CanUseWhisperGpu $CanUseWhisperGpu
+    $taskFactor = if ($Task -eq "translate") { 1.05 } else { 1.00 }
+    $fallbackRtf = [double]$profile.Rtf * $taskFactor
+    $startupSeconds = [double]$profile.StartupSeconds
+
+    if ($duration -gt 0) {
+        $fallbackEstimate = [math]::Max(30.0, $startupSeconds + ($duration * $fallbackRtf))
+    }
+    else {
+        $fallbackEstimate = [math]::Max(30.0, $startupSeconds + (900.0 * $fallbackRtf))
+    }
+
+    $estimate = $fallbackEstimate
+    $estimateSource = "heuristic_profile"
+    $calibrationUsed = $false
+    $observedRtf = 0.0
+    $calibrationClipSeconds = 0.0
+    $calibrationElapsedSeconds = 0.0
+    $effectiveCalibrationStatus = $CalibrationStatus
+
+    if ($CalibrationData) {
+        $calibrationClipSeconds = [math]::Max(0.0, [double]$CalibrationData.SampleDurationSeconds)
+        $calibrationElapsedSeconds = [math]::Max(0.0, [double]$CalibrationData.ElapsedSeconds)
+
+        if ($calibrationClipSeconds -gt 0 -and $calibrationElapsedSeconds -gt 0) {
+            $rawProcessingSeconds = [math]::Max($calibrationClipSeconds * 0.25, $calibrationElapsedSeconds - $startupSeconds)
+            $observedRtf = [math]::Max($fallbackRtf * 0.80, $rawProcessingSeconds / $calibrationClipSeconds)
+            $estimate = [math]::Max($fallbackEstimate * 0.90, $startupSeconds + ($duration * $observedRtf))
+            $estimateSource = "sample_calibration"
+            $calibrationUsed = $true
+            $effectiveCalibrationStatus = "used short-sample calibration"
+        }
+        elseif ($CalibrationData.PSObject.Properties["Reason"] -and -not [string]::IsNullOrWhiteSpace([string]$CalibrationData.Reason)) {
+            $effectiveCalibrationStatus = [string]$CalibrationData.Reason
+        }
+    }
+
+    $recommendation = Get-LocalWhisperCalibrationRecommendation `
+        -SourceDurationSeconds $duration `
+        -EstimatedRuntimeSeconds $estimate `
+        -ModelName $ModelName `
+        -CanUseWhisperGpu $CanUseWhisperGpu
+
+    $budgetMarginSeconds = [math]::Max(180.0, $estimate * 0.25)
+    $adaptiveTimeoutSeconds = [int][math]::Ceiling($estimate + $budgetMarginSeconds)
+    $resolvedTimeoutSeconds = if ($explicitTimeout -gt 0) { $explicitTimeout } else { $adaptiveTimeoutSeconds }
+    $baseStallSeconds = [math]::Max(240, $heartbeat * 12)
+
+    if ($resolvedTimeoutSeconds -gt 120) {
+        $stallTimeoutSeconds = [math]::Max(60, [math]::Min($baseStallSeconds, $resolvedTimeoutSeconds - 30))
+    }
+    else {
+        $stallTimeoutSeconds = [math]::Max(30, [math]::Min($baseStallSeconds, [math]::Max(30, $resolvedTimeoutSeconds - 10)))
+    }
+
+    $warnings = New-Object System.Collections.Generic.List[string]
+    if ($calibrationUsed) {
+        [void]$warnings.Add("Adaptive timeout was refined with a short calibration sample and still includes conservative padding.")
+    }
+    elseif (Test-LocalWhisperCalibrationStatusIsWarningWorthy -Status $effectiveCalibrationStatus) {
+        [void]$warnings.Add(("Calibration skipped or unavailable: {0}." -f $effectiveCalibrationStatus))
+    }
+    if ($explicitTimeout -gt 0) {
+        [void]$warnings.Add("Explicit -WhisperTimeoutSeconds override is active and wins over the adaptive timeout.")
+    }
+
+    return [PSCustomObject]@{
+        SourceDurationSeconds           = [int][math]::Round($duration)
+        ModelName                       = $ModelName
+        ModelFamily                     = $profile.ModelFamily
+        RuntimePath                     = $profile.RuntimeKey
+        RuntimePathLabel                = $profile.RuntimePathLabel
+        TaskName                        = $Task
+        EstimatedRuntimeSeconds         = [int][math]::Ceiling($estimate)
+        FallbackEstimateSeconds         = [int][math]::Ceiling($fallbackEstimate)
+        AdaptiveTimeoutSeconds          = $adaptiveTimeoutSeconds
+        ResolvedTimeoutSeconds          = $resolvedTimeoutSeconds
+        StallTimeoutSeconds             = [int]$stallTimeoutSeconds
+        BudgetMarginSeconds             = [int][math]::Ceiling($resolvedTimeoutSeconds - $estimate)
+        HeartbeatSeconds                = $heartbeat
+        EstimateSource                  = $estimateSource
+        TimeoutSource                   = if ($explicitTimeout -gt 0) { "explicit_override" } else { "adaptive_runtime_budget" }
+        FallbackRtf                     = [math]::Round($fallbackRtf, 3)
+        StartupSeconds                  = [int][math]::Round($startupSeconds)
+        CalibrationUsed                 = $calibrationUsed
+        CalibrationStatus               = $effectiveCalibrationStatus
+        CalibrationClipSeconds          = [int][math]::Round($calibrationClipSeconds)
+        CalibrationElapsedSeconds       = [int][math]::Ceiling($calibrationElapsedSeconds)
+        ObservedRtf                     = [math]::Round($observedRtf, 3)
+        CalibrationRecommended          = [bool]$recommendation.Recommended
+        CalibrationSampleSeconds        = [int]$recommendation.SampleSeconds
+        CalibrationRecommendationReason = [string]$recommendation.Reason
+        LongRunPromptRecommended        = [bool]($duration -gt 0 -and $estimate -ge $script:LocalWhisperLongRunPromptThresholdSeconds)
+        Warnings                        = @($warnings)
+    }
+}
+
+function ConvertTo-LocalWhisperRuntimePlan {
+    param([psobject]$Data)
+
+    return [PSCustomObject]@{
+        SourceDurationSeconds           = [int]$Data.source_duration_seconds
+        ModelName                       = [string]$Data.model_name
+        ModelFamily                     = [string]$Data.model_family
+        RuntimePath                     = [string]$Data.runtime_path
+        RuntimePathLabel                = [string]$Data.runtime_path_label
+        TaskName                        = [string]$Data.task_name
+        EstimatedRuntimeSeconds         = [int]$Data.estimated_runtime_seconds
+        FallbackEstimateSeconds         = [int]$Data.fallback_estimate_seconds
+        AdaptiveTimeoutSeconds          = [int]$Data.adaptive_timeout_seconds
+        ResolvedTimeoutSeconds          = [int]$Data.resolved_timeout_seconds
+        StallTimeoutSeconds             = [int]$Data.stall_timeout_seconds
+        BudgetMarginSeconds             = [int]$Data.budget_margin_seconds
+        HeartbeatSeconds                = [int]$Data.heartbeat_seconds
+        EstimateSource                  = [string]$Data.estimate_source
+        TimeoutSource                   = [string]$Data.timeout_source
+        FallbackRtf                     = [double]$Data.fallback_rtf
+        StartupSeconds                  = [int]$Data.startup_seconds
+        CalibrationUsed                 = [bool]$Data.calibration_used
+        CalibrationStatus               = [string]$Data.calibration_status
+        CalibrationClipSeconds          = [int]$Data.calibration_clip_seconds
+        CalibrationElapsedSeconds       = [int]$Data.calibration_elapsed_seconds
+        ObservedRtf                     = [double]$Data.observed_rtf
+        CalibrationRecommended          = [bool]$Data.calibration_recommended
+        CalibrationSampleSeconds        = [int]$Data.calibration_sample_seconds
+        CalibrationRecommendationReason = [string]$Data.calibration_recommendation_reason
+        LongRunPromptRecommended        = [bool]$Data.long_run_prompt_recommended
+        Warnings                        = @($Data.warnings)
+    }
+}
+
+function Get-LocalWhisperAdaptiveRuntimePlan {
+    param(
+        [string]$PythonCommand,
+        [double]$SourceDurationSeconds,
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu,
+        [int]$HeartbeatSeconds = 10,
+        [int]$WhisperTimeoutSeconds = 0,
+        [string]$Task = "transcribe",
+        [psobject]$CalibrationData = $null,
+        [string]$CalibrationStatus = ""
+    )
+
+    $payload = @{
+        source_duration_seconds  = $SourceDurationSeconds
+        model_name               = $ModelName
+        gpu_capable              = $CanUseWhisperGpu
+        heartbeat_seconds        = $HeartbeatSeconds
+        explicit_timeout_seconds = $WhisperTimeoutSeconds
+        task_name                = $Task
+    }
+
+    if ($CalibrationData) {
+        $payload.calibration = @{
+            sample_duration_seconds = [double]$CalibrationData.SampleDurationSeconds
+            elapsed_seconds         = [double]$CalibrationData.ElapsedSeconds
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($CalibrationStatus)) {
+        $payload.calibration = @{
+            reason = $CalibrationStatus
+        }
+    }
+
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "whisper-plan" `
+        -Payload $payload `
+        -StepName "Whisper runtime planning" `
+        -HeartbeatSeconds 0 `
+        -TimeoutSeconds 60
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            return ConvertTo-LocalWhisperRuntimePlan -Data $cliResult.Result.data
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Whisper runtime planning helper failed. Falling back to the PowerShell heuristic. {0}" -f $cliError) "WARN"
+    }
+
+    return Get-LocalWhisperAdaptiveRuntimePlanFallback `
+        -SourceDurationSeconds $SourceDurationSeconds `
+        -ModelName $ModelName `
+        -CanUseWhisperGpu $CanUseWhisperGpu `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+        -Task $Task `
+        -CalibrationData $CalibrationData `
+        -CalibrationStatus $CalibrationStatus
+}
+
+function Get-LocalWhisperCalibrationCacheKey {
+    param(
+        [string]$AudioPath,
+        [string]$ModelName,
+        [bool]$CanUseWhisperGpu
+    )
+
+    $normalizedPath = if ([string]::IsNullOrWhiteSpace($AudioPath)) {
+        ""
+    }
+    else {
+        try {
+            (Resolve-Path -LiteralPath $AudioPath).ProviderPath.ToLowerInvariant()
+        }
+        catch {
+            $AudioPath.Trim().ToLowerInvariant()
+        }
+    }
+
+    return ("{0}|{1}|{2}" -f $normalizedPath, $(Get-LocalWhisperModelFamily -ModelName $ModelName), $(if ($CanUseWhisperGpu) { "gpu" } else { "cpu" }))
+}
+
+function Get-LocalWhisperSmallerModelChoices {
+    param([string]$ModelName)
+
+    switch (Get-LocalWhisperModelFamily -ModelName $ModelName) {
+        "large" { return @("medium", "small") }
+        "medium" { return @("small") }
+        default { return @() }
+    }
+}
+
+function Get-InteractiveLocalWhisperLongRunDecision {
+    param(
+        [string]$ModelName,
+        [psobject]$Plan
+    )
+
+    $smallerModels = @(Get-LocalWhisperSmallerModelChoices -ModelName $ModelName)
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Local Whisper runtime warning" -ForegroundColor Yellow
+        Write-Host ("Source duration:              {0}" -f (Format-DurationHuman -Seconds $Plan.SourceDurationSeconds)) -ForegroundColor Yellow
+        Write-Host ("Selected Whisper model:       {0}" -f $ModelName) -ForegroundColor Yellow
+        Write-Host ("Local Whisper path:           {0}" -f $Plan.RuntimePathLabel) -ForegroundColor Yellow
+        Write-Host ("Estimated transcription:      {0}" -f (Format-DurationHuman -Seconds $Plan.EstimatedRuntimeSeconds)) -ForegroundColor Yellow
+        Write-Host ("Adaptive timeout:             {0}" -f (Format-DurationHuman -Seconds $Plan.ResolvedTimeoutSeconds)) -ForegroundColor Yellow
+        Write-Host ("Stall watchdog:               {0}" -f (Format-DurationHuman -Seconds $Plan.StallTimeoutSeconds)) -ForegroundColor Yellow
+
+        $choices = New-Object System.Collections.Generic.List[string]
+        [void]$choices.Add("Press Enter to continue")
+        if ($smallerModels -contains "medium") {
+            [void]$choices.Add("type M for medium")
+        }
+        if ($smallerModels -contains "small") {
+            [void]$choices.Add("type S for small")
+        }
+        [void]$choices.Add("type X to cancel")
+
+        $choice = Read-Host ($choices -join ", ")
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            return [PSCustomObject]@{
+                Action    = "continue"
+                ModelName = $ModelName
+            }
+        }
+
+        switch ($choice.Trim().ToUpperInvariant()) {
+            "M" {
+                if ($smallerModels -contains "medium") {
+                    return [PSCustomObject]@{
+                        Action    = "switch_model"
+                        ModelName = "medium"
+                    }
+                }
+            }
+            "S" {
+                if ($smallerModels -contains "small") {
+                    return [PSCustomObject]@{
+                        Action    = "switch_model"
+                        ModelName = "small"
+                    }
+                }
+            }
+            "X" {
+                return [PSCustomObject]@{
+                    Action    = "cancel"
+                    ModelName = $ModelName
+                }
+            }
+        }
+
+        Write-Host "Invalid choice. Press Enter, type M, type S, or type X." -ForegroundColor Yellow
+    }
+}
+
+function Write-LocalWhisperRuntimePlanLog {
+    param(
+        [string]$Task,
+        [string]$ModelName,
+        [psobject]$Plan
+    )
+
+    $sourceDurationLabel = if ($Plan.SourceDurationSeconds -gt 0) {
+        Format-DurationHuman -Seconds $Plan.SourceDurationSeconds
+    }
+    else {
+        "unknown"
+    }
+
+    Write-Log ("Local Whisper {0} plan: source duration {1}; model {2}; local path {3}; estimated duration {4}; adaptive timeout {5}; stall watchdog {6}; estimate source {7}." -f $Task, $sourceDurationLabel, $ModelName, $Plan.RuntimePathLabel, (Format-DurationHuman -Seconds $Plan.EstimatedRuntimeSeconds), (Format-DurationHuman -Seconds $Plan.ResolvedTimeoutSeconds), (Format-DurationHuman -Seconds $Plan.StallTimeoutSeconds), $Plan.EstimateSource)
+
+    if ($Plan.CalibrationUsed) {
+        Write-Log ("Calibration sample: {0} clip completed in {1}; runtime estimate stayed conservative at about {2:0.00}x real time." -f (Format-DurationHuman -Seconds $Plan.CalibrationClipSeconds), (Format-DurationHuman -Seconds $Plan.CalibrationElapsedSeconds), $Plan.ObservedRtf)
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Plan.CalibrationStatus)) {
+        Write-Log ("Calibration status: {0}" -f $Plan.CalibrationStatus)
+    }
+
+    if ($Plan.TimeoutSource -eq "explicit_override") {
+        Write-Log ("Using explicit -WhisperTimeoutSeconds override: {0} seconds ({1})." -f $Plan.ResolvedTimeoutSeconds, (Format-DurationHuman -Seconds $Plan.ResolvedTimeoutSeconds)) "WARN"
+    }
+
+    foreach ($warning in @($Plan.Warnings)) {
+        Write-Log $warning "WARN"
+    }
+}
+
+function Get-LocalWhisperPromptEstimateLabel {
+    param(
+        [double]$SourceDurationSeconds,
+        [double]$MinMultiplier,
+        [double]$MaxMultiplier
+    )
+
+    if ($SourceDurationSeconds -gt 0) {
+        $minimumSeconds = [math]::Max(10.0, $SourceDurationSeconds * $MinMultiplier)
+        $maximumSeconds = [math]::Max(($minimumSeconds + 5.0), ($SourceDurationSeconds * $MaxMultiplier))
+        return ("about {0} to {1}" -f (Format-DurationHuman -Seconds $minimumSeconds), (Format-DurationHuman -Seconds $maximumSeconds))
+    }
+
+    return ("about {0:0.0}x to {1:0.0}x the source duration" -f $MinMultiplier, $MaxMultiplier)
+}
+
 function Test-LocalWhisperLongCpuRunRisk {
     param(
         [string]$ModelName,
@@ -1223,7 +2038,7 @@ function Write-LocalWhisperLongCpuRunWarning {
         "long media"
     }
 
-    Write-Log ("This Local run is using Whisper model '{0}' on CPU for about {1}. Longer CPU-only Local runs with 'large' can exceed the current 1800-second Whisper watchdog before transcription finishes. If that happens, rerun with GPU, split the media, or choose a smaller -WhisperModel." -f $ModelName, $durationLabel) "WARN"
+    Write-Log ("This Local run is using Whisper model '{0}' on CPU for about {1}. Longer CPU-only Local Whisper runs can still take a very long time, so the script now uses an adaptive runtime budget plus a separate stall watchdog." -f $ModelName, $durationLabel) "WARN"
 }
 
 function Get-AudioFilesFromPath {
@@ -1345,6 +2160,35 @@ function Test-NvidiaSmiAvailable {
 function Get-WhisperExecutionMode {
     param([string]$PythonCommand)
 
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "whisper-probe" `
+        -Payload @{} `
+        -StepName "Whisper GPU capability probe"
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            $data = $cliResult.Result.data
+            return [PSCustomObject]@{
+                WhisperImportOk = [bool]$data.whisper_import_ok
+                TorchImportOk   = [bool]$data.torch_import_ok
+                CudaAvailable   = [bool]$data.cuda_available
+                Device          = [string]$data.device
+                TorchVersion    = [string]$data.torch_version
+                CudaVersion     = [string]$data.cuda_version
+                Error           = [string]$data.error
+            }
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python whisper probe failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
+    }
+
     $tempPy = Join-Path $env:TEMP ("whisper_probe_" + [guid]::NewGuid().ToString() + ".py")
 
     $pyCode = @'
@@ -1456,8 +2300,57 @@ function New-CodexReadme {
         [string]$PackageStatus = "SUCCESS",
         [string]$TranslationStatus = "",
         [string]$TranslationNotes = "",
-        [string]$NextSteps = ""
+        [string]$NextSteps = "",
+        [string]$PythonCommand = ""
     )
+
+    if (-not [string]::IsNullOrWhiteSpace($PythonCommand)) {
+        $cliResult = $null
+
+        try {
+            $cliResult = Invoke-MediaManglersPythonCli `
+                -PythonCommand $PythonCommand `
+                -Command "write-package-readme" `
+                -Payload @{
+                    readme_kind                = "audio"
+                    readme_path                = $ReadmePath
+                    audio_file_name            = $AudioFileName
+                    raw_present                = $RawPresent
+                    processing_mode_summary    = $ProcessingModeSummary
+                    openai_project_summary     = $OpenAiProjectSummary
+                    transcription_path_details = $TranscriptionPathDetails
+                    detected_language          = $DetectedLanguage
+                    translation_targets        = @($TranslationTargets)
+                    translation_path_details   = $TranslationPathDetails
+                    comments_summary           = $CommentsSummary
+                    package_status             = $PackageStatus
+                    translation_status         = $TranslationStatus
+                    translation_notes          = $TranslationNotes
+                    next_steps                 = $NextSteps
+                } `
+                -StepName "Python package README writer" `
+                -HeartbeatSeconds 10 `
+                -TimeoutSeconds 120
+        }
+        catch {
+            Write-Log ("Tracked Python package README writer failed. Falling back to the legacy PowerShell README writer. {0}" -f $_.Exception.Message) "WARN"
+            $cliResult = $null
+        }
+
+        if ($cliResult) {
+            if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+                return
+            }
+
+            $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+                [string]$cliResult.Result.error
+            }
+            else {
+                "Tracked Python CLI helper failed before returning a result."
+            }
+            Write-Log ("Tracked Python package README writer failed. Falling back to the legacy PowerShell README writer. {0}" -f $cliError) "WARN"
+        }
+    }
 
 @"
 README_FOR_CODEX
@@ -1775,7 +2668,7 @@ function Add-SummaryRow {
     }
 }
 
-function Invoke-PythonWhisperTranscript {
+function Invoke-PythonWhisperTranscriptProcess {
     param(
         [string]$PythonCommand,
         [string]$AudioPath,
@@ -1789,10 +2682,63 @@ function Invoke-PythonWhisperTranscript {
         [string]$JsonName = "transcript_original.json",
         [string]$SrtName = "transcript_original.srt",
         [string]$TextName = "transcript_original.txt",
-        [int]$HeartbeatSeconds = 10
+        [int]$HeartbeatSeconds = 10,
+        [int]$TimeoutSeconds = 0,
+        [int]$StallTimeoutSeconds = 0,
+        [double]$EstimatedTotalSeconds = 0,
+        [string]$ProgressStateFilePath = "",
+        [string]$StepName = "Python Whisper transcription"
     )
 
     Ensure-Directory $TranscriptFolder
+
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "whisper-transcribe" `
+        -Payload @{
+            audio_path                 = $AudioPath
+            output_dir                 = $TranscriptFolder
+            model_name                 = $ModelName
+            language_code              = $LanguageCode
+            ffmpeg_dir                 = $(Split-Path $FFmpegExe -Parent)
+            prefer_gpu                 = $PreferGpu
+            task_name                  = $Task
+            json_name                  = $JsonName
+            srt_name                   = $SrtName
+            text_name                  = $TextName
+            progress_file              = $ProgressStateFilePath
+            heartbeat_interval_seconds = [math]::Max(10, [math]::Max($HeartbeatSeconds, 15))
+        } `
+        -StepName $StepName `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds $TimeoutSeconds `
+        -StallTimeoutSeconds $StallTimeoutSeconds `
+        -EstimatedTotalSeconds $EstimatedTotalSeconds `
+        -ProgressStateFilePath $ProgressStateFilePath
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            $data = $cliResult.Result.data
+            return [PSCustomObject]@{
+                Device        = [string]$data.device
+                Fp16          = [bool]$data.fp16
+                JsonPath      = [string]$data.json_path
+                SrtPath       = [string]$data.srt_path
+                TextPath      = [string]$data.text_path
+                Language      = [string]$data.language
+                SegmentsCount = [int]$data.segments_count
+                GpuError      = [string]$data.gpu_error
+            }
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python Whisper helper failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
+    }
 
     $ffmpegDir = Split-Path $FFmpegExe -Parent
     $tempPy = Join-Path $env:TEMP ("whisper_transcribe_" + [guid]::NewGuid().ToString() + ".py")
@@ -1806,6 +2752,7 @@ import sys
 import traceback
 import time
 import threading
+from datetime import datetime, timezone
 
 audio_path = sys.argv[1]
 output_dir = sys.argv[2]
@@ -1817,6 +2764,7 @@ task_name = sys.argv[7]
 json_name = sys.argv[8]
 srt_name = sys.argv[9]
 text_name = sys.argv[10]
+progress_file = sys.argv[11]
 
 os.makedirs(output_dir, exist_ok=True)
 
@@ -1826,19 +2774,61 @@ if ffmpeg_dir:
 def log(msg):
     print(msg, flush=True)
 
+started_at = time.time()
+progress_state = {
+    "stage": "starting",
+    "message": "Preparing Whisper helper",
+    "device": "pending",
+}
+
+def write_progress(stage=None, message=None, device=None):
+    if stage is not None:
+        progress_state["stage"] = stage
+    if message is not None:
+        progress_state["message"] = message
+    if device:
+        progress_state["device"] = device
+
+    if not progress_file:
+        return
+
+    payload = {
+        "stage": progress_state["stage"],
+        "message": progress_state["message"],
+        "elapsed_seconds": round(max(0.0, time.time() - started_at), 1),
+        "updated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "device": progress_state["device"],
+        "model_name": model_name,
+        "task_name": task_name,
+    }
+    temp_path = progress_file + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, progress_file)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
 heartbeat_stop = False
 
 def heartbeat():
-    started = time.time()
     while not heartbeat_stop:
-        elapsed = time.time() - started
-        log(f"[PY] heartbeat: transcription process alive, elapsed={elapsed:.0f}s")
-        time.sleep(30)
+        elapsed = time.time() - started_at
+        log(f"[PY] heartbeat: transcription process alive, elapsed={elapsed:.0f}s, stage={progress_state['stage']}")
+        write_progress()
+        time.sleep(15)
 
 hb = threading.Thread(target=heartbeat, daemon=True)
 hb.start()
 
+write_progress("starting", "Preparing Whisper transcription helper")
+
 try:
+    write_progress("importing_whisper", "Importing Whisper runtime")
     import whisper
 except Exception:
     traceback.print_exc(file=sys.stderr)
@@ -1864,8 +2854,10 @@ def fmt_srt_time(seconds):
 
 def run_transcription(device_name):
     fp16 = device_name == "cuda"
+    write_progress("loading_model", f"Loading Whisper model '{model_name}' on {device_name}", device_name)
     log(f"[PY] Loading model '{model_name}' on device '{device_name}'...")
     model = whisper.load_model(model_name, device=device_name)
+    write_progress("transcribing", f"Running Whisper {task_name} on {device_name}", device_name)
     log(f"[PY] Starting {task_name} on {device_name}...")
     result = model.transcribe(
         audio_path,
@@ -1899,6 +2891,7 @@ try:
         result, fp16 = run_transcription("cpu")
         device = "cpu"
 
+    write_progress("writing_outputs", "Writing transcript files", device)
     log("[PY] Writing transcript files...")
 
     srt_path = os.path.join(output_dir, srt_name)
@@ -1924,6 +2917,7 @@ try:
             f.write(f"{index}\n{start_ts} --> {end_ts}\n{text}\n\n")
 
     log("[PY] Transcript files written successfully.")
+    write_progress("complete", "Transcript files written successfully", device)
 
     print(json.dumps({
         "device": device,
@@ -1960,12 +2954,16 @@ finally:
                 $Task,
                 $JsonName,
                 $SrtName,
-                $TextName
+                $TextName,
+                $ProgressStateFilePath
             ) `
-            -StepName "Python Whisper transcription" `
+            -StepName $StepName `
             -IgnoreExitCode `
             -HeartbeatSeconds $HeartbeatSeconds `
-            -TimeoutSeconds 1800
+            -TimeoutSeconds $TimeoutSeconds `
+            -StallTimeoutSeconds $StallTimeoutSeconds `
+            -EstimatedTotalSeconds $EstimatedTotalSeconds `
+            -ProgressStateFilePath $ProgressStateFilePath
 
         if ($result.ExitCode -ne 0) {
             throw "Python Whisper transcription failed. See script_run.log for the exact Python error."
@@ -1993,6 +2991,253 @@ finally:
     finally {
         if (Test-Path $tempPy) {
             Remove-Item $tempPy -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-LocalWhisperCalibration {
+    param(
+        [string]$PythonCommand,
+        [string]$AudioPath,
+        [string]$FFmpegExe,
+        [string]$ModelName,
+        [string]$LanguageCode,
+        [bool]$PreferGpu,
+        [string]$Task,
+        [double]$SampleSeconds,
+        [int]$HeartbeatSeconds = 10
+    )
+
+    if ($SampleSeconds -le 0) {
+        return [PSCustomObject]@{
+            Success = $false
+            Reason  = "calibration sample duration was not usable"
+        }
+    }
+
+    Write-Log ("Running a short Local Whisper calibration sample ({0}) to estimate this machine's speed..." -f (Format-DurationHuman -Seconds $SampleSeconds))
+
+    $tempRoot = Join-Path $env:TEMP ("whisper_calibration_" + [guid]::NewGuid().ToString())
+    $sampleAudioPath = Join-Path $tempRoot "whisper_calibration_sample.mp3"
+    $progressStateFilePath = Join-Path $tempRoot "whisper_calibration_progress.json"
+    Ensure-Directory $tempRoot
+
+    try {
+        Invoke-ExternalCapture `
+            -FilePath $FFmpegExe `
+            -Arguments @(
+                "-y",
+                "-i", $AudioPath,
+                "-t", ("{0:0.###}" -f $SampleSeconds),
+                "-vn",
+                "-acodec", "libmp3lame",
+                "-b:a", "128k",
+                $sampleAudioPath
+            ) `
+            -StepName "Create Whisper calibration sample" `
+            -TimeoutSeconds 300 | Out-Null
+
+        $samplePlan = Get-LocalWhisperAdaptiveRuntimePlan `
+            -PythonCommand $PythonCommand `
+            -SourceDurationSeconds $SampleSeconds `
+            -ModelName $ModelName `
+            -CanUseWhisperGpu $PreferGpu `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -WhisperTimeoutSeconds 0 `
+            -Task $Task
+
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $null = Invoke-PythonWhisperTranscriptProcess `
+                -PythonCommand $PythonCommand `
+                -AudioPath $sampleAudioPath `
+                -TranscriptFolder $tempRoot `
+                -ModelName $ModelName `
+                -LanguageCode $LanguageCode `
+                -FFmpegExe $FFmpegExe `
+                -PreferGpu $PreferGpu `
+                -Task $Task `
+                -JsonName "calibration.json" `
+                -SrtName "calibration.srt" `
+                -TextName "calibration.txt" `
+                -HeartbeatSeconds $HeartbeatSeconds `
+                -TimeoutSeconds $samplePlan.ResolvedTimeoutSeconds `
+                -StallTimeoutSeconds $samplePlan.StallTimeoutSeconds `
+                -EstimatedTotalSeconds $samplePlan.EstimatedRuntimeSeconds `
+                -ProgressStateFilePath $progressStateFilePath `
+                -StepName "Python Whisper calibration"
+        }
+        finally {
+            $sw.Stop()
+        }
+
+        Write-Log ("Calibration sample finished in {0} for a {1} clip." -f (Format-DurationHuman -Seconds $sw.Elapsed.TotalSeconds), (Format-DurationHuman -Seconds $SampleSeconds))
+
+        return [PSCustomObject]@{
+            Success               = $true
+            SampleDurationSeconds = [math]::Round($SampleSeconds, 3)
+            ElapsedSeconds        = [math]::Round($sw.Elapsed.TotalSeconds, 3)
+            Reason                = "sample calibration completed"
+        }
+    }
+    catch {
+        Write-Log ("Calibration sample failed. Falling back to the conservative heuristic estimate. {0}" -f $_.Exception.Message) "WARN"
+        return [PSCustomObject]@{
+            Success = $false
+            Reason  = $_.Exception.Message
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempRoot) {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Invoke-PythonWhisperTranscript {
+    param(
+        [string]$PythonCommand,
+        [string]$AudioPath,
+        [string]$TranscriptFolder,
+        [string]$ModelName,
+        [string]$LanguageCode,
+        [string]$FFmpegExe,
+        [bool]$PreferGpu,
+        [ValidateSet("transcribe","translate")]
+        [string]$Task = "transcribe",
+        [string]$JsonName = "transcript_original.json",
+        [string]$SrtName = "transcript_original.srt",
+        [string]$TextName = "transcript_original.txt",
+        [double]$SourceDurationSeconds = 0,
+        [int]$HeartbeatSeconds = 10,
+        [int]$WhisperTimeoutSeconds = 0,
+        [bool]$InteractiveMode = $false,
+        [bool]$AllowInteractiveLongRunPrompt = $true
+    )
+
+    Ensure-Directory $TranscriptFolder
+
+    $resolvedModelName = $ModelName
+    $heuristicPlan = $null
+
+    while ($true) {
+        $heuristicPlan = Get-LocalWhisperAdaptiveRuntimePlan `
+            -PythonCommand $PythonCommand `
+            -SourceDurationSeconds $SourceDurationSeconds `
+            -ModelName $resolvedModelName `
+            -CanUseWhisperGpu $PreferGpu `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+            -Task $Task
+
+        if (-not $InteractiveMode -or -not $AllowInteractiveLongRunPrompt -or -not $heuristicPlan.LongRunPromptRecommended) {
+            break
+        }
+
+        $decision = Get-InteractiveLocalWhisperLongRunDecision -ModelName $resolvedModelName -Plan $heuristicPlan
+        if ($decision.Action -eq "cancel") {
+            throw "Cancelled before starting the long Local Whisper run."
+        }
+        if ($decision.Action -eq "switch_model") {
+            Write-Log ("Operator switched Local Whisper model from '{0}' to '{1}' for this run." -f $resolvedModelName, $decision.ModelName) "WARN"
+            $resolvedModelName = $decision.ModelName
+            continue
+        }
+
+        break
+    }
+
+    $calibrationData = $null
+    $calibrationStatus = ""
+    if ($WhisperTimeoutSeconds -gt 0) {
+        $calibrationStatus = "skipped because explicit -WhisperTimeoutSeconds override was supplied"
+    }
+    elseif ($heuristicPlan.CalibrationRecommended) {
+        $cacheKey = Get-LocalWhisperCalibrationCacheKey -AudioPath $AudioPath -ModelName $resolvedModelName -CanUseWhisperGpu $PreferGpu
+        if ($script:WhisperCalibrationCache.ContainsKey($cacheKey)) {
+            $calibrationData = $script:WhisperCalibrationCache[$cacheKey]
+            $calibrationStatus = "reused cached short-sample calibration from this run"
+        }
+        else {
+            $calibrationAttempt = Invoke-LocalWhisperCalibration `
+                -PythonCommand $PythonCommand `
+                -AudioPath $AudioPath `
+                -FFmpegExe $FFmpegExe `
+                -ModelName $resolvedModelName `
+                -LanguageCode $LanguageCode `
+                -PreferGpu $PreferGpu `
+                -Task $Task `
+                -SampleSeconds $heuristicPlan.CalibrationSampleSeconds `
+                -HeartbeatSeconds $HeartbeatSeconds
+
+            if ($calibrationAttempt.Success) {
+                $calibrationData = $calibrationAttempt
+                $script:WhisperCalibrationCache[$cacheKey] = $calibrationAttempt
+            }
+            else {
+                $calibrationStatus = $calibrationAttempt.Reason
+            }
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($heuristicPlan.CalibrationRecommendationReason)) {
+        $calibrationStatus = $heuristicPlan.CalibrationRecommendationReason
+    }
+
+    $runtimePlan = if ($calibrationData) {
+        Get-LocalWhisperAdaptiveRuntimePlan `
+            -PythonCommand $PythonCommand `
+            -SourceDurationSeconds $SourceDurationSeconds `
+            -ModelName $resolvedModelName `
+            -CanUseWhisperGpu $PreferGpu `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+            -Task $Task `
+            -CalibrationData $calibrationData
+    }
+    else {
+        Get-LocalWhisperAdaptiveRuntimePlan `
+            -PythonCommand $PythonCommand `
+            -SourceDurationSeconds $SourceDurationSeconds `
+            -ModelName $resolvedModelName `
+            -CanUseWhisperGpu $PreferGpu `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+            -Task $Task `
+            -CalibrationStatus $calibrationStatus
+    }
+
+    Write-LocalWhisperRuntimePlanLog -Task $Task -ModelName $resolvedModelName -Plan $runtimePlan
+
+    $progressStateFilePath = Join-Path $env:TEMP ("whisper_progress_" + [guid]::NewGuid().ToString() + ".json")
+    $stepName = if ($Task -eq "translate") { "Python Whisper translation" } else { "Python Whisper transcription" }
+
+    try {
+        $result = Invoke-PythonWhisperTranscriptProcess `
+            -PythonCommand $PythonCommand `
+            -AudioPath $AudioPath `
+            -TranscriptFolder $TranscriptFolder `
+            -ModelName $resolvedModelName `
+            -LanguageCode $LanguageCode `
+            -FFmpegExe $FFmpegExe `
+            -PreferGpu $PreferGpu `
+            -Task $Task `
+            -JsonName $JsonName `
+            -SrtName $SrtName `
+            -TextName $TextName `
+            -HeartbeatSeconds $HeartbeatSeconds `
+            -TimeoutSeconds $runtimePlan.ResolvedTimeoutSeconds `
+            -StallTimeoutSeconds $runtimePlan.StallTimeoutSeconds `
+            -EstimatedTotalSeconds $runtimePlan.EstimatedRuntimeSeconds `
+            -ProgressStateFilePath $progressStateFilePath `
+            -StepName $stepName
+
+        $result | Add-Member -NotePropertyName ModelNameUsed -NotePropertyValue $resolvedModelName -Force
+        $result | Add-Member -NotePropertyName RuntimePlan -NotePropertyValue $runtimePlan -Force
+        return $result
+    }
+    finally {
+        if (Test-Path -LiteralPath $progressStateFilePath) {
+            Remove-Item -LiteralPath $progressStateFilePath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -2888,11 +4133,10 @@ $FFmpegPath = Resolve-ExecutablePath `
     -FallbackPaths @("D:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\APPS\ffmpeg\bin\ffmpeg.exe", "C:\Program Files\digiKam\ffmpeg.exe") `
     -ToolName "FFmpeg"
 $FFprobePath = Get-FFprobePath -FFmpegExe $FFmpegPath
-$PythonExe = Resolve-ExecutablePath `
-    -PreferredPath $PythonExe `
-    -FallbackCommands @("py", "python") `
-    -FallbackPaths @() `
-    -ToolName "Python launcher"
+$pythonLauncherWasExplicit = $PSBoundParameters.ContainsKey("PythonExe")
+$PythonExe = Resolve-PythonInterpreterPath `
+    -RequestedValue $PythonExe `
+    -WasExplicitlySet:$pythonLauncherWasExplicit
 
 $resolvedDefaults = Resolve-DefaultInputOutputFolders `
     -CurrentInputFolder $InputFolder `
@@ -3115,6 +4359,130 @@ function Get-InteractiveOpenAiProjectMode {
             "2" { return "Public" }
             default { Write-Host "Please enter 1, 2, or just press Enter for Private." -ForegroundColor Yellow }
         }
+    }
+}
+
+function Get-InteractiveLocalWhisperSourceDurationSeconds {
+    param(
+        [string]$InputPath,
+        [string]$FFprobeExe
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InputPath)) {
+        return 0.0
+    }
+
+    try {
+        $normalizedInput = Normalize-UserPath -Path $InputPath
+        if (-not (Test-Path -LiteralPath $normalizedInput)) {
+            return 0.0
+        }
+
+        $totalDuration = 0.0
+        foreach ($audioItem in @(Get-AudioFilesFromPath -Path $normalizedInput)) {
+            $duration = Get-VideoDurationSeconds -FFprobeExe $FFprobeExe -VideoPath $audioItem.FullName
+            if ($duration -gt 0) {
+                $totalDuration += $duration
+            }
+        }
+
+        return $totalDuration
+    }
+    catch {
+        return 0.0
+    }
+}
+
+function Get-InteractiveLocalWhisperModelSelection {
+    param(
+        [string]$DefaultValue = "medium",
+        [double]$SourceDurationSeconds = 0.0
+    )
+
+    $choices = @(
+        [PSCustomObject]@{
+            Key         = "1"
+            Model       = "small"
+            Description = "fastest, lower accuracy"
+            Estimate    = Get-LocalWhisperPromptEstimateLabel -SourceDurationSeconds $SourceDurationSeconds -MinMultiplier 0.8 -MaxMultiplier 1.4
+        },
+        [PSCustomObject]@{
+            Key         = "2"
+            Model       = "medium"
+            Description = "balanced"
+            Estimate    = Get-LocalWhisperPromptEstimateLabel -SourceDurationSeconds $SourceDurationSeconds -MinMultiplier 1.3 -MaxMultiplier 2.2
+        },
+        [PSCustomObject]@{
+            Key         = "3"
+            Model       = "large"
+            Description = "slowest, best accuracy"
+            Estimate    = Get-LocalWhisperPromptEstimateLabel -SourceDurationSeconds $SourceDurationSeconds -MinMultiplier 2.0 -MaxMultiplier 4.0
+        }
+    )
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "Local Whisper model" -ForegroundColor Cyan
+        Write-Host "Choose the Local transcription model. These are rough CPU-only Whisper estimates, not guarantees." -ForegroundColor Cyan
+        if ($SourceDurationSeconds -gt 0) {
+            Write-Host ("Source duration: {0}" -f (Format-DurationHuman -Seconds $SourceDurationSeconds)) -ForegroundColor Cyan
+        }
+
+        foreach ($choice in $choices) {
+            $defaultSuffix = if ($choice.Model -eq $DefaultValue) { " (default)" } else { "" }
+            Write-Host ("  {0}. {1}{2}  {3}; rough CPU-only Whisper time {4}" -f $choice.Key, $choice.Model, $defaultSuffix, $choice.Description, $choice.Estimate) -ForegroundColor Cyan
+        }
+
+        Write-Host "Large note: on CPU-only systems, longer files can still take a very long time. Media Mangler now uses an adaptive timeout plus a separate stall watchdog." -ForegroundColor Yellow
+
+        $choice = Read-Host ("Press Enter for {0}, or type 1, 2, 3, small, medium, or large" -f $DefaultValue)
+        if ([string]::IsNullOrWhiteSpace($choice)) {
+            return [PSCustomObject]@{
+                Model       = $DefaultValue
+                UsedDefault = $true
+            }
+        }
+
+        switch ($choice.Trim().ToLowerInvariant()) {
+            "1" { return [PSCustomObject]@{ Model = "small"; UsedDefault = $false } }
+            "2" { return [PSCustomObject]@{ Model = "medium"; UsedDefault = $false } }
+            "3" { return [PSCustomObject]@{ Model = "large"; UsedDefault = $false } }
+            "small" { return [PSCustomObject]@{ Model = "small"; UsedDefault = $false } }
+            "medium" { return [PSCustomObject]@{ Model = "medium"; UsedDefault = $false } }
+            "large" { return [PSCustomObject]@{ Model = "large"; UsedDefault = $false } }
+            default {
+                Write-Host "Please enter 1, 2, 3, small, medium, large, or just press Enter for the default." -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+function Get-InteractiveTranslationTargets {
+    param([string]$DefaultTarget = "en")
+
+    while ($true) {
+        $choice = Read-Host "Translate the transcript into another language? (Y/n):"
+        if ([string]::IsNullOrWhiteSpace($choice) -or $choice.Trim().ToLowerInvariant() -in @("y", "yes")) {
+            while ($true) {
+                $targetInput = Read-Host ("Enter the target language code(s) like en, es, fr or en,es (blank for {0})" -f $DefaultTarget)
+                if ([string]::IsNullOrWhiteSpace($targetInput)) {
+                    return $DefaultTarget
+                }
+
+                $normalizedTargets = @(Get-TranslationTargets -Value $targetInput)
+                if ($normalizedTargets.Count -gt 0) {
+                    return ($normalizedTargets -join ",")
+                }
+
+                Write-Host "Please enter at least one language code like en, es, fr, or en,es." -ForegroundColor Yellow
+            }
+        }
+
+        if ($choice.Trim().ToLowerInvariant() -in @("n", "no")) {
+            return ""
+        }
+
+        Write-Host "Please enter Y, N, or just press Enter for Yes." -ForegroundColor Yellow
     }
 }
 
@@ -4565,6 +5933,32 @@ function Get-ArgosModuleStatus {
         [int]$HeartbeatSeconds = 10
     )
 
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "argos-status" `
+        -Payload @{} `
+        -StepName "Argos Translate module check" `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 120
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            $data = $cliResult.Result.data
+            return [PSCustomObject]@{
+                ModuleInstalled = [bool]$data.module_installed
+                Error           = [string]$data.error
+            }
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python Argos status check failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
+    }
+
     $probe = Invoke-ExternalCapture `
         -FilePath $PythonCommand `
         -Arguments @("-c", "import argostranslate.translate") `
@@ -4644,7 +6038,7 @@ function Get-ArgosInstallCommandHints {
     }
 
     $commands = New-Object System.Collections.Generic.List[string]
-    [void]$commands.Add("py -m pip install argostranslate")
+    [void]$commands.Add("python -m pip install argostranslate")
     [void]$commands.Add("argospm update")
     foreach ($pair in ($pairs | Select-Object -Unique)) {
         [void]$commands.Add(("argospm install {0}" -f $pair))
@@ -4660,6 +6054,37 @@ function Invoke-ArgosProbe {
         [string]$TargetLanguageCode,
         [int]$HeartbeatSeconds = 10
     )
+
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "argos-probe" `
+        -Payload @{
+            from_code = $SourceLanguageCode
+            to_code   = $TargetLanguageCode
+        } `
+        -StepName ("Argos probe ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 300
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            $data = $cliResult.Result.data
+            return [PSCustomObject]@{
+                ModuleInstalled    = [bool]$data.module_installed
+                CanTranslate       = [bool]$data.can_translate
+                InstalledLanguages = @($data.installed_languages)
+                Error              = [string]$data.error
+            }
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python Argos probe failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
+    }
 
     $tempPy = Join-Path $env:TEMP ("argos_probe_" + [guid]::NewGuid().ToString() + ".py")
     $pyCode = @'
@@ -4759,6 +6184,41 @@ function Install-ArgosTranslationSupport {
         if ($pipResult.ExitCode -ne 0) {
             throw "Could not install Argos Translate with pip. See script_run.log for the exact pip error."
         }
+    }
+
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "argos-install" `
+        -Payload @{
+            from_code = $SourceLanguageCode
+            to_code   = $TargetLanguageCode
+        } `
+        -StepName ("Install Argos language support ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 3600
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            $data = $cliResult.Result.data
+            if (-not [bool]$data.success) {
+                $errorMessage = [string]$data.error
+                if ([string]::IsNullOrWhiteSpace($errorMessage)) {
+                    $errorMessage = "Argos did not report a usable translation route after installation."
+                }
+
+                throw $errorMessage
+            }
+
+            return
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python Argos install helper failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
     }
 
     $tempPy = Join-Path $env:TEMP ("argos_install_" + [guid]::NewGuid().ToString() + ".py")
@@ -5279,6 +6739,52 @@ function Invoke-ArgosSegmentTranslation {
         [int]$HeartbeatSeconds = 10
     )
 
+    $cliPayloadSegments = @(
+        $Segments | ForEach-Object {
+            @{
+                id    = $_.id
+                start = $_.start
+                end   = $_.end
+                text  = $_.text
+            }
+        }
+    )
+
+    $cliResult = Invoke-MediaManglersPythonCli `
+        -PythonCommand $PythonCommand `
+        -Command "argos-translate" `
+        -Payload @{
+            from_code = $SourceLanguageCode
+            to_code   = $TargetLanguageCode
+            segments  = $cliPayloadSegments
+        } `
+        -StepName ("Argos translation ({0}->{1})" -f $SourceLanguageCode, $TargetLanguageCode) `
+        -HeartbeatSeconds $HeartbeatSeconds `
+        -TimeoutSeconds 3600
+
+    if ($cliResult) {
+        if ($cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
+            return @(
+                $cliResult.Result.data.segments | ForEach-Object {
+                    [PSCustomObject]@{
+                        id    = $_.id
+                        start = [double]$_.start
+                        end   = [double]$_.end
+                        text  = [string]$_.text
+                    }
+                }
+            )
+        }
+
+        $cliError = if ($cliResult.Result -and -not [string]::IsNullOrWhiteSpace($cliResult.Result.error)) {
+            [string]$cliResult.Result.error
+        }
+        else {
+            "Tracked Python CLI helper failed before returning a result."
+        }
+        Write-Log ("Tracked Python Argos translation helper failed. Falling back to the legacy inline helper. {0}" -f $cliError) "WARN"
+    }
+
     $tempPy = Join-Path $env:TEMP ("argos_translate_" + [guid]::NewGuid().ToString() + ".py")
     $tempInputJson = Join-Path $env:TEMP ("argos_translate_input_" + [guid]::NewGuid().ToString() + ".json")
     $tempOutputJson = Join-Path $env:TEMP ("argos_translate_output_" + [guid]::NewGuid().ToString() + ".json")
@@ -5649,6 +7155,7 @@ function Process-Audio {
         [string]$TranslationProvider,
         [string]$OpenAiModel,
         [string]$OpenAiTranscriptionModel,
+        [int]$WhisperTimeoutSeconds = 0,
         [int]$HeartbeatSeconds = 10
     )
 
@@ -5808,12 +7315,9 @@ function Process-Audio {
             -HeartbeatSeconds $HeartbeatSeconds
     }
 
-    if ($ProcessingMode -eq "Local" -and (Test-LocalWhisperLongCpuRunRisk -ModelName $ModelName -CanUseWhisperGpu $CanUseWhisperGpu -DurationSeconds $sourceDurationSeconds)) {
-        Write-LocalWhisperLongCpuRunWarning -ModelName $ModelName -DurationSeconds $sourceDurationSeconds
-    }
-
     $whisperMode = "CPU"
     $transcriptionUsesOpenAi = ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private")
+    $resolvedWhisperModel = $ModelName
     $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $audioItem.Name -Action {
         if ((Test-Path -LiteralPath $originalTranscriptSrt) -and (Test-Path -LiteralPath $originalTranscriptJson) -and (Test-Path -LiteralPath $originalTranscriptText)) {
             Write-Log "Transcript files already exist. Skipping new transcription."
@@ -5842,12 +7346,12 @@ function Process-Audio {
                 -HeartbeatSeconds $HeartbeatSeconds
         }
         else {
-            Write-Log ("Generating transcript with Whisper model '{0}' on {1}..." -f $ModelName, $(if ($CanUseWhisperGpu) { "GPU if available" } else { "CPU" }))
-            Invoke-PythonWhisperTranscript `
+            Write-Log ("Preparing Local Whisper transcript with model '{0}' on {1}..." -f $resolvedWhisperModel, $(if ($CanUseWhisperGpu) { "GPU-capable path" } else { "CPU-only path" }))
+            $phaseTranscriptResult = Invoke-PythonWhisperTranscript `
                 -PythonCommand $PythonCommand `
                 -AudioPath $reviewAudioPath `
                 -TranscriptFolder $transcriptFolder `
-                -ModelName $ModelName `
+                -ModelName $resolvedWhisperModel `
                 -LanguageCode $LanguageCode `
                 -FFmpegExe $FFmpegExe `
                 -PreferGpu $CanUseWhisperGpu `
@@ -5855,7 +7359,17 @@ function Process-Audio {
                 -JsonName "transcript_original.json" `
                 -SrtName "transcript_original.srt" `
                 -TextName "transcript_original.txt" `
-                -HeartbeatSeconds $HeartbeatSeconds
+                -SourceDurationSeconds $sourceDurationSeconds `
+                -HeartbeatSeconds $HeartbeatSeconds `
+                -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+                -InteractiveMode:$InteractiveMode `
+                -AllowInteractiveLongRunPrompt:$InteractiveMode
+
+            if ($phaseTranscriptResult.ModelNameUsed) {
+                $resolvedWhisperModel = [string]$phaseTranscriptResult.ModelNameUsed
+            }
+
+            return $phaseTranscriptResult
         }
     }
 
@@ -5929,7 +7443,7 @@ function Process-Audio {
                     -TranslationMode $activeTranslationMode `
                     -TargetLanguage $targetLanguage `
                     -DetectedLanguage $detectedLanguage `
-                    -ModelName $ModelName `
+                    -ModelName $resolvedWhisperModel `
                     -PythonCommand $PythonCommand `
                     -InteractiveMode:$InteractiveMode `
                     -HeartbeatSeconds $HeartbeatSeconds
@@ -5983,7 +7497,7 @@ function Process-Audio {
                     else {
                         $whisperTranslationLanguageCode
                     }
-                    Write-Log ("Running local Whisper audio translation to English with model '{0}' and source language hint '{1}'." -f $ModelName, $whisperTranslationLanguageLabel)
+                    Write-Log ("Running local Whisper audio translation to English with model '{0}' and source language hint '{1}'." -f $resolvedWhisperModel, $whisperTranslationLanguageLabel)
                     $tempJsonName = "transcript_whisper_translate.json"
                     $tempSrtName = "transcript_whisper_translate.srt"
                     $tempTextName = "transcript_whisper_translate.txt"
@@ -5991,7 +7505,7 @@ function Process-Audio {
                         -PythonCommand $PythonCommand `
                         -AudioPath $reviewAudioPath `
                         -TranscriptFolder $translationFolder `
-                        -ModelName $ModelName `
+                        -ModelName $resolvedWhisperModel `
                         -LanguageCode $whisperTranslationLanguageCode `
                         -FFmpegExe $FFmpegExe `
                         -PreferGpu $CanUseWhisperGpu `
@@ -5999,7 +7513,11 @@ function Process-Audio {
                         -JsonName $tempJsonName `
                         -SrtName $tempSrtName `
                         -TextName $tempTextName `
-                        -HeartbeatSeconds $HeartbeatSeconds
+                        -SourceDurationSeconds $sourceDurationSeconds `
+                        -HeartbeatSeconds $HeartbeatSeconds `
+                        -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
+                        -InteractiveMode:$InteractiveMode `
+                        -AllowInteractiveLongRunPrompt:$false
 
                     $translatedData = Get-TranscriptSegments -TranscriptJsonPath $translateResult.JsonPath
                     $null = Write-TranscriptArtifactsFromSegments `
@@ -6246,7 +7764,8 @@ function Process-Audio {
             -PackageStatus $packageStatus `
             -TranslationStatus $translationStatusText `
             -TranslationNotes $translationNotesText `
-            -NextSteps $nextStepsText
+            -NextSteps $nextStepsText `
+            -PythonCommand $PythonCommand
     } | Out-Null
 
     Add-SummaryRow `
@@ -6355,13 +7874,7 @@ if (-not $PSBoundParameters.ContainsKey("OpenOutputInExplorer") -and -not $NoPro
     }
 }
 
-$translationTargets = Get-TranslationTargets -Value $TranslateTo
 $translationProviderWasExplicit = $PSBoundParameters.ContainsKey("TranslationProvider")
-if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
-    $translationInput = Read-Host "Translate transcript into additional languages? Enter codes like en, es, fr or press Enter for none"
-    $translationTargets = Get-TranslationTargets -Value $translationInput
-}
-
 $processingModeWasExplicit = $PSBoundParameters.ContainsKey("ProcessingMode")
 $processingModeResolution = Resolve-ProcessingModeRequest `
     -RequestedMode $ProcessingMode `
@@ -6392,10 +7905,27 @@ if (-not [string]::IsNullOrWhiteSpace($WhisperModel)) {
     $WhisperModel = $WhisperModel.Trim()
 }
 if (-not $whisperModelWasExplicit -and $ProcessingMode -eq "Local") {
-    $originalWhisperModel = $WhisperModel
-    $WhisperModel = $script:LocalAccuracyWhisperModel
-    $whisperModelResolutionNote = ("Local mode defaulted Whisper from '{0}' to '{1}' because local accuracy and nuance are prioritized over speed." -f $originalWhisperModel, $WhisperModel)
+    if (-not $NoPrompt) {
+        $interactiveWhisperSelection = Get-InteractiveLocalWhisperModelSelection `
+            -DefaultValue $script:InteractiveLocalDefaultWhisperModel `
+            -SourceDurationSeconds (Get-InteractiveLocalWhisperSourceDurationSeconds -InputPath $InputPath -FFprobeExe $FFprobePath)
+        $WhisperModel = $interactiveWhisperSelection.Model
+        if ($interactiveWhisperSelection.UsedDefault) {
+            $whisperModelResolutionNote = ("Local interactive mode defaulted Whisper to '{0}' as the recommended balance between speed and accuracy." -f $WhisperModel)
+        }
+    }
+    else {
+        $originalWhisperModel = $WhisperModel
+        $WhisperModel = $script:LocalAccuracyWhisperModel
+        $whisperModelResolutionNote = ("Local non-interactive mode defaulted Whisper from '{0}' to '{1}' because scripted Local runs still preserve the accuracy-first default." -f $originalWhisperModel, $WhisperModel)
+    }
 }
+
+if (-not $PSBoundParameters.ContainsKey("TranslateTo") -and -not $NoPrompt) {
+    $TranslateTo = Get-InteractiveTranslationTargets -DefaultTarget "en"
+}
+
+$translationTargets = Get-TranslationTargets -Value $TranslateTo
 
 $TranslationProvider = Get-TranslationModeForProcessingMode -EffectiveMode $ProcessingMode
 $requestedLegacyTranslationProvider = if ($translationProviderWasExplicit) { $PSBoundParameters["TranslationProvider"] } else { "" }
@@ -6478,6 +8008,7 @@ Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
 Write-Log ("Transcription path selected: {0}" -f $transcriptionPathSummary)
 if ($ProcessingMode -eq "Local") {
     Write-Log ("Local Whisper model: {0}" -f $WhisperModel)
+    Write-Log ("Local Whisper timeout mode: {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
 }
 if ($ProcessingMode -eq "AI") {
     Write-Log ("AI project mode: {0}" -f $OpenAiProject)
@@ -6721,6 +8252,7 @@ try {
     }
     Write-Host ""
     Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
+    Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
     Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
     Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
     if ($downloadedInputPaths.Count -gt 0) {
@@ -6819,6 +8351,7 @@ try {
                 -TranslationProvider $TranslationProvider `
                 -OpenAiModel $OpenAiModel `
                 -OpenAiTranscriptionModel $ResolvedOpenAiTranscriptionModel `
+                -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
                 -HeartbeatSeconds $HeartbeatSeconds
 
             $processedItems += $result

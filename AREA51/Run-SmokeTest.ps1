@@ -1,6 +1,7 @@
 param(
     [string]$TestMediaFolder = (Join-Path $PSScriptRoot "..\test_media"),
     [string]$VideoPath,
+    [string]$PreferredShortFixturePath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
     [string]$RemoteSampleUrl = "https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm",
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base",
@@ -36,7 +37,7 @@ function Get-RepresentativeSmokeTestMedia {
         }
     }
 
-    return $Files | Sort-Object Length -Descending | Select-Object -First 1
+    return $Files | Sort-Object Length | Select-Object -First 1
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
@@ -78,6 +79,10 @@ elseif ($AllMedia) {
     }
     $selectedFiles = $mediaFiles
     $inputTarget = (Resolve-Path -LiteralPath $TestMediaFolder).ProviderPath
+}
+elseif (-not [string]::IsNullOrWhiteSpace($PreferredShortFixturePath) -and (Test-Path -LiteralPath $PreferredShortFixturePath)) {
+    $selectedFiles = @((Get-Item -LiteralPath $PreferredShortFixturePath))
+    $inputTarget = $selectedFiles[0].FullName
 }
 elseif ($mediaFiles.Count -gt 0) {
     $representative = Get-RepresentativeSmokeTestMedia -Files $mediaFiles

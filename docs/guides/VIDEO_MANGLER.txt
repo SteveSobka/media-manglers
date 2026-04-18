@@ -78,15 +78,26 @@ Local translation paths:
 - to other target languages: can use Argos Translate when the language packages
   are installed
 
-Local mode now defaults to Whisper large. That is intentional: local accuracy
-and nuance are prioritized over speed, so Local runs will be slower and heavier
-than smaller Whisper models. Advanced users can still choose a different
-supported local Whisper model with -WhisperModel.
+Interactive Local runs now ask which Whisper model to use. The beginner-friendly
+default on Enter is medium, and the prompt shows small, medium, and large with
+rough CPU-only transcription-time tradeoffs so operators are not surprised by
+the Local runtime cost. Scripted or -NoPrompt Local runs still keep the current
+accuracy-first default of large unless you explicitly pass -WhisperModel.
 
-On CPU-only systems, Video Mangler now warns before Local Whisper large runs at
-or above about 15 minutes because the current Whisper watchdog is still 1800
-seconds. If that warning appears, rerun with GPU, split the media, or choose a
-smaller -WhisperModel.
+Interactive translation now asks:
+
+  Translate the transcript into another language? (Y/n):
+
+If you answer Yes or just press Enter, the next prompt asks for the target
+language code and defaults to en on Enter.
+
+Local Whisper no longer uses one fixed wall-clock timeout for every run. Before
+a Local Whisper run starts, Video Mangler now logs the source duration, chosen
+model, whether the Local path looks CPU-only or GPU-capable, the estimated
+transcription duration, the resolved adaptive timeout, and the separate stall
+watchdog. Very long interactive Local runs offer a simple continue/switch-
+smaller/cancel prompt, while -NoPrompt runs stay non-interactive. You can still
+force a manual runtime budget with -WhisperTimeoutSeconds when needed.
 
 If translation is requested and you explicitly choose an English-only Whisper
 model, the app explains the issue clearly and tells you to switch to a
@@ -227,7 +238,9 @@ Current main behavior:
 - ProcessingMode is the primary operator-facing switch.
 - If you do not pass -ProcessingMode, Video Mangler defaults to Local.
 - If you do not explicitly pass -WhisperModel and the resolved mode is Local,
-  Video Mangler upgrades the literal script default from base.en to large.
+  interactive runs prompt for small, medium, or large and default to medium on
+  Enter. -NoPrompt and other scripted Local runs still keep the current large
+  default unless you set -WhisperModel yourself.
 - -OpenAiProject Private = OpenAI transcription + OpenAI translation.
 - -OpenAiProject Public = local transcription + OpenAI translation on the
   Public/shared project.
@@ -253,13 +266,15 @@ Parameters:
 - -YtDlpPath: override the yt-dlp command/path used for remote inputs.
   Default: yt-dlp.
 - -WhisperModel: choose the local Whisper model. Literal script default:
-  base.en. Real current-main Local default: large when you do not explicitly
-  set the parameter. For translation work, use a multilingual model such as
-  large.
+  base.en. Interactive Local runs now prompt for small, medium, or large and
+  default to medium on Enter. Non-interactive Local runs still default to
+  large when you do not explicitly set the parameter.
 - -Language: optional source-language hint for transcription and local
   translation. Leave blank to auto-detect when possible.
 - -TranslateTo: comma-separated target language codes such as en or en,es.
-  Blank means no translated transcript outputs.
+  Blank means no translated transcript outputs in scripted runs. Interactive
+  runs now ask a yes/no question first and default the follow-up target-code
+  prompt to en.
 - -ProcessingMode: primary mode switch. Valid values: Local, AI.
   Default: Local.
 - -TranslationProvider: legacy compatibility flag. Valid values: Auto,
@@ -274,6 +289,8 @@ Parameters:
   Interactive runs prompt with 0.5 as the default; -NoPrompt runs take 0.5
   automatically.
 - -HeartbeatSeconds: how often long-running steps log progress. Default: 10.
+- -WhisperTimeoutSeconds: optional explicit Local Whisper runtime-budget
+  override in seconds. Leave it unset to use the adaptive timeout logic.
 - -CopyRawVideo: copy the original source video into the package raw folder.
   CLI default: off. Interactive default on Enter: Yes.
 - -IncludeComments: request YouTube comments when the source supports them.
@@ -326,6 +343,10 @@ Translation smoke test:
 Validator:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
+
+Run-SmokeTest.ps1 now prefers the short local fixture
+AREA51\TestData\1_min_test_Video.mp4 before it falls back to test_media or the
+older remote sample URL.
 
 Notes
 -----

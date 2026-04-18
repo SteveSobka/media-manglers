@@ -8,3 +8,7 @@ dist/archive/
 dist/staging/
 AREA51/Test-Video/
 AREA51/TestData/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
