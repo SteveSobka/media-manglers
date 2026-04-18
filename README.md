@@ -125,6 +125,8 @@ Interactive translation now asks `Translate the transcript into another language
 
 Local Whisper no longer uses one fixed wall-clock cutoff for every run. Before a Local Whisper run starts, the apps now log the source duration, selected model, whether the Local path looks CPU-only or GPU-capable, the estimated transcription duration, the resolved adaptive timeout, and the separate stall watchdog. Very long interactive Local runs offer a simple continue/switch-smaller/cancel prompt, while `-NoPrompt` runs stay non-interactive. `-WhisperTimeoutSeconds` remains available as an explicit manual override when you need one.
 
+Before a long Local Whisper run, you can now call `-WhisperHealthCheck` in either app to print a short runtime-health summary and exit. That check reports the selected Python interpreter, torch version, torch CUDA version, `cuda_available`, any detected GPU device names, the selected Local Whisper device, and a plain-English classification of the current machine as CPU-only, GPU-capable, or misconfigured/uncertain for Local Whisper. On the current CPU-only developer validation box used on 2026-04-18, the health check reports CPU-only for Local Whisper; real CUDA sign-off still needs a separate GPU-capable machine.
+
 The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
 ## OpenAI Integration
@@ -289,6 +291,7 @@ Audio examples:
 - `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project.
 - `-OpenAiModel` only matters when AI translation is requested. Current main queries `GET /v1/models`, keeps only the repo-approved allowlist for the chosen mode/project, auto-selects the first visible approved model, and only uses an approved fallback when discovery is skipped or only hits network / timeout / server-style failures.
 - `-NoPrompt` disables the interactive questions. Without `-NoPrompt`, the apps prompt for missing inputs and treat Enter as Yes for `CopyRaw*`, `CreateChatGptZip`, `OpenOutputInExplorer`, and supported YouTube comments prompts.
+- `-WhisperHealthCheck` runs a Local Whisper runtime probe, prints whether this machine is CPU-only, GPU-capable, or misconfigured/uncertain for Whisper, and exits without starting a packaging run.
 - `-Version` and `-ShowVersion` are aliases for the same version-only path.
 
 ### Video Mangler
@@ -316,6 +319,7 @@ Audio examples:
 - `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
 - `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
 - `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
+- `-WhisperHealthCheck`: Probe the selected Local Whisper runtime, print the machine classification plus the key runtime facts, and exit.
 - `-Version` / `-ShowVersion`: Print the app version and exit.
 - `-ChatGptZipMaxMb`: Maximum ChatGPT ZIP size in MB. Default: `500`.
 
@@ -323,6 +327,10 @@ Video Mangler examples:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Version
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -WhisperHealthCheck
 ```
 
 ```powershell
@@ -365,6 +373,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 - `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
 - `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
 - `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
+- `-WhisperHealthCheck`: Probe the selected Local Whisper runtime, print the machine classification plus the key runtime facts, and exit.
 - `-Version` / `-ShowVersion`: Print the app version and exit.
 - `-ChatGptZipMaxMb`: Maximum ChatGPT ZIP size in MB. Default: `500`.
 
@@ -372,6 +381,10 @@ Audio Mangler examples:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Version
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -WhisperHealthCheck
 ```
 
 ```powershell
