@@ -3,9 +3,9 @@ param(
     [string]$AudioPath,
     [string]$PreferredShortAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
     [string]$PreferredShortForeignAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\German_audio_short_45s.mp3"),
-    [string]$RemoteSampleUrl = "https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3",
-    [string]$RemoteSampleFallbackUrl = "https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2",
-    [string]$TranslationSampleUrl = "https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3",
+    [string]$RemoteSampleUrl = "https://www.youtube.com/watch?v=1aA1WGON49E",
+    [string]$RemoteSampleFallbackUrl = "https://www.youtube.com/watch?v=APOqEiXEC4g",
+    [string]$TranslationSampleUrl = "https://www.youtube.com/watch?v=hNaUbuWL8MI",
     [string]$WhisperModel = "base",
     [int]$HeartbeatSeconds = 10,
     [switch]$CopyRawAudio,
@@ -13,10 +13,11 @@ param(
     [switch]$AllAudio,
     [switch]$TranslateToEnglish,
     [string]$TranslateTo,
-    [ValidateSet("Local", "AI")]
+    [ValidateSet("Local", "AI", "Hybrid")]
     [string]$ProcessingMode = "Local",
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
+    [string]$ProtectedTermsProfile = "",
     [switch]$IncludeComments,
     [switch]$KeepTestOutput
 )
@@ -55,6 +56,7 @@ function Invoke-AudioPackaging {
         [string]$TranslateTo,
         [string]$ProcessingMode,
         [string]$OpenAiProject,
+        [string]$ProtectedTermsProfile,
         [switch]$TranslateToEnglish,
         [switch]$IncludeComments
     )
@@ -77,9 +79,14 @@ function Invoke-AudioPackaging {
     [void]$args.Add("-ProcessingMode")
     [void]$args.Add($ProcessingMode)
 
-    if ($ProcessingMode -eq "AI") {
+    if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
         [void]$args.Add("-OpenAiProject")
         [void]$args.Add($OpenAiProject)
+    }
+
+    if ($ProcessingMode -eq "Hybrid" -and -not [string]::IsNullOrWhiteSpace($ProtectedTermsProfile)) {
+        [void]$args.Add("-ProtectedTermsProfile")
+        [void]$args.Add($ProtectedTermsProfile)
     }
 
     if ($CopyRawAudio) {
@@ -198,6 +205,12 @@ Write-Host ("Processing mode:             {0}" -f $ProcessingMode) -ForegroundCo
 if ($ProcessingMode -eq "AI") {
     Write-Host ("AI project mode:             {0}" -f $OpenAiProject) -ForegroundColor Cyan
 }
+elseif ($ProcessingMode -eq "Hybrid") {
+    Write-Host ("AI project mode:             {0}" -f $OpenAiProject) -ForegroundColor Cyan
+    if (-not [string]::IsNullOrWhiteSpace($ProtectedTermsProfile)) {
+        Write-Host ("Protected terms profile:     {0}" -f $ProtectedTermsProfile) -ForegroundColor Cyan
+    }
+}
 
 $exitCode = Invoke-AudioPackaging `
     -ScriptPath $audioScript `
@@ -210,6 +223,7 @@ $exitCode = Invoke-AudioPackaging `
     -TranslateTo $TranslateTo `
     -ProcessingMode $ProcessingMode `
     -OpenAiProject $OpenAiProject `
+    -ProtectedTermsProfile $ProtectedTermsProfile `
     -TranslateToEnglish:$TranslateToEnglish `
     -IncludeComments:$IncludeComments
 
@@ -227,6 +241,7 @@ if ($exitCode -ne 0 -and $usingRemoteSample -and -not $TranslateToEnglish -and -
         -TranslateTo $TranslateTo `
         -ProcessingMode $ProcessingMode `
         -OpenAiProject $OpenAiProject `
+        -ProtectedTermsProfile $ProtectedTermsProfile `
         -TranslateToEnglish:$TranslateToEnglish `
         -IncludeComments:$IncludeComments
 }

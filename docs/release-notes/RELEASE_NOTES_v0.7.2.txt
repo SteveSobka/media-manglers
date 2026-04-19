@@ -1,0 +1,61 @@
+Release Notes - v0.7.2
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.7.2
+
+What changed
+------------
+
+- Hybrid now fails early in preflight when a loose EXE is missing required
+  sidecars instead of waiting until after download, transcription, or other
+  expensive work.
+- Hybrid no longer silently applies the sim-racing protected-terms profile to
+  every run.
+  Operators now see an optional `Protected Terms Profile` concept with generic
+  mode by default and an explicit `sim-racing` profile when requested.
+- Normal operator output now makes OpenAI translation behavior much clearer:
+  whether OpenAI was used, which project was selected, which model was
+  requested, which model was actually used, and when an English source skipped
+  translation by copying the original transcript.
+- OpenAI text cost is now surfaced in the normal run flow with a rough preview,
+  per-file estimated text cost when AI translation was used, a running session
+  total, and a final estimated text total in the summary.
+- Remote playlist or larger multi-item expansions now stop for an explicit scope
+  confirmation before the real run begins.
+- Smoke/test guidance now points at the approved bounded Doc66 short-video set,
+  and the revoked short test-video references were removed from tracked docs and
+  helper defaults.
+
+Operator notes
+--------------
+
+- Start with the versioned ZIP bundle in `dist\release\`.
+- A loose EXE by itself is not the normal supported Hybrid handoff. If you use
+  a loose build for local/dev checks, keep the required sidecar folders beside
+  it.
+- Leave `-ProtectedTermsProfile` blank for generic/default Hybrid behavior.
+  Use `-ProtectedTermsProfile sim-racing` only when that domain-specific
+  profile is intentionally wanted.
+- The OpenAI text-cost numbers are estimates for tracked text translation only.
+  In `AI Private` mode they do not include OpenAI audio transcription cost.
+
+Validation and packaging
+------------------------
+
+- Rig1 is the accepted validation surface for this hotfix pass.
+- DevBox CPU validation is not a blocker for `v0.7.2`.
+- The expected validation set for this release is early loose-EXE failure,
+  packaged Hybrid multilingual smoke coverage, playlist confirmation, PowerShell
+  parse checks, unit tests, `git diff --check`, and a fresh packaged build.
+
+Non-blocking follow-ups
+-----------------------
+
+- protected-terms profile authoring/generator helper
+- broader target-language support
+- broader protected-terms profile coverage
+- benchmark scoring/reporting integration
+- optional compatibility validation on additional machines when useful

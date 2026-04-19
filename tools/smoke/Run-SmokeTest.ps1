@@ -2,7 +2,7 @@ param(
     [string]$TestMediaFolder = (Join-Path $PSScriptRoot "..\..\test_media"),
     [string]$VideoPath,
     [string]$PreferredShortFixturePath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
-    [string]$RemoteSampleUrl = "https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm",
+    [string]$RemoteSampleUrl = "https://www.youtube.com/watch?v=hNaUbuWL8MI",
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base",
     [int]$HeartbeatSeconds = 10,
@@ -10,10 +10,11 @@ param(
     [switch]$SkipEstimate,
     [switch]$AllMedia,
     [string]$TranslateTo,
-    [ValidateSet("Local", "AI")]
+    [ValidateSet("Local", "AI", "Hybrid")]
     [string]$ProcessingMode = "Local",
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
+    [string]$ProtectedTermsProfile = "",
     [switch]$IncludeComments,
     [switch]$KeepTestOutput
 )
@@ -113,8 +114,11 @@ else {
     Write-Host ("Video under test:       {0}" -f $selectedFiles[0].FullName) -ForegroundColor Cyan
 }
 Write-Host ("Processing mode:        {0}" -f $ProcessingMode) -ForegroundColor Cyan
-if ($ProcessingMode -eq "AI") {
+if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
     Write-Host ("AI project mode:        {0}" -f $OpenAiProject) -ForegroundColor Cyan
+}
+if ($ProcessingMode -eq "Hybrid" -and -not [string]::IsNullOrWhiteSpace($ProtectedTermsProfile)) {
+    Write-Host ("Protected terms profile:{0}" -f " $ProtectedTermsProfile") -ForegroundColor Cyan
 }
 Write-Host ("Translation targets:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($TranslateTo)) { "none" } else { $TranslateTo })) -ForegroundColor Cyan
 
@@ -143,9 +147,14 @@ else {
 [void]$args.Add("-ProcessingMode")
 [void]$args.Add($ProcessingMode)
 
-if ($ProcessingMode -eq "AI") {
+if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
     [void]$args.Add("-OpenAiProject")
     [void]$args.Add($OpenAiProject)
+}
+
+if ($ProcessingMode -eq "Hybrid" -and -not [string]::IsNullOrWhiteSpace($ProtectedTermsProfile)) {
+    [void]$args.Add("-ProtectedTermsProfile")
+    [void]$args.Add($ProtectedTermsProfile)
 }
 
 if (-not [string]::IsNullOrWhiteSpace($TranslateTo)) {

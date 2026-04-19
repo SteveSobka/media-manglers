@@ -102,7 +102,7 @@ class HybridTextTests(unittest.TestCase):
     def test_load_glossary_raises_hybrid_error_when_file_is_missing(self) -> None:
         missing_path = self.repo_root / "glossaries" / "missing-glossary.json"
 
-        with self.assertRaisesRegex(hybrid_text.HybridTranslationError, "glossary file not found"):
+        with self.assertRaisesRegex(hybrid_text.HybridTranslationError, "protected terms profile file not found"):
             hybrid_text.load_glossary(missing_path)
 
     def test_load_source_transcript_segments_preserves_order_and_timestamps(self) -> None:
@@ -160,6 +160,27 @@ class HybridTextTests(unittest.TestCase):
         self.assertIn("Crew Chief", str(user_content))
         self.assertIn("Full Course Yellow", str(user_content))
         self.assertIn('"context_after"', str(user_content))
+
+    def test_build_translation_request_payload_generic_mode_omits_profile_specific_examples(self) -> None:
+        batch = hybrid_text.build_segment_batches(
+            self.source_segments,
+            batch_size=2,
+            context_segments=1,
+        )[0]
+
+        payload = hybrid_text.build_translation_request_payload(
+            batch,
+            source_language="de",
+            target_language="en",
+            glossary={"profile": "", "lane_id": "", "terms": []},
+            model="gpt-4.1-mini-2025-04-14",
+        )
+
+        system_content = str(payload["messages"][0]["content"])
+        user_content = str(payload["messages"][1]["content"])
+        self.assertNotIn("Crew Chief", system_content)
+        self.assertNotIn("Full Course Yellow", system_content)
+        self.assertIn('"protected_terms_profile": ""', user_content)
 
     def test_parse_translation_response_accepts_keyed_json(self) -> None:
         parsed = hybrid_text.parse_translation_response(
@@ -418,6 +439,50 @@ class HybridTextTests(unittest.TestCase):
             self.assertTrue(Path(result["validation_report_path"]).exists())
             transcript_txt = Path(result["transcript_artifacts"]["transcript_txt_path"])
             self.assertIn("Crew Chief", transcript_txt.read_text(encoding="utf-8"))
+
+    def test_run_hybrid_translation_allows_generic_mode_without_profile(self) -> None:
+        response = {
+            "content": json.dumps(
+                {
+                    "translations": {
+                        "1": "that is what it is called there itself",
+                        "2": "DRS zones",
+                        "3": "Enable iRacing Full Course Yellow at Pit State Messages",
+                        "4": "Use Sweary Messages",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
+            "model": "gpt-4.1-mini-2025-04-14",
+        }
+        transport = FakeTransport(
+            model_ids=["gpt-4.1-mini-2025-04-14"],
+            responses=[response],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            transcript_path = self._write_source_transcript(temp_root)
+
+            result = hybrid_text.run_hybrid_translation(
+                transcript_json_path=transcript_path,
+                output_dir=temp_root / "translations" / "en",
+                source_language="de",
+                target_language="en",
+                openai_project="Private",
+                requested_model="gpt-4.1-mini-2025-04-14",
+                batch_size=8,
+                context_segments=1,
+                transport=transport,
+            )
+
+            self.assertEqual(result["validation_status"], "accepted")
+            self.assertEqual(result["glossary_profile"], "")
+            self.assertEqual(result["protected_terms_profile"], "")
+            self.assertEqual(result["glossary_path"], "")
+            self.assertEqual(result["protected_terms_path"], "")
+            self.assertEqual(result["protected_terms_violation_count"], 0)
 
     def test_run_hybrid_translation_recovers_failed_batch_with_single_segment_recovery(self) -> None:
         bad_response = {

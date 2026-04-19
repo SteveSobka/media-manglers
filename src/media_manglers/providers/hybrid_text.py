@@ -448,10 +448,12 @@ def load_glossary(glossary_path: str | Path) -> JsonObject:
         raw_text = resolved_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:
         raise HybridTranslationError(
-            f"Hybrid Accuracy glossary file not found: {resolved_path}"
+            f"Hybrid Accuracy protected terms profile file not found: {resolved_path}"
         ) from exc
 
     payload = json.loads(raw_text)
+    payload["profile"] = str(payload.get("profile", "") or "").strip()
+    payload["lane_id"] = str(payload.get("lane_id", "") or "").strip()
     terms = payload.get("terms") or []
     payload["terms"] = [
         {
@@ -530,19 +532,30 @@ def build_translation_request_payload(
             details.append(f"forbidden: {forbidden}")
         glossary_lines.append(" - " + "; ".join(details))
 
+    protected_terms_profile = str(glossary.get("profile", "") or "").strip()
+    has_protected_terms = bool(glossary_lines)
     system_lines = [
         "You translate transcript batches from the source language into English.",
         "Return one JSON object and nothing else.",
         'Use this schema exactly: {"translations":{"<segment_id>":"<english translation>"}}.',
         "Do not summarize, compress, merge, omit, or reorder segments.",
         "Preserve meaning and speaker intent.",
-        "Preserve product, racing, and UI terms according to the glossary.",
-        "Treat Crew Chief as an app/product name when the source context indicates the app.",
-        f'Known bad example: "{KNOWN_BAD_EXAMPLE_SOURCE}" -> "{KNOWN_BAD_EXAMPLE_GOOD}".',
-        f'Do not translate it as "{KNOWN_BAD_EXAMPLE_BAD}"',
-        "Keep punctuation, domain terms, and acronyms such as DRS and Full Course Yellow intact when required by context.",
+        (
+            "Preserve product, app, brand, UI, and domain terms according to the protected terms profile."
+            if has_protected_terms
+            else "Preserve product, app, brand, UI, and domain terms when the source context makes them important."
+        ),
         "If a source segment is blank, return an empty string for that segment id.",
     ]
+    if protected_terms_profile == "de-en-sim-racing":
+        system_lines.extend(
+            [
+                "Treat Crew Chief as an app/product name when the source context indicates the app.",
+                f'Known bad example: "{KNOWN_BAD_EXAMPLE_SOURCE}" -> "{KNOWN_BAD_EXAMPLE_GOOD}".',
+                f'Do not translate it as "{KNOWN_BAD_EXAMPLE_BAD}"',
+                "Keep punctuation, domain terms, and acronyms such as DRS and Full Course Yellow intact when required by context.",
+            ]
+        )
     if repair_instructions:
         system_lines.append("The previous response failed validation. Fix every listed issue in the retry.")
 
@@ -568,14 +581,15 @@ def build_translation_request_payload(
             {"id": item["id"], "text": item["text"]}
             for item in batch.get("context_after") or []
         ],
-        "glossary_profile": str(glossary.get("profile", "") or "").strip(),
-        "glossary_rules": glossary_lines,
-        "known_bad_example": {
+        "protected_terms_profile": protected_terms_profile,
+        "protected_terms_rules": glossary_lines,
+    }
+    if protected_terms_profile == "de-en-sim-racing":
+        user_payload["known_bad_example"] = {
             "source": KNOWN_BAD_EXAMPLE_SOURCE,
             "correct_translation": KNOWN_BAD_EXAMPLE_GOOD,
             "incorrect_translation": KNOWN_BAD_EXAMPLE_BAD,
-        },
-    }
+        }
     if repair_instructions:
         user_payload["retry_validation_issues"] = repair_instructions
     if previous_response_text:
@@ -1155,7 +1169,7 @@ def _build_retry_instructions(validation: JsonObject) -> list[str]:
     if validation.get("mojibake_count"):
         instructions.append("Remove mojibake or broken encoding artifacts.")
     if validation.get("glossary_violation_count"):
-        instructions.append("Follow the glossary exactly for protected product and UI terms.")
+        instructions.append("Follow the protected terms profile exactly for protected product and UI terms.")
     if validation.get("compression_warning_count"):
         instructions.append("Do not summarize or compress the meaning.")
     if validation.get("garbage_pattern_count"):
@@ -1481,7 +1495,7 @@ def run_hybrid_translation(
     *,
     transcript_json_path: str | Path,
     output_dir: str | Path,
-    glossary_path: str | Path,
+    glossary_path: str | Path | None = None,
     source_language: str = "",
     target_language: str = HYBRID_DEFAULT_TARGET_LANGUAGE,
     openai_project: str = "Private",
@@ -1501,7 +1515,8 @@ def run_hybrid_translation(
             "Hybrid Accuracy translation needs a source transcript with at least one segment.",
         )
 
-    glossary = load_glossary(glossary_path)
+    resolved_glossary_path = str(glossary_path or "").strip()
+    glossary = load_glossary(resolved_glossary_path) if resolved_glossary_path else {"profile": "", "lane_id": "", "terms": []}
     normalized_source_language = (
         str(source_language or "").strip().lower()
         or str(transcript.get("source_language") or "").strip().lower()
@@ -1634,8 +1649,10 @@ def run_hybrid_translation(
         "lane_id": str(glossary.get("lane_id") or ""),
         "source_language": normalized_source_language,
         "target_language": target_languages[0],
-        "glossary_path": str(glossary_path),
+        "glossary_path": resolved_glossary_path,
         "glossary_profile": str(glossary.get("profile") or ""),
+        "protected_terms_path": resolved_glossary_path,
+        "protected_terms_profile": str(glossary.get("profile") or ""),
         "privacy_class": HYBRID_PRIVACY_CLASS,
         "segment_count": len(source_segments),
         "translated_segment_count": len(accepted_translated_segments),
@@ -1654,6 +1671,8 @@ def run_hybrid_translation(
         "encoding_artifact_count": int(overall_validation.get("encoding_artifact_count") or 0)
         + sum(int(item.get("encoding_artifact_count") or 0) for item in failed_batch_validations),
         "glossary_violation_count": int(overall_validation.get("glossary_violation_count") or 0)
+        + sum(int(item.get("glossary_violation_count") or 0) for item in failed_batch_validations),
+        "protected_terms_violation_count": int(overall_validation.get("glossary_violation_count") or 0)
         + sum(int(item.get("glossary_violation_count") or 0) for item in failed_batch_validations),
         "compression_warning_count": int(overall_validation.get("compression_warning_count") or 0)
         + sum(int(item.get("compression_warning_count") or 0) for item in failed_batch_validations),
@@ -1722,7 +1741,7 @@ def validate_from_request(payload: JsonObject) -> JsonObject:
         ]
         source_language = str(payload.get("source_language") or "").strip()
 
-    glossary = load_glossary(glossary_path) if glossary_path else {"terms": []}
+    glossary = load_glossary(glossary_path) if glossary_path else {"profile": "", "lane_id": "", "terms": []}
     report = validate_translated_segments(
         source_segments,
         translated_segments_payload,
@@ -1741,6 +1760,9 @@ def validate_from_request(payload: JsonObject) -> JsonObject:
     )
     report["glossary_profile"] = str(glossary.get("profile") or "")
     report["glossary_path"] = str(glossary_path or "")
+    report["protected_terms_profile"] = str(glossary.get("profile") or "")
+    report["protected_terms_path"] = str(glossary_path or "")
+    report["protected_terms_violation_count"] = int(report.get("glossary_violation_count") or 0)
     report["privacy_class"] = HYBRID_PRIVACY_CLASS
     report["validation_status"] = "accepted" if report.get("valid") else "rejected"
     report["translated_segment_count"] = int(report.get("translated_segment_count") or 0)
@@ -1764,13 +1786,10 @@ def translate_from_request(payload: JsonObject) -> JsonObject:
         raise HybridTranslationError("Hybrid Accuracy translation needs transcript_json_path.")
     if not output_dir:
         raise HybridTranslationError("Hybrid Accuracy translation needs output_dir.")
-    if not glossary_path:
-        raise HybridTranslationError("Hybrid Accuracy translation needs glossary_path.")
-
     return run_hybrid_translation(
         transcript_json_path=transcript_json_path,
         output_dir=output_dir,
-        glossary_path=glossary_path,
+        glossary_path=glossary_path or None,
         source_language=str(payload.get("source_language") or ""),
         target_language=str(payload.get("target_language") or HYBRID_DEFAULT_TARGET_LANGUAGE),
         openai_project=str(payload.get("openai_project") or "Private"),

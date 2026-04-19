@@ -43,7 +43,8 @@ Packaged runs
 
 Use the versioned ZIP bundle in dist\release as the normal handoff to another
 machine. The package now carries the app, the tracked python-core helper
-sidecar, and the Hybrid glossaries sidecar together.
+sidecar, and the Hybrid protected-terms profile assets stored under
+glossaries\ together.
 
 The loose EXE in dist\bin is still useful for local build checks, but it is not
 meant to be copied away by itself and treated as a fully standalone Hybrid
@@ -244,13 +245,11 @@ Local folder:
 
   C:\Videos\session-exports
 
-Public remote video:
+Approved bounded remote smoke video examples:
 
-  https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm
-
-Open-source YouTube video:
-
-  https://www.youtube.com/watch?v=R6MlUcmOul8
+  https://www.youtube.com/watch?v=1aA1WGON49E
+  https://www.youtube.com/watch?v=hNaUbuWL8MI
+  https://www.youtube.com/watch?v=APOqEiXEC4g
 
 Command-line summary
 --------------------
@@ -263,9 +262,17 @@ Current main behavior:
   interactive runs prompt for small, medium, or large and default to medium on
   Enter. -NoPrompt and other scripted Local runs still keep the current large
   default unless you set -WhisperModel yourself.
-- -OpenAiProject Private = OpenAI transcription + OpenAI translation.
+- -OpenAiProject Private = OpenAI transcription + OpenAI translation in AI
+  mode, or private-project text-only translation in Hybrid.
 - -OpenAiProject Public = local transcription + OpenAI translation on the
-  Public/shared project.
+  Public/shared project in AI mode, or Public/shared-project text-only
+  translation in Hybrid.
+- Hybrid defaults to generic mode with no Protected Terms Profile selected.
+  Use -ProtectedTermsProfile sim-racing only when you intentionally want that
+  seeded domain profile.
+- Remote playlist or larger multi-item expansions now pause for a scope review
+  before the real run starts. Use -ApproveExpandedRun for reviewed scripted
+  runs.
 - -NoPrompt disables the interactive questions and uses the non-interactive
   defaults.
 - -Version and -ShowVersion are aliases for the same version-only path.
@@ -305,10 +312,13 @@ Parameters:
 - -OpenAiModel: optional OpenAI translation model request. Explicit values
   must be repo-approved for the chosen mode/project and, when discovery
   succeeds, visible to that key/project.
+- -ProtectedTermsProfile: optional Hybrid-only protected-terms profile
+  selection. Leave it blank for generic mode, or use sim-racing when you
+  intentionally want the seeded sim-racing profile.
 - -DebugMode: stream helper chatter, command lines, and other troubleshooting
   detail to the console. Normal mode keeps that detail in script_run.log.
-- -OpenAiProject: valid values: Private, Public. Default: Private when AI mode
-  is used. Ignored in Local mode.
+- -OpenAiProject: valid values: Private, Public. Default: Private when AI or
+  Hybrid mode is used. Ignored in Local mode.
 - -FrameIntervalSeconds: extract one frame every N seconds. Real default: 0.5.
   Interactive runs prompt with 0.5 as the default; -NoPrompt runs take 0.5
   automatically.
@@ -327,6 +337,8 @@ Parameters:
   run finishes. CLI default: off. Interactive default on Enter: Yes.
 - -NoPrompt: disable interactive questions and use the non-interactive
   defaults described above.
+- -ApproveExpandedRun: allow a reviewed expanded remote run to continue in
+  non-interactive mode after the playlist/large-batch scope summary.
 - -SkipEstimate: skip the runtime estimate stage. Default: off.
 - -Version / -ShowVersion: print the app version and exit.
 - -ChatGptZipMaxMb: maximum ChatGPT ZIP size in MB. Default: 500.
@@ -343,11 +355,11 @@ Example commands:
 
 - AI Private remote video run:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=APOqEiXEC4g' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 
 - AI Public run with an explicit approved translation model and comments:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=hNaUbuWL8MI' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
 
 - Custom frame interval plus ChatGPT ZIP output:
 
@@ -367,6 +379,10 @@ Translation smoke test:
 Validator:
 
   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
+
+Run-SmokeTest.ps1 now prefers short local fixtures under AREA51\TestData before
+it falls back to the approved bounded Doc66 remote set, starting with the
+English `1aA1WGON49E` clip.
 
 Run-SmokeTest.ps1 now prefers the short local fixture
 AREA51\TestData\1_min_test_Video.mp4 when that local-only helper file exists,
