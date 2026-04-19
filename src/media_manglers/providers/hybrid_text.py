@@ -443,7 +443,15 @@ def load_source_transcript_segments(transcript_json_path: str | Path) -> JsonObj
 
 
 def load_glossary(glossary_path: str | Path) -> JsonObject:
-    payload = json.loads(Path(glossary_path).read_text(encoding="utf-8-sig"))
+    resolved_path = Path(glossary_path)
+    try:
+        raw_text = resolved_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError as exc:
+        raise HybridTranslationError(
+            f"Hybrid Accuracy glossary file not found: {resolved_path}"
+        ) from exc
+
+    payload = json.loads(raw_text)
     terms = payload.get("terms") or []
     payload["terms"] = [
         {

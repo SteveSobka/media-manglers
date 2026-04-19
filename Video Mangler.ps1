@@ -27,6 +27,8 @@ param(
     [switch]$NoPrompt,
     [switch]$SkipEstimate,
     [switch]$WhisperHealthCheck,
+    [Alias("VerboseMode")]
+    [switch]$DebugMode,
     [Alias("ShowVersion")]
     [switch]$Version,
     [int]$ChatGptZipMaxMb = 500
@@ -65,6 +67,7 @@ $script:ResolvedAppBaseDirectory = $null
 $script:MediaManglersPythonCliInfo = $null
 $script:WhisperCalibrationCache = @{}
 $script:PythonInterpreterResolutionNote = $null
+$script:DebugModeEnabled = $DebugMode.IsPresent
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -255,6 +258,65 @@ function Write-YtDlpInstallGuidance {
     Write-Host ""
 }
 
+function Get-PackagedRuntimeGuidance {
+    return "Use the versioned release ZIP/package as the normal operator handoff. If you use the loose dist\\bin EXE, keep it beside the packaged python-core and glossaries folders."
+}
+
+function Test-ConsoleDebugMode {
+    return [bool]$script:DebugModeEnabled
+}
+
+function Test-WriteLogToConsole {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+
+    if (Test-ConsoleDebugMode) {
+        return $true
+    }
+
+    if ($Level -in @("ERROR", "FAIL", "PASS")) {
+        return $true
+    }
+
+    $normalizedMessage = if ([string]::IsNullOrWhiteSpace($Message)) {
+        ""
+    }
+    else {
+        $Message.Trim()
+    }
+
+    foreach ($pattern in @(
+            '^Command:',
+            '^\[PY\]',
+            '^Tracked Python .* failed\.',
+            '^OpenAI .* model discovery',
+            '^Whisper runtime probe:',
+            '^Whisper runtime action:',
+            '^Whisper runtime health:',
+            '^OpenAI segment diagnostics:',
+            '^Requested processing mode:',
+            '^Effective processing mode request:',
+            '^Resolved processing mode:',
+            '^Requested translation provider:',
+            '^Effective translation provider request:',
+            '^Output folder root:',
+            '^OpenAI failure details',
+            '^OpenAI service message',
+            '^OpenAI raw response body',
+            '^Estimated total runtime:',
+            '^Estimated finish time:',
+            '^OpenAI transcription request:'
+        )) {
+        if ($normalizedMessage -match $pattern) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Write-Log {
     param(
         [string]$Message,
@@ -277,17 +339,19 @@ function Write-Log {
         }
     }
 
-    switch ($Level) {
-        "ERROR" { Write-Host $line -ForegroundColor Red }
-        "FAIL"  { Write-Host $line -ForegroundColor Red }
-        "PASS"  { Write-Host $line -ForegroundColor Green }
-        "WARN"  { Write-Host $line -ForegroundColor Yellow }
-        default {
-            if ($infoAccent) {
-                Write-Host $line -ForegroundColor $infoAccent
-            }
-            else {
-                Write-Host $line
+    if (Test-WriteLogToConsole -Message $Message -Level $Level) {
+        switch ($Level) {
+            "ERROR" { Write-Host $line -ForegroundColor Red }
+            "FAIL"  { Write-Host $line -ForegroundColor Red }
+            "PASS"  { Write-Host $line -ForegroundColor Green }
+            "WARN"  { Write-Host $line -ForegroundColor Yellow }
+            default {
+                if ($infoAccent) {
+                    Write-Host $line -ForegroundColor $infoAccent
+                }
+                else {
+                    Write-Host $line
+                }
             }
         }
     }
@@ -601,26 +665,40 @@ function Get-AppBaseDirectory {
     return $null
 }
 
+function Get-RuntimeSearchRoots {
+    $candidateRoots = New-Object System.Collections.Generic.List[string]
+
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $candidateRoots.Add($PSScriptRoot)
+    }
+
+    $appBaseDirectory = Get-AppBaseDirectory
+    if (-not [string]::IsNullOrWhiteSpace($appBaseDirectory)) {
+        $candidateRoots.Add($appBaseDirectory)
+
+        $parentDirectory = Split-Path -Path $appBaseDirectory -Parent
+        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
+            $candidateRoots.Add($parentDirectory)
+
+            $grandParentDirectory = Split-Path -Path $parentDirectory -Parent
+            if (-not [string]::IsNullOrWhiteSpace($grandParentDirectory)) {
+                $candidateRoots.Add($grandParentDirectory)
+            }
+        }
+    }
+
+    return @($candidateRoots | Select-Object -Unique)
+}
+
 function Get-MediaManglersPythonCliInfo {
     if ($null -ne $script:MediaManglersPythonCliInfo) {
         return $script:MediaManglersPythonCliInfo
     }
 
     $candidateRoots = New-Object System.Collections.Generic.List[string]
-    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
-        $candidateRoots.Add((Join-Path $PSScriptRoot "src"))
-        $candidateRoots.Add((Join-Path $PSScriptRoot "python-core\src"))
-    }
-
-    $appBaseDirectory = Get-AppBaseDirectory
-    if (-not [string]::IsNullOrWhiteSpace($appBaseDirectory)) {
-        $candidateRoots.Add((Join-Path $appBaseDirectory "src"))
-        $candidateRoots.Add((Join-Path $appBaseDirectory "python-core\src"))
-
-        $parentDirectory = Split-Path -Path $appBaseDirectory -Parent
-        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
-            $candidateRoots.Add((Join-Path $parentDirectory "src"))
-        }
+    foreach ($runtimeRoot in @(Get-RuntimeSearchRoots)) {
+        $candidateRoots.Add((Join-Path $runtimeRoot "src"))
+        $candidateRoots.Add((Join-Path $runtimeRoot "python-core\src"))
     }
 
     foreach ($candidateRoot in ($candidateRoots | Select-Object -Unique)) {
@@ -642,6 +720,12 @@ function Get-MediaManglersPythonCliInfo {
         EntryPoint = ""
     }
     return $script:MediaManglersPythonCliInfo
+}
+
+function Get-MediaManglersPythonCliUnavailableMessage {
+    param([string]$FeatureLabel = "This feature")
+
+    return ("{0} could not find the packaged python helper sidecar. {1}" -f $FeatureLabel, (Get-PackagedRuntimeGuidance))
 }
 
 function Resolve-PythonInterpreterPath {
@@ -1932,9 +2016,11 @@ function Invoke-ExternalStreaming {
         $exitCode = $proc.ExitCode
 
         if (-not [string]::IsNullOrWhiteSpace($stdout)) {
-            ($stdout -split "`r?`n") | ForEach-Object {
-                if ($_ -ne "") {
-                    Write-Host $_
+            if (Test-ConsoleDebugMode) {
+                ($stdout -split "`r?`n") | ForEach-Object {
+                    if ($_ -ne "") {
+                        Write-Host $_
+                    }
                 }
             }
             if ($script:CurrentLogFile) {
@@ -1943,9 +2029,11 @@ function Invoke-ExternalStreaming {
         }
 
         if (-not [string]::IsNullOrWhiteSpace($stderr)) {
-            ($stderr -split "`r?`n") | ForEach-Object {
-                if ($_ -ne "") {
-                    Write-Host $_ -ForegroundColor Yellow
+            if (Test-ConsoleDebugMode) {
+                ($stderr -split "`r?`n") | ForEach-Object {
+                    if ($_ -ne "") {
+                        Write-Host $_ -ForegroundColor Yellow
+                    }
                 }
             }
             if ($script:CurrentLogFile) {
@@ -4560,17 +4648,9 @@ function Find-EnvironmentVariableValue {
 
 function Get-HybridAccuracyGlossaryPath {
     $candidatePaths = New-Object System.Collections.Generic.List[string]
-    if ($PSScriptRoot) {
-        $candidatePaths.Add((Join-Path $PSScriptRoot $script:HybridAccuracyGlossaryRelativePath))
-    }
 
-    $appBaseDirectory = Get-AppBaseDirectory
-    if (-not [string]::IsNullOrWhiteSpace($appBaseDirectory)) {
-        $candidatePaths.Add((Join-Path $appBaseDirectory $script:HybridAccuracyGlossaryRelativePath))
-        $parentDirectory = Split-Path -Path $appBaseDirectory -Parent
-        if (-not [string]::IsNullOrWhiteSpace($parentDirectory)) {
-            $candidatePaths.Add((Join-Path $parentDirectory $script:HybridAccuracyGlossaryRelativePath))
-        }
+    foreach ($runtimeRoot in @(Get-RuntimeSearchRoots)) {
+        $candidatePaths.Add((Join-Path $runtimeRoot $script:HybridAccuracyGlossaryRelativePath))
     }
 
     foreach ($candidatePath in ($candidatePaths | Select-Object -Unique)) {
@@ -4579,7 +4659,8 @@ function Get-HybridAccuracyGlossaryPath {
         }
     }
 
-    throw ("Hybrid Accuracy glossary not found. Expected tracked asset: {0}" -f $script:HybridAccuracyGlossaryRelativePath)
+    $searchedPaths = (($candidatePaths | Select-Object -Unique) -join "; ")
+    throw ("Hybrid Accuracy could not find its packaged glossary asset '{0}'. {1} Searched: {2}" -f $script:HybridAccuracyGlossaryRelativePath, (Get-PackagedRuntimeGuidance), $searchedPaths)
 }
 
 function Assert-HybridAccuracyOpenAiProjectKey {
@@ -4638,6 +4719,10 @@ function Invoke-HybridAccuracyTextTranslation {
         -StepName ("Hybrid Accuracy text translation ({0})" -f $TargetLanguage) `
         -HeartbeatSeconds $HeartbeatSeconds `
         -TimeoutSeconds 300
+
+    if (-not $cliResult) {
+        throw (Get-MediaManglersPythonCliUnavailableMessage -FeatureLabel "Hybrid Accuracy text translation")
+    }
 
     if ($cliResult -and $cliResult.ExitCode -eq 0 -and $cliResult.Result -and $cliResult.Result.ok) {
         $data = $cliResult.Result.data
@@ -9684,54 +9769,67 @@ if ($whisperProbe.WhisperImportOk -and $whisperProbe.TorchImportOk -and $whisper
     $canUseWhisperGpu = $true
 }
 
-Write-Host ""
-Write-Host "Resolved tools"
-Write-Host "--------------"
-Write-Host ("FFmpeg:   {0}" -f $FFmpegPath)
-Write-Host ("FFprobe:  {0}" -f $FFprobePath)
-Write-Host ("Python:   {0}" -f $PythonExe)
-Write-Host ""
-Write-Host "Hardware Acceleration Detection"
-Write-Host "-------------------------------"
-Write-Host ("FFmpeg CUDA hwaccel support:     {0}" -f $(if ($cudaHwaccelSupported) { "Yes" } else { "No" }))
-Write-Host ("FFmpeg NVENC support:            {0}" -f $(if ($nvencSupported) { "Yes" } else { "No" }))
-Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($canUseWhisperGpu) { "Yes" } else { "No" }))
-$null = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent
-Write-Host ""
-Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
-Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
-Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
-Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
-Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
-Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
-Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
-if ($downloadedInputPaths.Count -gt 0) {
-    Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
-    Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
-    Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
-}
-Write-Host ("Output folder:                   {0}" -f $OutputFolder)
-Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
-if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
-    Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
-}
-if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
-    Write-Host ("OpenAI project mode:             {0}" -f $OpenAiProject)
-    if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
-        Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
+if (Test-ConsoleDebugMode) {
+    Write-Host ""
+    Write-Host "Resolved tools"
+    Write-Host "--------------"
+    Write-Host ("FFmpeg:   {0}" -f $FFmpegPath)
+    Write-Host ("FFprobe:  {0}" -f $FFprobePath)
+    Write-Host ("Python:   {0}" -f $PythonExe)
+    Write-Host ""
+    Write-Host "Hardware Acceleration Detection"
+    Write-Host "-------------------------------"
+    Write-Host ("FFmpeg CUDA hwaccel support:     {0}" -f $(if ($cudaHwaccelSupported) { "Yes" } else { "No" }))
+    Write-Host ("FFmpeg NVENC support:            {0}" -f $(if ($nvencSupported) { "Yes" } else { "No" }))
+    Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($canUseWhisperGpu) { "Yes" } else { "No" }))
+    $null = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent
+    Write-Host ""
+    Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
+    Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
+    Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
+    Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
+    Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
+    Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
+    Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
+    if ($downloadedInputPaths.Count -gt 0) {
+        Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
+        Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
+        Write-Host ("Downloaded video count:          {0}" -f $downloadedInputCount)
     }
-    if ($translationTargets.Count -gt 0) {
-        Write-Host ("OpenAI translation model:        {0}" -f $OpenAiModel)
+    Write-Host ("Output folder:                   {0}" -f $OutputFolder)
+    Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
+    if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
+        Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
     }
+    if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
+        Write-Host ("OpenAI project mode:             {0}" -f $OpenAiProject)
+        if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
+            Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
+        }
+        if ($translationTargets.Count -gt 0) {
+            Write-Host ("OpenAI translation model:        {0}" -f $OpenAiModel)
+        }
+    }
+    Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
+    Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
+    Write-Host ("Translation path selected:       {0}" -f $translationModeSummary)
+    Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
+    Write-Host ""
+    Write-Host "Videos to process:"
+    $videos | ForEach-Object { Write-Host " - $($_.FullName)" }
+    Write-Host ""
 }
-Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
-Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
-Write-Host ("Translation path selected:       {0}" -f $translationModeSummary)
-Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
-Write-Host ""
-Write-Host "Videos to process:"
-$videos | ForEach-Object { Write-Host " - $($_.FullName)" }
-Write-Host ""
+else {
+    Write-Host ""
+    Write-Host ("Run plan: {0} video item(s), mode {1}, output {2}" -f $videos.Count, $processingModeSummary, $OutputFolder) -ForegroundColor Cyan
+    Write-Host ("Translations: {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" })) -ForegroundColor Cyan
+    Write-Host ("Video path: proxy/frame GPU preference {0}; Local Whisper {1}" -f $(if ($canUseFfmpegGpu) { "enabled with CPU fallback" } else { "off" }), $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" })) -ForegroundColor Cyan
+    if ($ProcessingMode -eq "Hybrid") {
+        Write-Host ("Hybrid translation: text-only OpenAI via {0}" -f $OpenAiProject) -ForegroundColor Cyan
+    }
+    Write-Host ("Use -DebugMode for full tool and helper detail. script_run.log keeps the deep trace.") -ForegroundColor DarkCyan
+    Write-Host ""
+}
 
 $estimate = $null
 if (-not $SkipEstimate) {

@@ -12,9 +12,9 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #18: Post-merge cleanup for release packaging, repo layout, and docs
+- [ ] Issue #20: Fix packaged Hybrid asset resolution and clean default console output
   Status: in progress
-  Current note: This cleanup branch is preparing the next release after Hybrid merged to `main`. The current working decisions are: bump the repo/app version to `0.7.0`; make the versioned ZIPs under `dist\release\` the canonical operator-facing artifacts; move optional loose local-build EXEs to `dist\bin\`; move tracked build/smoke/validation scripts into `tools\`; keep `Audio Mangler.ps1` and `Video Mangler.ps1` at repo root as the operator-facing wrapper sources; keep `glossaries\` as tracked runtime assets; treat `tests\` as tracked source and `test-output\` as generated local output; and rewrite stale docs so `AREA51\` is clearly local-only instead of the home for tracked tooling. DevBox CPU validation is optional compatibility follow-up only and is not a blocker for this cleanup/release-hygiene pass.
+  Current note: Post-release Rig1 evidence showed a real packaged-run Hybrid failure after local transcription succeeded because the runtime tried to find `glossaries\de-en-sim-racing.json` without carrying or resolving that asset from the packaged surface. The observed `C:\DATA\CODE\HELPERS\Video-Mangler.exe` banner also showed stale `v0.6.1`, which added confusion, but the canonical product bug is still real: `v0.7.0` packages did not carry the Hybrid glossary asset. The hotfix scope is now implemented on the working branch: build/package now carries `python-core` plus `glossaries`, runtime asset lookup resolves from the packaged surface instead of the repo/current working directory, loose-EXE launches get clearer package guidance, default console output is quieter, and isolated packaged validation from `C:\DATA\TEMP\CODEX` succeeded on an extracted `v0.7.1` Video package in both normal mode and `-DebugMode` using a short French Hybrid clip outside the repo. DevBox CPU validation remains optional compatibility follow-up only and is not a blocker for this hotfix.
 
 ## Repo-Only Active Work
 
@@ -27,6 +27,10 @@ Rules:
   Current note: The current 2026-04-18 developer box is now explicitly classified as CPU-only for Local Whisper by `Audio Mangler.ps1 -WhisperHealthCheck` and `Video Mangler.ps1 -WhisperHealthCheck`: selected Python interpreter `C:\Users\LocalDevAdmin\AppData\Local\Python\pythoncore-3.14-64\python.exe`, `torch 2.11.0+cpu`, torch CUDA `unavailable`, `cuda_available: false`, no detected GPU device names, and selected Local Whisper device `cpu`. That is no longer treated as a defect on this box. Real CUDA Local Whisper validation and sign-off still need to be rerun on a separate GPU-capable machine before the repo claims real CUDA success.
 
 ## Recently Completed
+
+- [x] Issue #18: Post-merge cleanup for release packaging, repo layout, and docs
+  Status: merged to main and closed on 2026-04-18
+  Current note: PR `#19` merged the cleanup/release-hygiene pass to `main`, bumped the repo/app version to `0.7.0`, made the versioned ZIPs under `dist\release\` the canonical operator-facing artifacts, moved loose local-build EXEs to `dist\bin\`, moved tracked build/smoke/validation scripts into `tools\`, kept `Audio Mangler.ps1` and `Video Mangler.ps1` at repo root as the operator-facing wrapper sources, kept `glossaries\` as tracked runtime assets, and refreshed the repo/docs layout to match the current product. DevBox CPU validation is optional compatibility follow-up only and is not a blocker for this merged cleanup work.
 
 - [x] Issue #16: Add Hybrid Accuracy processing path for multilingual media
   Status: merged to main and closed on 2026-04-18
@@ -132,4 +136,4 @@ Rules:
 
 Open GitHub issues represented here:
 
-- #18 `Post-merge cleanup for release packaging, repo layout, and docs`
+- #20 `Fix packaged Hybrid asset resolution and clean default console output`

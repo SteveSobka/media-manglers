@@ -16,6 +16,7 @@ $releaseArchiveRoot = Join-Path $archiveRoot "release"
 $versionFile = Join-Path $repoRoot "VERSION"
 $pyprojectFile = Join-Path $repoRoot "pyproject.toml"
 $pythonCoreSourceRoot = Join-Path $repoRoot "src"
+$glossariesSourceRoot = Join-Path $repoRoot "glossaries"
 $docsRoot = Join-Path $repoRoot "docs"
 $guidesRoot = Join-Path $docsRoot "guides"
 $releaseNotesRoot = Join-Path $docsRoot "release-notes"
@@ -147,6 +148,21 @@ function Copy-PythonCoreSidecar {
     Assert-PythonCoreSidecar -PythonCoreRoot $destinationPythonCoreRoot
 }
 
+function Copy-GlossarySidecar {
+    param(
+        [string]$GlossariesSourceRoot,
+        [string]$DestinationRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $GlossariesSourceRoot -PathType Container)) {
+        throw "Glossary asset folder not found: $GlossariesSourceRoot"
+    }
+
+    $destinationGlossariesRoot = Join-Path $DestinationRoot "glossaries"
+    Remove-PathIfPresent -Path $destinationGlossariesRoot
+    Copy-DirectoryContents -SourceRoot $GlossariesSourceRoot -DestinationRoot $destinationGlossariesRoot
+}
+
 function Move-ItemToArchive {
     param(
         [string]$Path,
@@ -267,7 +283,7 @@ foreach ($appConfig in $selectedApps) {
     $appGuideSource = Join-Path $guidesRoot $appConfig.AppGuide
     $readmeTextSource = Join-Path $guidesRoot "README.txt"
 
-    foreach ($requiredPath in @($inputFile, $iconFile, $appGuideSource, $readmeTextSource, (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"), $pyprojectFile, (Join-Path $pythonCoreSourceRoot "media_manglers"))) {
+    foreach ($requiredPath in @($inputFile, $iconFile, $appGuideSource, $readmeTextSource, (Join-Path $repoRoot "THIRD_PARTY_NOTICES.txt"), (Join-Path $repoRoot "LICENSE"), $pyprojectFile, (Join-Path $pythonCoreSourceRoot "media_manglers"), $glossariesSourceRoot)) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Required file not found: $requiredPath"
         }
@@ -296,8 +312,11 @@ foreach ($appConfig in $selectedApps) {
         Ensure-Directory $docsFolder
         Ensure-Directory $releaseRoot
 
+        Copy-PythonCoreSidecar -PythonCoreSourceRoot $pythonCoreSourceRoot -PyprojectFile $pyprojectFile -DestinationRoot $binRoot
+        Copy-GlossarySidecar -GlossariesSourceRoot $glossariesSourceRoot -DestinationRoot $binRoot
         Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.PackageExeName) -Force
         Copy-PythonCoreSidecar -PythonCoreSourceRoot $pythonCoreSourceRoot -PyprojectFile $pyprojectFile -DestinationRoot $appFolder
+        Copy-GlossarySidecar -GlossariesSourceRoot $glossariesSourceRoot -DestinationRoot $appFolder
         Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
         Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
         Copy-Item -LiteralPath $releaseNotes -Destination (Join-Path $docsFolder ([System.IO.Path]::GetFileName($releaseNotes))) -Force
@@ -316,7 +335,7 @@ foreach ($appConfig in $selectedApps) {
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
     Write-Host ("Loose exe:   {0}" -f $outputFile) -ForegroundColor Green
     Write-Host ("Release zip: {0}" -f $releaseZip) -ForegroundColor Green
-    Write-Host "Python core sidecar: included in the release zip app folder" -ForegroundColor Green
+    Write-Host "Runtime sidecars: python-core and glossaries were refreshed in dist\\bin and the release zip app folder" -ForegroundColor Green
     if ($KeepPackageStaging) {
         Write-Host ("Package staging kept: {0}" -f $stagingFolder) -ForegroundColor Yellow
     }

@@ -1,0 +1,56 @@
+Release Notes - v0.7.1
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.7.1
+
+What changed
+------------
+
+- Fixed the post-release Hybrid packaged-run bug where glossary lookup could
+  fail outside the repo checkout.
+- The Windows build now ships the tracked `glossaries\` sidecar beside the app
+  in both `dist\bin\` and the versioned release ZIP package.
+- Hybrid packaged runs now resolve runtime assets from the packaged app surface
+  instead of assuming the repo root or current working directory.
+- Added clearer packaged-runtime guidance when an operator launches a loose EXE
+  without the needed sidecar folders.
+- Cleaned up the default console experience so normal runs focus on phases,
+  heartbeats, and concise status lines while raw helper chatter stays in
+  `script_run.log`.
+- Added a simple `-DebugMode` / `-VerboseMode` switch so operators can opt into
+  the full live helper stream when troubleshooting.
+
+Operator notes
+--------------
+
+- Start with the versioned ZIP bundle in `dist\release\`.
+- The ZIP package is the supported cross-machine handoff because it carries the
+  app, `python-core`, the Hybrid `glossaries\` sidecar, and the packaged docs.
+- The loose EXEs under `dist\bin\` are still useful for local build checks, but
+  they should stay beside their sidecar folders if you expect Hybrid or other
+  tracked helper paths to work.
+- Normal mode keeps the console calmer on purpose. Use `-DebugMode` when you
+  want the full command/helper stream on screen.
+
+Validation and packaging
+------------------------
+
+- PowerShell parse checks passed for the edited wrappers and build script.
+- `python -m unittest discover -s tests -p "test_*.py" -v` passed after the
+  hotfix changes.
+- `git diff --check` passed without diff-format errors.
+- Isolated package validation from `C:\DATA\TEMP\CODEX` proved that an
+  extracted packaged Hybrid run no longer depends on repo-root `glossaries\`
+  files.
+
+Non-blocking follow-ups
+-----------------------
+
+- benchmark scoring/reporting integration
+- broader target-language support
+- broader glossary-profile support
+- later GPU benchmarking
+- optional compatibility validation on additional machines when useful

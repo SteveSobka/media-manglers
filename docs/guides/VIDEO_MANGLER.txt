@@ -38,6 +38,17 @@ Optional extras:
 - raw\ original source video copy
 - chatgpt_review_package.zip
 
+Packaged runs
+-------------
+
+Use the versioned ZIP bundle in dist\release as the normal handoff to another
+machine. The package now carries the app, the tracked python-core helper
+sidecar, and the Hybrid glossaries sidecar together.
+
+The loose EXE in dist\bin is still useful for local build checks, but it is not
+meant to be copied away by itself and treated as a fully standalone Hybrid
+package. Keep the loose EXE beside its sidecar folders if you use that surface.
+
 How translation works
 ---------------------
 
@@ -67,6 +78,7 @@ Mode choices:
 - AI Private: OpenAI transcription plus OpenAI translation
 - AI Public: local transcription plus OpenAI translation on the Public/shared
   project
+- Hybrid: local transcription first, then OpenAI text-only English translation
 
 That difference matters. AI Public does not behave the same way as AI Private,
 and AI Public does not imply that source audio is uploaded to OpenAI for
@@ -102,6 +114,16 @@ force a manual runtime budget with -WhisperTimeoutSeconds when needed.
 If translation is requested and you explicitly choose an English-only Whisper
 model, the app explains the issue clearly and tells you to switch to a
 multilingual model.
+
+Console output
+--------------
+
+Normal runs now keep the console focused on the current phase, short progress
+updates, heartbeats, and the final PASS/WARN/FAIL summary. Full command lines,
+raw helper chatter, and low-level troubleshooting detail still go to
+script_run.log.
+
+Use -DebugMode when you want that deep detail streamed to the console too.
 
 OpenAI API key setup
 --------------------
@@ -275,7 +297,7 @@ Parameters:
   Blank means no translated transcript outputs in scripted runs. Interactive
   runs now ask a yes/no question first and default the follow-up target-code
   prompt to en.
-- -ProcessingMode: primary mode switch. Valid values: Local, AI.
+- -ProcessingMode: primary mode switch. Valid values: Local, AI, Hybrid.
   Default: Local.
 - -TranslationProvider: legacy compatibility flag. Valid values: Auto,
   OpenAI, Local. Current main maps it into ProcessingMode; new runs should
@@ -283,6 +305,8 @@ Parameters:
 - -OpenAiModel: optional OpenAI translation model request. Explicit values
   must be repo-approved for the chosen mode/project and, when discovery
   succeeds, visible to that key/project.
+- -DebugMode: stream helper chatter, command lines, and other troubleshooting
+  detail to the console. Normal mode keeps that detail in script_run.log.
 - -OpenAiProject: valid values: Private, Public. Default: Private when AI mode
   is used. Ignored in Local mode.
 - -FrameIntervalSeconds: extract one frame every N seconds. Real default: 0.5.

@@ -99,6 +99,12 @@ class HybridTextTests(unittest.TestCase):
         self.assertEqual(glossary["profile"], "de-en-sim-racing")
         self.assertTrue(any(term["source_term"] == "Crew Chief" for term in glossary["terms"]))
 
+    def test_load_glossary_raises_hybrid_error_when_file_is_missing(self) -> None:
+        missing_path = self.repo_root / "glossaries" / "missing-glossary.json"
+
+        with self.assertRaisesRegex(hybrid_text.HybridTranslationError, "glossary file not found"):
+            hybrid_text.load_glossary(missing_path)
+
     def test_load_source_transcript_segments_preserves_order_and_timestamps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             transcript_path = self._write_source_transcript(Path(temp_dir))
