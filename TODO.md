@@ -12,10 +12,6 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #22: Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety
-  Status: validated on hotfix branch; ready for PR review
-  Current note: The `v0.7.2` hotfix branch now carries early loose-EXE Hybrid preflight failure before any download/transcription work, generic/default Hybrid behavior with optional `Protected Terms Profile` selection plus the seeded sim-racing profile, clearer OpenAI project/model/validation visibility during the run, operator-facing OpenAI text cost visibility, stronger playlist/expanded-run confirmation, replacement of the revoked short smoke/test-source guidance with the approved bounded Doc66 set, and the version bump/release notes refresh for `0.7.2`. Rig1 validation on the rebuilt package surface now includes loose-EXE early-failure proof, packaged German/French/English Hybrid video checks, the mixed single-plus-playlist confirmation interaction, PowerShell parse checks, `python -m unittest discover -s tests -p "test_*.py" -v`, `git diff --check`, and a fresh `Build-Exe.ps1 -App All` pass. DevBox CPU remains explicitly non-blocking for this release hotfix.
-
 ## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
@@ -31,6 +27,10 @@ Rules:
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
 ## Recently Completed
+
+- [x] Issue #22: Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety
+  Status: merged to main, released as `v0.7.2`, and closed on 2026-04-19
+  Current note: PR `#23` merged the `v0.7.2` Hybrid/operator hotfix into `main`, and GitHub release `v0.7.2` is now the current release surface. The released package now fails unsupported loose Hybrid EXEs in preflight before download/transcription work, defaults Hybrid to generic/no-profile mode with an optional `Protected Terms Profile` selection (`sim-racing` seeded first), surfaces clearer OpenAI project/model/validation and estimated text-cost visibility in normal operator output, strengthens expanded-run confirmation before large remote runs, and replaces the revoked short smoke/test-source guidance with the approved bounded Doc66 set. Rig1 remains the accepted validation surface for this hotfix, and DevBox CPU was explicitly not treated as a blocker.
 
 - [x] Issue #20: Fix packaged Hybrid asset resolution and clean default console output
   Status: merged to main and closed on 2026-04-19
@@ -143,5 +143,3 @@ Rules:
 ## Parity Summary
 
 Open GitHub issues represented here:
-
-- #22 `Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety`
