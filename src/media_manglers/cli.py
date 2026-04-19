@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .contracts import CommandResult, read_json_file, write_json_file
 from .core.readmes import write_package_readme_from_request
-from .providers import argos_local, whisper_local
+from .providers import argos_local, hybrid_text, whisper_local
 
 
 Handler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -29,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
         "argos-probe",
         "argos-install",
         "argos-translate",
+        "hybrid-translate",
+        "hybrid-validate",
         "write-package-readme",
     ):
         command = subparsers.add_parser(
@@ -50,6 +52,8 @@ def _build_handlers() -> dict[str, Handler]:
         "argos-probe": argos_local.probe_from_request,
         "argos-install": argos_local.install_from_request,
         "argos-translate": argos_local.translate_from_request,
+        "hybrid-translate": hybrid_text.translate_from_request,
+        "hybrid-validate": hybrid_text.validate_from_request,
         "write-package-readme": write_package_readme_from_request,
     }
 

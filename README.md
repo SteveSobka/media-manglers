@@ -106,13 +106,22 @@ The main operator choice is now `ProcessingMode`:
 
 - `Local`: local transcription plus local translation
 - `AI`: an OpenAI-assisted path that changes slightly depending on `OpenAiProject`
+- `Hybrid`: Hybrid Accuracy keeps source audio local, creates the source-language transcript locally first, and uses OpenAI for English text translation only
 
 Mode details:
 
 - `AI Private = OpenAI transcription + OpenAI translation`
 - `AI Public = local transcription + OpenAI translation on the Public/shared project`
+- `Hybrid = local transcription + OpenAI text-only English translation`
 
 That difference matters. Public AI mode does not behave the same way as Private AI mode, and it does not imply that source audio is always uploaded to OpenAI.
+
+Hybrid Accuracy is currently an initial v1 path. Its first benchmark target is German source media, it supports source-language to English only for now, and broader target-language support is a future follow-up.
+
+Current PASS 2 note:
+
+- Hybrid now keeps the authoritative source-language transcript in `transcript\` and writes the English text-translation validation report to `translations\en\validation_report.json`.
+- Hybrid text translation defaults to `gpt-4o-mini-2024-07-18` when you do not pass `-OpenAiModel`, and the per-run report records both the requested model and the used model.
 
 For Local mode you may also need:
 
@@ -245,10 +254,11 @@ Official OpenAI references:
 
 ## Mode Overview
 
-Both apps now present the same two main choices:
+Both apps now present the same three main choices:
 
 1. `Local mode`
 2. `AI mode`
+3. `Hybrid Accuracy`
 
 Both apps still build from the source audio first. That matters most for remote video. If you are processing a German YouTube video, Media Manglers is meant to work from the original German speech instead of trusting a weak English auto-track or platform-generated translated captions.
 
@@ -259,6 +269,7 @@ Mode behavior in plain English:
 - `Local mode`: local transcription plus local translation
 - `AI mode` with `Private`: OpenAI transcription plus OpenAI translation
 - `AI mode` with `Public`: local transcription plus OpenAI translation on the Public/shared project
+- `Hybrid Accuracy`: local source-language transcription first, then OpenAI text-only translation to English while keeping audio local
 
 Local mode does not depend on OpenAI. If Local mode is missing something, the apps explain what local tool or package is missing and stop safely instead of silently switching to OpenAI.
 
@@ -267,6 +278,7 @@ Local mode does not depend on OpenAI. If Local mode is missing something, the ap
 - Local mode keeps transcription and translation on your machine once the local dependencies are installed.
 - AI Private sends source audio plus transcript/translation content to OpenAI because it uses OpenAI for both transcription and translation.
 - AI Public keeps transcription local and only sends transcript/translation content to the Public/shared OpenAI project.
+- Hybrid Accuracy keeps source audio local and sends only transcript text to OpenAI for English translation.
 - Remote download sources obviously depend on the site you point the app at.
 
 ## Example Inputs
@@ -288,8 +300,10 @@ Audio examples:
 
 - `-ProcessingMode` is the main operator-facing control. If you do not pass it, both apps default to `Local`.
 - If you do not explicitly pass `-WhisperModel` and the resolved mode is `Local`, interactive runs prompt for `small`, `medium`, or `large` and default to `medium` on Enter. `-NoPrompt` and other scripted Local runs still keep the current `large` default unless you set `-WhisperModel` yourself.
-- `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project.
-- `-OpenAiModel` only matters when AI translation is requested. Current main queries `GET /v1/models`, keeps only the repo-approved allowlist for the chosen mode/project, auto-selects the first visible approved model, and only uses an approved fallback when discovery is skipped or only hits network / timeout / server-style failures.
+- Hybrid Accuracy defaults `-TranslateTo` to `en` and defaults `-WhisperModel` to `medium` when you do not explicitly override either one.
+- Hybrid Accuracy text translation currently defaults to `gpt-4o-mini-2024-07-18` when you do not explicitly pass `-OpenAiModel`.
+- `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation in `AI` mode, or private-project OpenAI text translation in `Hybrid` mode. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project in `AI` mode, or Public/shared-project OpenAI text translation in `Hybrid` mode.
+- `-OpenAiModel` only matters when OpenAI translation is requested in `AI` or `Hybrid`. AI mode keeps the existing repo-side allowlist/discovery path. Hybrid now resolves its text model inside the tracked Python helper, records `requested_model` and `used_model` in `translations\en\validation_report.json`, and surfaces `Model unavailable for selected OpenAI project.` when the chosen project cannot use the requested model.
 - `-NoPrompt` disables the interactive questions. Without `-NoPrompt`, the apps prompt for missing inputs and treat Enter as Yes for `CopyRaw*`, `CreateChatGptZip`, `OpenOutputInExplorer`, and supported YouTube comments prompts.
 - `-WhisperHealthCheck` runs a Local Whisper runtime probe, prints whether this machine is CPU-only, GPU-capable, or misconfigured/uncertain for Whisper, and exits without starting a packaging run.
 - `-Version` and `-ShowVersion` are aliases for the same version-only path.
@@ -302,13 +316,13 @@ Audio examples:
 - `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
 - `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
 - `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs. Default: `yt-dlp`.
-- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base.en`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base.en`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter. Hybrid v1 defaults to `medium` unless you override it.
 - `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
 - `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs in scripted runs. Interactive runs now ask a yes/no question first and default the follow-up target-code prompt to `en`.
-- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
+- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`, `Hybrid`. Default: `Local`.
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
-- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
+- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when `AI` or `Hybrid` mode is used. Ignored in Local mode.
 - `-FrameIntervalSeconds`: Extract one frame every N seconds. Real default: `0.5`. Interactive runs prompt with `0.5` as the default; `-NoPrompt` runs take `0.5` automatically.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
 - `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
@@ -357,13 +371,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 - `-FFmpegPath`: Override the `ffmpeg.exe` path. Literal default: `D:\APPS\ffmpeg\bin\ffmpeg.exe`, with command/path fallback detection.
 - `-PythonExe`: Override the Python launcher used for Whisper, Argos, and the `yt-dlp` module fallback. Default: `py`.
 - `-YtDlpPath`: Override the `yt-dlp` command/path used for remote inputs that need it. Default: `yt-dlp`.
-- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter.
+- `-WhisperModel`: Choose the local Whisper model. Literal script default: `base`. Interactive Local runs now prompt for `small`, `medium`, or `large` and default to `medium` on Enter. Non-interactive Local runs still default to `large` when you do not explicitly set the parameter. Hybrid v1 defaults to `medium` unless you override it.
 - `-Language`: Optional source-language hint for transcription and local translation. Leave blank to auto-detect when possible.
 - `-TranslateTo`: Comma-separated target language codes such as `en` or `en,es`. Blank means no translated transcript outputs in scripted runs. Interactive runs now ask a yes/no question first and default the follow-up target-code prompt to `en`.
-- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`. Default: `Local`.
+- `-ProcessingMode`: Primary mode switch. Valid values: `Local`, `AI`, `Hybrid`. Default: `Local`.
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
-- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when AI mode is used. Ignored in Local mode.
+- `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when `AI` or `Hybrid` mode is used. Ignored in Local mode.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
 - `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
 - `-CopyRawAudio`: Copy the original source audio into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.

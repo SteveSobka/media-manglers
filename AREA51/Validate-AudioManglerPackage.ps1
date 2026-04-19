@@ -106,6 +106,65 @@ function Assert-File {
     }
 }
 
+function Get-SummaryRow {
+    param(
+        [string]$SummaryCsvPath,
+        [string]$PackageFolderName
+    )
+
+    if (-not (Test-Path -LiteralPath $SummaryCsvPath)) {
+        return $null
+    }
+
+    $rows = @(Import-Csv -LiteralPath $SummaryCsvPath)
+    if ($rows.Count -eq 0) {
+        throw "Processing summary is empty: $SummaryCsvPath"
+    }
+
+    $matchingRow = $rows | Where-Object { $_.output_folder_name -eq $PackageFolderName } | Select-Object -First 1
+    if ($matchingRow) {
+        return $matchingRow
+    }
+
+    if ($rows.Count -eq 1) {
+        return $rows[0]
+    }
+
+    return $null
+}
+
+function Assert-ColumnValue {
+    param(
+        [psobject]$Row,
+        [string]$ColumnName,
+        [string]$Label
+    )
+
+    if (-not ($Row.PSObject.Properties.Name -contains $ColumnName)) {
+        throw "Missing required summary column: $ColumnName"
+    }
+
+    $value = [string]$Row.$ColumnName
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Summary column is empty: $Label ($ColumnName)"
+    }
+
+    return $value
+}
+
+function Test-IsHybridSummary {
+    param([psobject]$Row)
+
+    if (-not $Row) {
+        return $false
+    }
+
+    $processingMode = if ($Row.PSObject.Properties.Name -contains "processing_mode") { [string]$Row.processing_mode } else { "" }
+    $translationPath = if ($Row.PSObject.Properties.Name -contains "translation_path") { [string]$Row.translation_path } else { "" }
+
+    return ($processingMode -like "Hybrid*") -or ($translationPath -like "*Hybrid Accuracy*")
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $defaultSmokeRoot = Join-Path $repoRoot "test-output"
 
@@ -171,6 +230,43 @@ Assert-File -Path $logPath -Label "script log"
 Assert-File -Path $summaryCsv -Label "processing summary"
 Assert-File -Path $masterReadme -Label "master readme"
 
+$summaryRow = Get-SummaryRow -SummaryCsvPath $summaryCsv -PackageFolderName $packageFolderName
+if (-not $summaryRow) {
+    throw "Could not find package summary row for $packageFolderName in $summaryCsv"
+}
+
+$null = Assert-ColumnValue -Row $summaryRow -ColumnName "package_status" -Label "package status"
+$isHybridPackage = Test-IsHybridSummary -Row $summaryRow
+
+if ($isHybridPackage) {
+    $validationReportFromSummary = Assert-ColumnValue -Row $summaryRow -ColumnName "translation_validation_report" -Label "translation validation report"
+    Assert-File -Path $validationReportFromSummary -Label "translation validation report"
+
+    foreach ($columnName in @(
+        "lane_id",
+        "privacy_class",
+        "source_language",
+        "target_language",
+        "transcription_provider",
+        "transcription_model",
+        "translation_provider_name",
+        "translation_model",
+        "translation_validation_status"
+    )) {
+        $null = Assert-ColumnValue -Row $summaryRow -ColumnName $columnName -Label $columnName
+    }
+
+    $validationReport = Get-Content -Raw -LiteralPath $validationReportFromSummary | ConvertFrom-Json
+    $validationStatus = [string]$validationReport.validation_status
+    if ([string]::IsNullOrWhiteSpace($validationStatus)) {
+        throw "Hybrid validation report is missing validation_status: $validationReportFromSummary"
+    }
+
+    if (@("accepted", "partial", "rejected") -notcontains $validationStatus) {
+        throw "Unexpected Hybrid validation status '$validationStatus' in $validationReportFromSummary"
+    }
+}
+
 $segmentRows = @(Import-Csv -LiteralPath $segmentIndexCsv)
 if ($segmentRows.Count -lt $MinimumSegmentCount) {
     throw "Expected at least $MinimumSegmentCount segment rows in $segmentIndexCsv but found $($segmentRows.Count)."
@@ -181,6 +277,9 @@ if (Test-Path -LiteralPath $translationsFolder) {
         Assert-File -Path (Join-Path $translationFolder.FullName "transcript.srt") -Label ("translation srt ({0})" -f $translationFolder.Name)
         Assert-File -Path (Join-Path $translationFolder.FullName "transcript.json") -Label ("translation json ({0})" -f $translationFolder.Name)
         Assert-File -Path (Join-Path $translationFolder.FullName "transcript.txt") -Label ("translation txt ({0})" -f $translationFolder.Name)
+        if ($isHybridPackage) {
+            Assert-File -Path (Join-Path $translationFolder.FullName "validation_report.json") -Label ("translation validation report ({0})" -f $translationFolder.Name)
+        }
     }
 }
 
