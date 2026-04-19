@@ -85,13 +85,14 @@ Release assets usually include:
 
 What to pick:
 
-- `*-vX.Y.Z.zip`: the recommended operator handoff. Each zip includes the app, plain-text guides, release notes, version file, license, notices, and the tracked `python-core` sidecar used by the migration path.
-- loose `*.exe`: useful when you build locally and just want a quick executable check. Local build outputs live under `dist\bin\`.
+- `*-vX.Y.Z.zip`: the recommended operator handoff. Each zip includes the app, plain-text guides, release notes, version file, license, notices, the tracked `python-core` sidecar, and the Hybrid `glossaries\` runtime assets.
+- loose `*.exe`: useful when you build locally and just want a quick executable check. Local build outputs live under `dist\bin\`, and they should stay beside their `python-core` and `glossaries` sidecar folders if you expect packaged helper features to work.
 
 Current migration note:
 
-- The release zips carry `python-core\src\media_manglers` beside the app so the tracked Python helper path has a stable packaged home during the transition.
+- The release zips carry `python-core\src\media_manglers` and `glossaries\` beside the app so the tracked helper path and Hybrid runtime assets have a stable packaged home during the transition.
 - `Audio Mangler.ps1` and `Video Mangler.ps1` stay at repo root on purpose because they are the operator-facing source entry points and the inputs to the Windows packaging flow.
+- Normal runs keep the console focused on phases, heartbeats, and short status lines. Use `-DebugMode` if you want full command/helper chatter on screen while still writing the deep trace to `script_run.log`.
 
 ## Setup Notes
 
@@ -419,7 +420,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.0 release notes](docs/release-notes/RELEASE_NOTES_v0.7.0.txt)
+- [v0.7.1 release notes](docs/release-notes/RELEASE_NOTES_v0.7.1.txt)
 
 ## Repo Layout
 

@@ -269,7 +269,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.7.0.txt
+- ../release-notes/RELEASE_NOTES_v0.7.1.txt
 
 Build and test
 --------------
@@ -292,18 +292,23 @@ The build keeps the operator-facing layout simple:
 
 - dist\bin\Video-Mangler.exe
 - dist\bin\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.7.0.zip
-- dist\release\Audio-Mangler-v0.7.0.zip
+- dist\release\Video-Mangler-v0.7.1.zip
+- dist\release\Audio-Mangler-v0.7.1.zip
 
 Use the versioned ZIP in dist\release as the normal operator handoff. The
 loose EXEs in dist\bin are mainly for local build checks, quick launch tests,
-or troubleshooting.
+or troubleshooting, and they should stay beside their sidecar folders.
 
 During the Python-core migration, the release zips now carry a shared
-python-core sidecar inside the app folder. That gives the tracked Python
-helper path a stable packaged home without forcing the standalone exe assets to
-depend on it yet. If the sidecar is not present, the wrappers still keep the
-current compatibility fallback.
+python-core sidecar plus the Hybrid glossaries inside the app folder. That
+gives the tracked helper path and Hybrid runtime assets a stable packaged home
+on another machine. If you copy only the loose EXE somewhere else, expect
+helper-backed features like Hybrid translation to ask for the full packaged
+surface instead of pretending the EXE is fully standalone.
+
+Normal runs now keep the console calmer on purpose. Use -DebugMode when you
+want to stream the full helper chatter, command lines, and other troubleshooting
+detail live instead of reading it from script_run.log.
 
 Legacy release clutter is moved under dist\archive\release\ instead of being
 left mixed into the live release folder. Temporary packaging folders are also
