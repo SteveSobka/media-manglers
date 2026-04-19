@@ -44,7 +44,8 @@ Packaged runs
 
 Use the versioned ZIP bundle in dist\release as the normal handoff to another
 machine. The package now carries the app, the tracked python-core helper
-sidecar, and the Hybrid glossaries sidecar together.
+sidecar, and the Hybrid protected-terms profile assets stored under
+glossaries\ together.
 
 The loose EXE in dist\bin is still useful for local build checks, but it is not
 meant to be copied away by itself and treated as a fully standalone Hybrid
@@ -215,21 +216,11 @@ rerunning the app. Do not hardcode the key in the script or commit it to GitHub.
 Examples
 --------
 
-LibriVox page:
+Approved bounded remote smoke audio examples:
 
-  https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2
-
-Direct MP3:
-
-  https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3
-
-Multilingual sample MP3:
-
-  https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3
-
-Open-source YouTube video for audio-only review:
-
-  https://www.youtube.com/watch?v=R6MlUcmOul8
+  https://www.youtube.com/watch?v=1aA1WGON49E
+  https://www.youtube.com/watch?v=7_u8Qj78cA0
+  https://www.youtube.com/watch?v=WPm2N93SmTA
 
 Command-line summary
 --------------------
@@ -242,9 +233,17 @@ Current main behavior:
   interactive runs prompt for small, medium, or large and default to medium on
   Enter. -NoPrompt and other scripted Local runs still keep the current large
   default unless you set -WhisperModel yourself.
-- -OpenAiProject Private = OpenAI transcription + OpenAI translation.
+- -OpenAiProject Private = OpenAI transcription + OpenAI translation in AI
+  mode, or private-project text-only translation in Hybrid.
 - -OpenAiProject Public = local transcription + OpenAI translation on the
-  Public/shared project.
+  Public/shared project in AI mode, or Public/shared-project text-only
+  translation in Hybrid.
+- Hybrid defaults to generic mode with no Protected Terms Profile selected.
+  Use -ProtectedTermsProfile sim-racing only when you intentionally want that
+  seeded domain profile.
+- Remote playlist or larger multi-item expansions now pause for a scope review
+  before the real run starts. Use -ApproveExpandedRun for reviewed scripted
+  runs.
 - -NoPrompt disables the interactive questions and uses the non-interactive
   defaults.
 - -Version and -ShowVersion are aliases for the same version-only path.
@@ -284,10 +283,13 @@ Parameters:
 - -OpenAiModel: optional OpenAI translation model request. Explicit values
   must be repo-approved for the chosen mode/project and, when discovery
   succeeds, visible to that key/project.
+- -ProtectedTermsProfile: optional Hybrid-only protected-terms profile
+  selection. Leave it blank for generic mode, or use sim-racing when you
+  intentionally want the seeded sim-racing profile.
 - -DebugMode: stream helper chatter, command lines, and other troubleshooting
   detail to the console. Normal mode keeps that detail in script_run.log.
-- -OpenAiProject: valid values: Private, Public. Default: Private when AI mode
-  is used. Ignored in Local mode.
+- -OpenAiProject: valid values: Private, Public. Default: Private when AI or
+  Hybrid mode is used. Ignored in Local mode.
 - -HeartbeatSeconds: how often long-running steps log progress. Default: 10.
 - -WhisperTimeoutSeconds: optional explicit Local Whisper runtime-budget
   override in seconds. Leave it unset to use the adaptive timeout logic.
@@ -303,6 +305,8 @@ Parameters:
   run finishes. CLI default: off. Interactive default on Enter: Yes.
 - -NoPrompt: disable interactive questions and use the non-interactive
   defaults described above.
+- -ApproveExpandedRun: allow a reviewed expanded remote run to continue in
+  non-interactive mode after the playlist/large-batch scope summary.
 - -SkipEstimate: skip the runtime estimate stage. Default: off.
 - -Version / -ShowVersion: print the app version and exit.
 - -ChatGptZipMaxMb: maximum ChatGPT ZIP size in MB. Default: 500.
@@ -319,11 +323,11 @@ Example commands:
 
 - AI Private remote audio run:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=7_u8Qj78cA0' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 
 - AI Public run with a YouTube source and comments:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -IncludeComments -NoPrompt
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=WPm2N93SmTA' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -IncludeComments -NoPrompt
 
 - Keep temporary files while testing a non-default Whisper model:
 
@@ -345,9 +349,9 @@ Validator:
   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-AudioManglerPackage.ps1
 
 Run-AudioSmokeTest.ps1 now prefers short local fixtures under AREA51\TestData
-before it falls back to test_audio or the older remote sample URLs. The fast
-default is AREA51\TestData\1_min_test_Video.mp4, and -TranslateToEnglish also
-prefers AREA51\TestData\German_audio_short_45s.mp3 when that local-only helper
+before it falls back to the approved bounded Doc66 remote set. The fast default
+is AREA51\TestData\1_min_test_Video.mp4, and -TranslateToEnglish also prefers
+AREA51\TestData\German_audio_short_45s.mp3 when that local-only helper
 fixture is present.
 
 Notes

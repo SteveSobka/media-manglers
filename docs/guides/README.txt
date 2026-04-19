@@ -269,7 +269,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.7.1.txt
+- ../release-notes/RELEASE_NOTES_v0.7.2.txt
 
 Build and test
 --------------
@@ -292,16 +292,17 @@ The build keeps the operator-facing layout simple:
 
 - dist\bin\Video-Mangler.exe
 - dist\bin\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.7.1.zip
-- dist\release\Audio-Mangler-v0.7.1.zip
+- dist\release\Video-Mangler-v0.7.2.zip
+- dist\release\Audio-Mangler-v0.7.2.zip
 
 Use the versioned ZIP in dist\release as the normal operator handoff. The
 loose EXEs in dist\bin are mainly for local build checks, quick launch tests,
 or troubleshooting, and they should stay beside their sidecar folders.
 
 During the Python-core migration, the release zips now carry a shared
-python-core sidecar plus the Hybrid glossaries inside the app folder. That
-gives the tracked helper path and Hybrid runtime assets a stable packaged home
+python-core sidecar plus the Hybrid protected-terms profile assets inside the
+glossaries folder. That gives the tracked helper path and Hybrid runtime assets
+a stable packaged home
 on another machine. If you copy only the loose EXE somewhere else, expect
 helper-backed features like Hybrid translation to ask for the full packaged
 surface instead of pretending the EXE is fully standalone.
@@ -324,9 +325,11 @@ Smoke tests:
   powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1
 
 When local fixtures exist under AREA51\TestData, the smoke scripts prefer those
-short local files before they fall back to test_media, test_audio, or the
-older remote sample URLs. AREA51 stays local-only; the tracked helper scripts
-now live under tools\.
+short local files before they fall back to the approved bounded Doc66 remote
+set: English `1aA1WGON49E`, German `hNaUbuWL8MI` / `7_u8Qj78cA0`, French
+`APOqEiXEC4g`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian
+`Xe6AgUkZmog`, and Chinese `fJ7V53jFrVc`. AREA51 stays local-only; the tracked
+helper scripts now live under tools\.
 
 License
 -------

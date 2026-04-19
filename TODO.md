@@ -12,9 +12,9 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #20: Fix packaged Hybrid asset resolution and clean default console output
-  Status: in progress
-  Current note: Post-release Rig1 evidence showed a real packaged-run Hybrid failure after local transcription succeeded because the runtime tried to find `glossaries\de-en-sim-racing.json` without carrying or resolving that asset from the packaged surface. The observed `C:\DATA\CODE\HELPERS\Video-Mangler.exe` banner also showed stale `v0.6.1`, which added confusion, but the canonical product bug is still real: `v0.7.0` packages did not carry the Hybrid glossary asset. The hotfix scope is now implemented on the working branch: build/package now carries `python-core` plus `glossaries`, runtime asset lookup resolves from the packaged surface instead of the repo/current working directory, loose-EXE launches get clearer package guidance, default console output is quieter, and isolated packaged validation from `C:\DATA\TEMP\CODEX` succeeded on an extracted `v0.7.1` Video package in both normal mode and `-DebugMode` using a short French Hybrid clip outside the repo. DevBox CPU validation remains optional compatibility follow-up only and is not a blocker for this hotfix.
+- [ ] Issue #22: Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety
+  Status: validated on hotfix branch; ready for PR review
+  Current note: The `v0.7.2` hotfix branch now carries early loose-EXE Hybrid preflight failure before any download/transcription work, generic/default Hybrid behavior with optional `Protected Terms Profile` selection plus the seeded sim-racing profile, clearer OpenAI project/model/validation visibility during the run, operator-facing OpenAI text cost visibility, stronger playlist/expanded-run confirmation, replacement of the revoked short smoke/test-source guidance with the approved bounded Doc66 set, and the version bump/release notes refresh for `0.7.2`. Rig1 validation on the rebuilt package surface now includes loose-EXE early-failure proof, packaged German/French/English Hybrid video checks, the mixed single-plus-playlist confirmation interaction, PowerShell parse checks, `python -m unittest discover -s tests -p "test_*.py" -v`, `git diff --check`, and a fresh `Build-Exe.ps1 -App All` pass. DevBox CPU remains explicitly non-blocking for this release hotfix.
 
 ## Repo-Only Active Work
 
@@ -26,7 +26,15 @@ Rules:
   Status: repo-only follow-up
   Current note: The current 2026-04-18 developer box is now explicitly classified as CPU-only for Local Whisper by `Audio Mangler.ps1 -WhisperHealthCheck` and `Video Mangler.ps1 -WhisperHealthCheck`: selected Python interpreter `C:\Users\LocalDevAdmin\AppData\Local\Python\pythoncore-3.14-64\python.exe`, `torch 2.11.0+cpu`, torch CUDA `unavailable`, `cuda_available: false`, no detected GPU device names, and selected Local Whisper device `cpu`. That is no longer treated as a defect on this box. Real CUDA Local Whisper validation and sign-off still need to be rerun on a separate GPU-capable machine before the repo claims real CUDA success.
 
+- [ ] Design a simple protected-terms profile authoring helper after the v0.7.2 hotfix lands
+  Status: repo-only follow-up
+  Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
+
 ## Recently Completed
+
+- [x] Issue #20: Fix packaged Hybrid asset resolution and clean default console output
+  Status: merged to main and closed on 2026-04-19
+  Current note: Post-release Rig1 evidence showed a real packaged-run Hybrid failure after local transcription succeeded because the runtime tried to find `glossaries\de-en-sim-racing.json` without carrying or resolving that asset from the packaged surface. The accepted `v0.7.1` hotfix carried `python-core` plus `glossaries`, resolved runtime assets from the packaged surface instead of the repo/current working directory, improved loose-EXE package guidance, and cleaned up the default console output while keeping deeper helper chatter in `script_run.log`.
 
 - [x] Issue #18: Post-merge cleanup for release packaging, repo layout, and docs
   Status: merged to main and closed on 2026-04-18
@@ -136,4 +144,4 @@ Rules:
 
 Open GitHub issues represented here:
 
-- #20 `Fix packaged Hybrid asset resolution and clean default console output`
+- #22 `Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety`

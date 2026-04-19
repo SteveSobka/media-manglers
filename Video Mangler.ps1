@@ -16,6 +16,7 @@ param(
     [string]$OpenAiModel = "gpt-5-mini",
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
+    [string]$ProtectedTermsProfile = "",
     [double]$FrameIntervalSeconds = [double]::NaN,
     [int]$HeartbeatSeconds = 10,
     [int]$WhisperTimeoutSeconds = 0,
@@ -25,6 +26,7 @@ param(
     [switch]$KeepTempFiles,
     [switch]$OpenOutputInExplorer,
     [switch]$NoPrompt,
+    [switch]$ApproveExpandedRun,
     [switch]$SkipEstimate,
     [switch]$WhisperHealthCheck,
     [Alias("VerboseMode")]
@@ -41,9 +43,11 @@ $script:FallbackAppVersion = "0.6.1"
 $script:LocalAccuracyWhisperModel = "large"
 $script:HybridAccuracyWhisperModel = "medium"
 $script:HybridAccuracyGlossaryRelativePath = "glossaries\de-en-sim-racing.json"
+$script:HybridAccuracyTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:InteractiveLocalDefaultWhisperModel = "medium"
 $script:LocalCpuLongWhisperWarningThresholdSeconds = 900
 $script:LocalWhisperLongRunPromptThresholdSeconds = 2700
+$script:ExpandedRunConfirmationItemThreshold = 5
 $script:OpenAiPrivateTranslationDefaultModel = "gpt-5-mini"
 $script:OpenAiPublicTranslationDefaultModel = "gpt-4o-mini-2024-07-18"
 $script:OpenAiTranscriptionModel = "whisper-1"
@@ -68,6 +72,37 @@ $script:MediaManglersPythonCliInfo = $null
 $script:WhisperCalibrationCache = @{}
 $script:PythonInterpreterResolutionNote = $null
 $script:DebugModeEnabled = $DebugMode.IsPresent
+$script:SessionEstimatedOpenAiTextCostUsd = 0.0
+
+trap {
+    $message = if ($_.Exception -and -not [string]::IsNullOrWhiteSpace($_.Exception.Message)) {
+        $_.Exception.Message
+    }
+    else {
+        $_.ToString()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($script:CurrentLogFile)) {
+        try {
+            Add-Content -LiteralPath $script:CurrentLogFile -Value "----- UNHANDLED FAILURE -----"
+            if (-not [string]::IsNullOrWhiteSpace($message)) {
+                Add-Content -LiteralPath $script:CurrentLogFile -Value $message
+            }
+            if ($_.ScriptStackTrace) {
+                Add-Content -LiteralPath $script:CurrentLogFile -Value $_.ScriptStackTrace
+            }
+        }
+        catch {
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($message)) {
+        Write-Host ""
+        Write-Host $message -ForegroundColor Red
+    }
+
+    exit 1
+}
 
 function Get-AppVersion {
     if ($script:ResolvedAppVersion) {
@@ -260,6 +295,332 @@ function Write-YtDlpInstallGuidance {
 
 function Get-PackagedRuntimeGuidance {
     return "Use the versioned release ZIP/package as the normal operator handoff. If you use the loose dist\\bin EXE, keep it beside the packaged python-core and glossaries folders."
+}
+
+function Get-ProtectedTermsProfileCatalog {
+    return @{
+        "sim-racing" = [PSCustomObject]@{
+            Name         = "sim-racing"
+            DisplayName  = "Sim-Racing"
+            RelativePath = $script:HybridAccuracyGlossaryRelativePath
+        }
+    }
+}
+
+function Normalize-ProtectedTermsProfileName {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    switch ($Value.Trim().ToLowerInvariant()) {
+        "none" { return "" }
+        "generic" { return "" }
+        "off" { return "" }
+        "default" { return "" }
+        "simracing" { return "sim-racing" }
+        "sim_racing" { return "sim-racing" }
+        default { return $Value.Trim().ToLowerInvariant() }
+    }
+}
+
+function Resolve-ProtectedTermsProfileSelection {
+    param([string]$RequestedProfile)
+
+    $normalizedProfile = Normalize-ProtectedTermsProfileName -Value $RequestedProfile
+    if ([string]::IsNullOrWhiteSpace($normalizedProfile)) {
+        return [PSCustomObject]@{
+            Name       = ""
+            DisplayName = "none (generic mode)"
+            RelativePath = ""
+            Path       = ""
+            IsSelected = $false
+        }
+    }
+
+    $catalog = Get-ProtectedTermsProfileCatalog
+    if (-not $catalog.ContainsKey($normalizedProfile)) {
+        $availableProfiles = @($catalog.Keys | Sort-Object)
+        throw ("Unknown protected terms profile '{0}'. Available profiles: {1}. Use -ProtectedTermsProfile sim-racing, or leave it blank for generic mode." -f $RequestedProfile.Trim(), ($availableProfiles -join ", "))
+    }
+
+    $profile = $catalog[$normalizedProfile]
+    $resolvedPath = ""
+    foreach ($runtimeRoot in @(Get-RuntimeSearchRoots)) {
+        $candidatePath = Join-Path $runtimeRoot $profile.RelativePath
+        if (-not [string]::IsNullOrWhiteSpace($candidatePath) -and (Test-Path -LiteralPath $candidatePath)) {
+            $resolvedPath = (Resolve-Path -LiteralPath $candidatePath).ProviderPath
+            break
+        }
+    }
+
+    return [PSCustomObject]@{
+        Name        = $profile.Name
+        DisplayName = $profile.DisplayName
+        RelativePath = $profile.RelativePath
+        Path        = $resolvedPath
+        IsSelected  = $true
+    }
+}
+
+function Get-ProtectedTermsProfileSummary {
+    param([psobject]$Selection)
+
+    if ($null -eq $Selection -or -not $Selection.IsSelected) {
+        return "none (generic mode)"
+    }
+
+    return $Selection.DisplayName
+}
+
+function Assert-HybridRuntimePreflight {
+    param([psobject]$ProtectedTermsProfileSelection)
+
+    $missingComponents = New-Object System.Collections.Generic.List[string]
+    $cliInfo = Get-MediaManglersPythonCliInfo
+    if (-not $cliInfo.Enabled) {
+        [void]$missingComponents.Add("the python-core helper sidecar")
+    }
+
+    if ($ProtectedTermsProfileSelection -and $ProtectedTermsProfileSelection.IsSelected -and [string]::IsNullOrWhiteSpace($ProtectedTermsProfileSelection.Path)) {
+        [void]$missingComponents.Add(("the protected terms profile '{0}' ({1})" -f $ProtectedTermsProfileSelection.DisplayName, $ProtectedTermsProfileSelection.RelativePath))
+    }
+
+    if ($missingComponents.Count -gt 0) {
+        throw ("Hybrid Accuracy preflight stopped before download or transcription because this copy is missing {0}. Use the versioned release ZIP/package as the normal operator handoff. If you intentionally run a loose dist\\bin EXE for local/dev use, keep the required sidecar folders beside the EXE." -f (($missingComponents | Select-Object -Unique) -join " and "))
+    }
+
+    return $cliInfo
+}
+
+function Get-RequestedOpenAiTranslationModelLabel {
+    param(
+        [string]$EffectiveMode,
+        [string]$RequestedModel,
+        [bool]$WasExplicitlySet = $false
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedModel)) {
+        return $RequestedModel.Trim()
+    }
+
+    if ($EffectiveMode -eq "Hybrid" -and -not $WasExplicitlySet) {
+        return ("auto ({0} default)" -f $script:HybridAccuracyTranslationDefaultModel)
+    }
+
+    return "auto"
+}
+
+function Get-OpenAiTextPricingPerMillionUsd {
+    param([string]$Model)
+
+    switch (Normalize-OpenAiModelId -ModelId $Model) {
+        "gpt-4o-mini" { return [PSCustomObject]@{ Input = 0.15; Output = 0.60 } }
+        "gpt-4o-mini-2024-07-18" { return [PSCustomObject]@{ Input = 0.15; Output = 0.60 } }
+        "gpt-4.1-mini" { return [PSCustomObject]@{ Input = 0.40; Output = 1.60 } }
+        "gpt-4.1-mini-2025-04-14" { return [PSCustomObject]@{ Input = 0.40; Output = 1.60 } }
+        default { return $null }
+    }
+}
+
+function Estimate-OpenAiTextCostUsd {
+    param(
+        [string]$Model,
+        [int]$PromptTokens = 0,
+        [int]$CompletionTokens = 0
+    )
+
+    $pricing = Get-OpenAiTextPricingPerMillionUsd -Model $Model
+    if ($null -eq $pricing) {
+        return $null
+    }
+
+    return ((($PromptTokens * [double]$pricing.Input) + ($CompletionTokens * [double]$pricing.Output)) / 1000000.0)
+}
+
+function Format-EstimatedUsd {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return "n/a"
+    }
+
+    return ('$' + ([double]$Value).ToString("0.000000", [System.Globalization.CultureInfo]::InvariantCulture))
+}
+
+function Get-RoughOpenAiTextCostEstimate {
+    param(
+        [double]$TotalDurationSeconds,
+        [string]$Model,
+        [int]$ItemCount = 1
+    )
+
+    $pricing = Get-OpenAiTextPricingPerMillionUsd -Model $Model
+    if ($null -eq $pricing -or $TotalDurationSeconds -le 0) {
+        return $null
+    }
+
+    $approxWordCount = [math]::Max(1, [math]::Round($TotalDurationSeconds * 2.6))
+    $promptTokens = [math]::Round(($approxWordCount * 1.4) + ([math]::Max(1, $ItemCount) * 350))
+    $completionTokens = [math]::Round($approxWordCount * 1.15)
+    $estimatedCostUsd = Estimate-OpenAiTextCostUsd -Model $Model -PromptTokens $promptTokens -CompletionTokens $completionTokens
+
+    if ($null -eq $estimatedCostUsd) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        PromptTokens      = [int]$promptTokens
+        CompletionTokens  = [int]$completionTokens
+        EstimatedCostUsd  = [double]$estimatedCostUsd
+    }
+}
+
+function Write-OperatorNote {
+    param(
+        [string]$Message,
+        [string]$Color = "Cyan",
+        [ValidateSet("INFO","WARN")]
+        [string]$Level = "INFO"
+    )
+
+    Write-Host $Message -ForegroundColor $Color
+    Write-Log $Message $Level
+}
+
+function Get-RemoteInputScopeSummary {
+    param(
+        [string[]]$SourceUrls,
+        [psobject]$YtDlpInvoker
+    )
+
+    $notes = New-Object System.Collections.Generic.List[string]
+    $singleUrlCount = 0
+    $playlistUrlCount = 0
+    $approxResolvedItemCount = 0
+    $knownDurationSeconds = 0.0
+
+    foreach ($sourceUrl in @($SourceUrls)) {
+        $sourceKind = Get-RemoteSourceKind -SourceUrl $sourceUrl
+        if ($sourceKind -eq "playlist") {
+            $playlistUrlCount += 1
+            if ($YtDlpInvoker) {
+                try {
+                    $probe = Invoke-ExternalCapture `
+                        -FilePath $YtDlpInvoker.FilePath `
+                        -Arguments ($YtDlpInvoker.Arguments + @("--flat-playlist", "--dump-single-json", "--no-warnings", "--skip-download", $sourceUrl)) `
+                        -StepName "yt-dlp playlist scope probe" `
+                        -IgnoreExitCode `
+                        -TimeoutSeconds 120
+
+                    if ($probe.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($probe.StdOut)) {
+                        $payload = $probe.StdOut | ConvertFrom-Json
+                        $entries = @($payload.entries)
+                        if ($entries.Count -gt 0) {
+                            $approxResolvedItemCount += $entries.Count
+                        }
+
+                        foreach ($entry in $entries) {
+                            $durationSeconds = 0.0
+                            if ($null -ne $entry.duration -and [double]::TryParse([string]$entry.duration, [ref]$durationSeconds) -and $durationSeconds -gt 0) {
+                                $knownDurationSeconds += $durationSeconds
+                            }
+                        }
+                    }
+                    else {
+                        [void]$notes.Add(("Could not resolve playlist size before download: {0}" -f $sourceUrl))
+                    }
+                }
+                catch {
+                    [void]$notes.Add(("Could not resolve playlist scope before download: {0}" -f $_.Exception.Message))
+                }
+            }
+            else {
+                [void]$notes.Add("yt-dlp is not available, so playlist size could not be confirmed before download.")
+            }
+
+            continue
+        }
+
+        $singleUrlCount += 1
+        $approxResolvedItemCount += 1
+        if ($YtDlpInvoker) {
+            try {
+                $probe = Invoke-ExternalCapture `
+                    -FilePath $YtDlpInvoker.FilePath `
+                    -Arguments ($YtDlpInvoker.Arguments + @("-J", "--no-warnings", "--no-playlist", $sourceUrl)) `
+                    -StepName "yt-dlp single-item scope probe" `
+                    -IgnoreExitCode `
+                    -TimeoutSeconds 120
+
+                if ($probe.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($probe.StdOut)) {
+                    $payload = $probe.StdOut | ConvertFrom-Json
+                    $durationSeconds = 0.0
+                    if ($null -ne $payload.duration -and [double]::TryParse([string]$payload.duration, [ref]$durationSeconds) -and $durationSeconds -gt 0) {
+                        $knownDurationSeconds += $durationSeconds
+                    }
+                }
+            }
+            catch {
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        SingleUrlCount         = $singleUrlCount
+        PlaylistUrlCount       = $playlistUrlCount
+        ApproxResolvedItemCount = $approxResolvedItemCount
+        KnownDurationSeconds   = $knownDurationSeconds
+        RequiresConfirmation   = ($playlistUrlCount -gt 0 -or $approxResolvedItemCount -ge $script:ExpandedRunConfirmationItemThreshold)
+        Notes                  = @($notes)
+    }
+}
+
+function Confirm-ExpandedRunScope {
+    param(
+        [psobject]$ScopeSummary,
+        [switch]$NoPrompt,
+        [switch]$ApproveExpandedRun
+    )
+
+    if ($null -eq $ScopeSummary -or -not $ScopeSummary.RequiresConfirmation) {
+        return
+    }
+
+    Write-Host ""
+    Write-Host "Expanded run confirmation" -ForegroundColor Yellow
+    Write-Host "------------------------" -ForegroundColor Yellow
+    Write-Host ("Single URLs detected:            {0}" -f $ScopeSummary.SingleUrlCount) -ForegroundColor Yellow
+    Write-Host ("Playlist URLs detected:          {0}" -f $ScopeSummary.PlaylistUrlCount) -ForegroundColor Yellow
+    Write-Host ("Approximate resolved item count: {0}" -f $(if ($ScopeSummary.ApproxResolvedItemCount -gt 0) { $ScopeSummary.ApproxResolvedItemCount } else { "unknown before download" })) -ForegroundColor Yellow
+    Write-Host ("Approximate source duration:     {0}" -f $(if ($ScopeSummary.KnownDurationSeconds -gt 0) { Format-DurationHuman -Seconds $ScopeSummary.KnownDurationSeconds } else { "unknown before download" })) -ForegroundColor Yellow
+    if ($ScopeSummary.KnownDurationSeconds -gt 0) {
+        Write-Host ("Estimated processing runtime:    at least {0} of source media, likely longer after download/transcription/translation" -f (Format-DurationHuman -Seconds $ScopeSummary.KnownDurationSeconds)) -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Estimated processing runtime:    unknown before download" -ForegroundColor Yellow
+    }
+    foreach ($note in @($ScopeSummary.Notes)) {
+        if (-not [string]::IsNullOrWhiteSpace($note)) {
+            Write-Host ("Note: {0}" -f $note) -ForegroundColor DarkYellow
+            Write-Log $note "WARN"
+        }
+    }
+
+    if ($NoPrompt) {
+        if (-not $ApproveExpandedRun) {
+            throw "Preflight stopped before download because this remote input expands into a playlist or larger multi-item run. Review the scope interactively, or rerun with -ApproveExpandedRun after you intentionally confirm the expanded run."
+        }
+
+        Write-Log "Expanded run scope was explicitly approved with -ApproveExpandedRun."
+        return
+    }
+
+    $response = Read-Host "Continue with this expanded run? (y/N)"
+    if ([string]::IsNullOrWhiteSpace($response) -or $response.Trim() -notmatch '^(?i)(y|yes)$') {
+        throw "Operator canceled expanded run during preflight."
+    }
 }
 
 function Test-ConsoleDebugMode {
@@ -4660,7 +5021,7 @@ function Get-HybridAccuracyGlossaryPath {
     }
 
     $searchedPaths = (($candidatePaths | Select-Object -Unique) -join "; ")
-    throw ("Hybrid Accuracy could not find its packaged glossary asset '{0}'. {1} Searched: {2}" -f $script:HybridAccuracyGlossaryRelativePath, (Get-PackagedRuntimeGuidance), $searchedPaths)
+    throw ("Hybrid Accuracy could not find its packaged protected terms profile asset '{0}'. {1} Searched: {2}" -f $script:HybridAccuracyGlossaryRelativePath, (Get-PackagedRuntimeGuidance), $searchedPaths)
 }
 
 function Assert-HybridAccuracyOpenAiProjectKey {
@@ -6386,6 +6747,10 @@ function Invoke-OpenAiSegmentTranslation {
     $contentType = "application/json; charset=utf-8"
 
     $translatedSegments = @()
+    $usagePromptTokens = 0
+    $usageCompletionTokens = 0
+    $usageTotalTokens = 0
+    $usedModel = ""
     $lastProgress = Get-Date
     $segmentIndex = 0
     foreach ($segment in $Segments) {
@@ -6430,6 +6795,9 @@ function Invoke-OpenAiSegmentTranslation {
         try {
             if ($testMode -eq "success") {
                 $translatedText = ("[MM_TEST_OPENAI_SUCCESS:{0}] {1}" -f $TargetLanguage, $text).Trim()
+                if ([string]::IsNullOrWhiteSpace($usedModel)) {
+                    $usedModel = $Model
+                }
             }
             elseif ($testMode -eq "unauthorized") {
                 $responseBody = '{"error":{"message":"Incorrect API key provided: sk-test-invalid","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}'
@@ -6528,6 +6896,23 @@ function Invoke-OpenAiSegmentTranslation {
                 $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
                 $response = Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -ContentType $contentType -Body $bodyBytes
                 $translatedText = [string]$response.choices[0].message.content
+                if (-not [string]::IsNullOrWhiteSpace([string]$response.model)) {
+                    $usedModel = [string]$response.model
+                }
+                elseif ([string]::IsNullOrWhiteSpace($usedModel)) {
+                    $usedModel = $Model
+                }
+                if ($null -ne $response.usage) {
+                    if ($null -ne $response.usage.prompt_tokens) {
+                        $usagePromptTokens += [int]$response.usage.prompt_tokens
+                    }
+                    if ($null -ne $response.usage.completion_tokens) {
+                        $usageCompletionTokens += [int]$response.usage.completion_tokens
+                    }
+                    if ($null -ne $response.usage.total_tokens) {
+                        $usageTotalTokens += [int]$response.usage.total_tokens
+                    }
+                }
                 Write-OpenAiSegmentDiagnostic `
                     -DiagnosticsFolder $DiagnosticsFolder `
                     -SegmentIndex $segmentIndex `
@@ -6584,7 +6969,27 @@ function Invoke-OpenAiSegmentTranslation {
         }
     }
 
-    return $translatedSegments
+    if ([string]::IsNullOrWhiteSpace($usedModel)) {
+        $usedModel = $Model
+    }
+    if ($usageTotalTokens -le 0) {
+        $usageTotalTokens = $usagePromptTokens + $usageCompletionTokens
+    }
+
+    $estimatedCostUsd = Estimate-OpenAiTextCostUsd `
+        -Model $usedModel `
+        -PromptTokens $usagePromptTokens `
+        -CompletionTokens $usageCompletionTokens
+
+    return [PSCustomObject]@{
+        Segments              = $translatedSegments
+        RequestedModel        = $Model
+        UsedModel             = $usedModel
+        UsagePromptTokens     = [int]$usagePromptTokens
+        UsageCompletionTokens = [int]$usageCompletionTokens
+        UsageTotalTokens      = [int]$usageTotalTokens
+        EstimatedCostUsd      = if ($null -ne $estimatedCostUsd) { [double]$estimatedCostUsd } else { $null }
+    }
 }
 
 function Invoke-ArgosSegmentTranslation {
@@ -6884,7 +7289,10 @@ function Add-SummaryRow {
         [string]$EstimatedOpenAiTextCostUsd = "",
         [int]$FailedTranslatedSegmentCount = 0,
         [string]$GlossaryProfile = "",
-        [string]$GlossaryPath = ""
+        [string]$GlossaryPath = "",
+        [string]$ProtectedTermsProfile = "",
+        [string]$ProtectedTermsPath = "",
+        [string]$OpenAiTranslationSummary = ""
     )
 
     $row = [PSCustomObject]@{
@@ -6937,6 +7345,9 @@ function Add-SummaryRow {
         failed_translated_segment_count = $FailedTranslatedSegmentCount
         glossary_profile       = $GlossaryProfile
         glossary_path          = $GlossaryPath
+        protected_terms_profile = $ProtectedTermsProfile
+        protected_terms_path   = $ProtectedTermsPath
+        openai_translation_summary = $OpenAiTranslationSummary
         comments_text          = $CommentsText
         comments_json          = $CommentsJson
         comments_summary       = $CommentsSummary
@@ -8285,6 +8696,7 @@ function Process-Video {
         [string]$TranslationProvider,
         [string]$OpenAiModel,
         [string]$OpenAiTranscriptionModel,
+        [psobject]$ProtectedTermsProfileSelection = $null,
         [double]$FrameIntervalSeconds,
         [int]$WhisperTimeoutSeconds = 0,
         [int]$HeartbeatSeconds = 10
@@ -8381,13 +8793,16 @@ function Process-Video {
     if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
         Write-Log ("Local Whisper model: {0}" -f $ModelName)
     }
+    if ($ProcessingMode -eq "Hybrid") {
+        Write-Log ("Protected terms profile: {0}" -f (Get-ProtectedTermsProfileSummary -Selection $ProtectedTermsProfileSelection))
+    }
     if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
         Write-Log ("OpenAI project mode: {0}" -f $OpenAiProject)
         if ($ProcessingMode -eq "AI" -and -not [string]::IsNullOrWhiteSpace($OpenAiTranscriptionModel) -and $OpenAiProject -eq "Private") {
             Write-Log ("OpenAI transcription model: {0}" -f $OpenAiTranscriptionModel)
         }
-        if ($TranslationTargets.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($OpenAiModel)) {
-            Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+        if ($TranslationTargets.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($requestedOpenAiTranslationModelLabel)) {
+            Write-Log ("OpenAI translation model: {0}" -f $requestedOpenAiTranslationModelLabel)
         }
     }
     if ($TranslationTargets.Count -gt 0) {
@@ -8599,6 +9014,14 @@ function Process-Video {
     $hybridTranslationTranscriptSrt = ""
     $hybridTranslationTranscriptText = ""
     $hybridValidationReport = ""
+    $translationUsedOpenAi = $false
+    $openAiTranslationSummaryParts = New-Object System.Collections.Generic.List[string]
+    $translationModelSummaryParts = New-Object System.Collections.Generic.List[string]
+    $translationValidationSummaryParts = New-Object System.Collections.Generic.List[string]
+    $protectedTermsProfileSummaryParts = New-Object System.Collections.Generic.List[string]
+    $protectedTermsPathSummaryParts = New-Object System.Collections.Generic.List[string]
+    $estimatedOpenAiTextCostValue = [double]0.0
+    $hasEstimatedOpenAiTextCost = $false
 
     if ($hasAudio -and (Test-Path -LiteralPath $transcriptJson)) {
         $transcriptData = Get-TranscriptSegments -TranscriptJsonPath $transcriptJson
@@ -8676,6 +9099,14 @@ function Process-Video {
                     Ensure-Directory $translationFolder
 
                     if ($providerUsed -eq "Original transcript copy") {
+                        if ($detectedLanguage -eq "en") {
+                            Write-OperatorNote "OpenAI Translation: not used for this file; source already English, original transcript copied" -Color DarkCyan
+                        }
+                        else {
+                            $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
+                            Write-OperatorNote ("OpenAI Translation: not used for this file; target already matches the detected source language ({0}), original transcript copied" -f $sourceDisplayName) -Color DarkCyan
+                        }
+                        $providerUsed = "Original transcript copy (no OpenAI call)"
                         $null = Write-TranscriptArtifactsFromSegments `
                             -OutputFolder $translationFolder `
                             -Segments $transcriptData.Segments `
@@ -8763,16 +9194,19 @@ function Process-Video {
                     else {
                         if ($ProcessingMode -eq "Hybrid") {
                             $providerUsed = "Hybrid Accuracy text translation"
-                            $glossaryPath = Get-HybridAccuracyGlossaryPath
+                            $requestedModelLabel = Get-RequestedOpenAiTranslationModelLabel -EffectiveMode $ProcessingMode -RequestedModel $OpenAiModel
+                            $protectedTermsProfileDisplay = Get-ProtectedTermsProfileSummary -Selection $ProtectedTermsProfileSelection
+                            $protectedTermsProfilePath = if ($ProtectedTermsProfileSelection -and $ProtectedTermsProfileSelection.IsSelected) { $ProtectedTermsProfileSelection.Path } else { "" }
+                            Write-OperatorNote ("OpenAI Translation: {0} / {1} / text-only" -f $OpenAiProject, $requestedModelLabel)
                             Write-Log "Hybrid Accuracy keeps source audio local and uploads transcript text only for English translation."
-                            Write-Log ("Hybrid glossary profile: {0}" -f (Split-Path -Path $glossaryPath -Leaf))
+                            Write-Log ("Protected terms profile: {0}" -f $protectedTermsProfileDisplay)
                             $hybridTranslationResult = Invoke-HybridAccuracyTextTranslation `
                                 -PythonCommand $PythonCommand `
                                 -TranscriptJsonPath $transcriptJson `
                                 -TranslationFolder $translationFolder `
                                 -SourceLanguage $detectedLanguage `
                                 -TargetLanguage $targetLanguage `
-                                -GlossaryPath $glossaryPath `
+                                -GlossaryPath $protectedTermsProfilePath `
                                 -OpenAiProject $OpenAiProject `
                                 -RequestedModel $OpenAiModel `
                                 -HeartbeatSeconds $HeartbeatSeconds
@@ -8788,24 +9222,61 @@ function Process-Video {
                             $hybridTranslationTranscriptSrt = $hybridTranslationResult.TranscriptSrtPath
                             $hybridTranslationTranscriptText = $hybridTranslationResult.TranscriptTextPath
                             $hybridValidationReport = $hybridTranslationResult.ValidationReportPath
+                            $translationUsedOpenAi = $true
+
+                            $resolvedRequestedModel = if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.RequestedModel)) {
+                                $hybridTranslationResult.RequestedModel
+                            }
+                            else {
+                                $requestedModelLabel
+                            }
+                            $resolvedUsedModel = if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.UsedModel)) {
+                                $hybridTranslationResult.UsedModel
+                            }
+                            else {
+                                $resolvedRequestedModel
+                            }
+                            $resolvedValidationStatus = if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.ValidationStatus)) {
+                                $hybridTranslationResult.ValidationStatus
+                            }
+                            else {
+                                "unknown"
+                            }
+                            [void]$openAiTranslationSummaryParts.Add((
+                                "{0}={1} / requested {2} / used {3} / validation {4}" -f `
+                                    $targetLanguage, `
+                                    $hybridTranslationResult.OpenAiProject, `
+                                    $resolvedRequestedModel, `
+                                    $resolvedUsedModel, `
+                                    $resolvedValidationStatus
+                            ))
+                            if (-not [string]::IsNullOrWhiteSpace($resolvedUsedModel)) {
+                                [void]$translationModelSummaryParts.Add($resolvedUsedModel)
+                            }
+                            [void]$translationValidationSummaryParts.Add(("{0}={1}" -f $targetLanguage, $resolvedValidationStatus))
+                            [void]$protectedTermsProfileSummaryParts.Add($protectedTermsProfileDisplay)
+                            if (-not [string]::IsNullOrWhiteSpace($protectedTermsProfilePath)) {
+                                [void]$protectedTermsPathSummaryParts.Add($protectedTermsProfilePath)
+                            }
+                            if ($null -ne $hybridTranslationResult.EstimatedCostUsd) {
+                                $estimatedOpenAiTextCostValue += [double]$hybridTranslationResult.EstimatedCostUsd
+                                $hasEstimatedOpenAiTextCost = $true
+                            }
 
                             Write-Log ("Hybrid translation project: {0}" -f $hybridTranslationResult.OpenAiProject)
-                            if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.RequestedModel)) {
-                                Write-Log ("Hybrid requested translation model: {0}" -f $hybridTranslationResult.RequestedModel)
-                            }
-                            if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.UsedModel)) {
-                                Write-Log ("Hybrid used translation model: {0}" -f $hybridTranslationResult.UsedModel)
-                            }
+                            Write-Log ("Hybrid requested translation model: {0}" -f $resolvedRequestedModel)
+                            Write-Log ("Hybrid used translation model: {0}" -f $resolvedUsedModel)
                             Write-Log ("Hybrid privacy class: {0}" -f $hybridTranslationResult.PrivacyClass)
-                            Write-Log ("Hybrid validation status: {0}" -f $hybridTranslationResult.ValidationStatus)
+                            Write-Log ("Hybrid validation status: {0}" -f $resolvedValidationStatus)
                             Write-Log ("Hybrid validation report: {0}" -f $hybridValidationReport)
+                            Write-OperatorNote ("OpenAI Translation: requested {0}; used {1}; validation {2}" -f $resolvedRequestedModel, $resolvedUsedModel, $resolvedValidationStatus)
 
-                            if ($hybridTranslationResult.ValidationStatus -ne "accepted") {
+                            if ($resolvedValidationStatus -ne "accepted") {
                                 $packageStatus = "PARTIAL_SUCCESS"
                                 [void]$translationFailureNotes.Add((
                                     "{0}: Hybrid Accuracy translation finished with status '{1}' ({2}/{3} segments translated)." -f `
                                         $targetLanguage, `
-                                        $hybridTranslationResult.ValidationStatus, `
+                                        $resolvedValidationStatus, `
                                         ($hybridTranslationResult.SegmentCount - $hybridTranslationResult.FailedSegmentCount), `
                                         $hybridTranslationResult.SegmentCount
                                 ))
@@ -8814,7 +9285,7 @@ function Process-Video {
 
                             if ($hybridTranslationResult.WarningCount -gt 0) {
                                 [void]$translationRecoveryNotes.Add((
-                                    "{0}: Hybrid warnings={1}, contamination={2}, mojibake={3}, glossary={4}, compression={5}." -f `
+                                    "{0}: Hybrid warnings={1}, contamination={2}, mojibake={3}, protected terms={4}, compression={5}." -f `
                                         $targetLanguage, `
                                         $hybridTranslationResult.WarningCount, `
                                         $hybridTranslationResult.ContaminationCount, `
@@ -8830,13 +9301,54 @@ function Process-Video {
                         else {
                             $targetDisplayName = Get-LanguageDisplayName -Code $targetLanguage
                             $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
-                            $translatedSegments = Invoke-OpenAiSegmentTranslation `
+                            $requestedModelLabel = Get-RequestedOpenAiTranslationModelLabel -EffectiveMode $ProcessingMode -RequestedModel $OpenAiModel
+                            Write-OperatorNote ("OpenAI Translation: {0} / {1} / transcript text" -f $OpenAiProject, $requestedModelLabel)
+                            $openAiTranslationResult = Invoke-OpenAiSegmentTranslation `
                                 -Segments $transcriptData.Segments `
                                 -SourceLanguage $sourceDisplayName `
                                 -TargetLanguage $targetDisplayName `
                                 -Model $OpenAiModel `
                                 -HeartbeatSeconds $HeartbeatSeconds `
                                 -DiagnosticsFolder $openAiDiagnosticsFolder
+                            $translatedSegments = $openAiTranslationResult.Segments
+                            $translationUsedOpenAi = $true
+
+                            $resolvedRequestedModel = if (-not [string]::IsNullOrWhiteSpace($openAiTranslationResult.RequestedModel)) {
+                                $openAiTranslationResult.RequestedModel
+                            }
+                            else {
+                                $requestedModelLabel
+                            }
+                            $resolvedUsedModel = if (-not [string]::IsNullOrWhiteSpace($openAiTranslationResult.UsedModel)) {
+                                $openAiTranslationResult.UsedModel
+                            }
+                            else {
+                                $resolvedRequestedModel
+                            }
+                            $resolvedValidationStatus = "not run (AI mode)"
+                            $providerUsed = if ([string]::IsNullOrWhiteSpace($resolvedUsedModel)) {
+                                "OpenAI text translation"
+                            }
+                            else {
+                                "OpenAI text translation via $resolvedUsedModel"
+                            }
+                            [void]$openAiTranslationSummaryParts.Add((
+                                "{0}={1} / requested {2} / used {3} / validation {4}" -f `
+                                    $targetLanguage, `
+                                    $OpenAiProject, `
+                                    $resolvedRequestedModel, `
+                                    $resolvedUsedModel, `
+                                    $resolvedValidationStatus
+                            ))
+                            if (-not [string]::IsNullOrWhiteSpace($resolvedUsedModel)) {
+                                [void]$translationModelSummaryParts.Add($resolvedUsedModel)
+                            }
+                            [void]$translationValidationSummaryParts.Add(("{0}={1}" -f $targetLanguage, $resolvedValidationStatus))
+                            if ($null -ne $openAiTranslationResult.EstimatedCostUsd) {
+                                $estimatedOpenAiTextCostValue += [double]$openAiTranslationResult.EstimatedCostUsd
+                                $hasEstimatedOpenAiTextCost = $true
+                            }
+                            Write-OperatorNote ("OpenAI Translation: requested {0}; used {1}; validation {2}" -f $resolvedRequestedModel, $resolvedUsedModel, $resolvedValidationStatus)
 
                             $null = Write-TranscriptArtifactsFromSegments `
                                 -OutputFolder $translationFolder `
@@ -8953,6 +9465,20 @@ function Process-Video {
         [void]$translationNextSteps.Add("Use a source with readable audio or rerun without -TranslateTo.")
     }
 
+    if ($translationUsedOpenAi) {
+        if ($hasEstimatedOpenAiTextCost) {
+            $script:SessionEstimatedOpenAiTextCostUsd += $estimatedOpenAiTextCostValue
+            Write-OperatorNote (
+                "OpenAI text cost: this file {0}; session total {1}" -f `
+                    (Format-EstimatedUsd $estimatedOpenAiTextCostValue), `
+                    (Format-EstimatedUsd $script:SessionEstimatedOpenAiTextCostUsd)
+            ) -Color DarkCyan
+        }
+        else {
+            Write-OperatorNote "OpenAI text cost: estimate unavailable for this file." -Color DarkCyan
+        }
+    }
+
     if ($CommentsRequested -and -not [string]::IsNullOrWhiteSpace($SourceInfoJsonPath) -and (Test-Path -LiteralPath $SourceInfoJsonPath)) {
         $commentArtifacts = Invoke-PhaseAction -Name "Comments" -Detail $videoItem.Name -Action {
             Export-CommentsArtifactsFromInfoJson -InfoJsonPath $SourceInfoJsonPath -CommentsFolder $commentsFolder
@@ -9002,21 +9528,36 @@ function Process-Video {
         }
     }
     if ($hybridTranslationResult) {
-        [void]$translationStatusParts.Add(("hybrid validation: {0}" -f $hybridTranslationResult.ValidationStatus))
+        $hybridProtectedTermsSummary = if ($protectedTermsProfileSummaryParts.Count -gt 0) {
+            ($protectedTermsProfileSummaryParts | Select-Object -Unique) -join ", "
+        }
+        elseif ($ProtectedTermsProfileSelection -and $ProtectedTermsProfileSelection.IsSelected) {
+            $ProtectedTermsProfileSelection.DisplayName
+        }
+        else {
+            "none (generic mode)"
+        }
+        $hybridValidationSummary = if ($translationValidationSummaryParts.Count -gt 0) {
+            (($translationValidationSummaryParts | Select-Object -Unique) -join "; ")
+        }
+        else {
+            $hybridTranslationResult.ValidationStatus
+        }
+        [void]$translationStatusParts.Add(("hybrid validation: {0}" -f $hybridValidationSummary))
         $translationProviderText = if (-not [string]::IsNullOrWhiteSpace($hybridTranslationResult.UsedModel)) {
-            ("en=Hybrid Accuracy text translation via {0} ({1} project; {2}; glossary {3}; validation {4})" -f `
+            ("en=Hybrid Accuracy text translation via {0} ({1} project; {2}; protected terms {3}; validation {4})" -f `
                 $hybridTranslationResult.UsedModel, `
                 $hybridTranslationResult.OpenAiProject, `
                 $hybridTranslationResult.PrivacyClass, `
-                $hybridTranslationResult.GlossaryProfile, `
-                $hybridTranslationResult.ValidationStatus)
+                $hybridProtectedTermsSummary, `
+                $hybridValidationSummary)
         }
         else {
-            ("en=Hybrid Accuracy text translation ({0} project; {1}; glossary {2}; validation {3})" -f `
+            ("en=Hybrid Accuracy text translation ({0} project; {1}; protected terms {2}; validation {3})" -f `
                 $hybridTranslationResult.OpenAiProject, `
                 $hybridTranslationResult.PrivacyClass, `
-                $hybridTranslationResult.GlossaryProfile, `
-                $hybridTranslationResult.ValidationStatus)
+                $hybridProtectedTermsSummary, `
+                $hybridValidationSummary)
         }
     }
     $translationStatusText = $translationStatusParts -join "; "
@@ -9024,9 +9565,9 @@ function Process-Video {
     if ($hybridTranslationResult) {
         $hybridNoteParts = New-Object System.Collections.Generic.List[string]
         [void]$hybridNoteParts.Add(("privacy: {0}" -f $hybridTranslationResult.PrivacyClass))
-        [void]$hybridNoteParts.Add(("glossary: {0}" -f $hybridTranslationResult.GlossaryProfile))
+        [void]$hybridNoteParts.Add(("protected terms profile: {0}" -f $(if ($protectedTermsProfileSummaryParts.Count -gt 0) { ($protectedTermsProfileSummaryParts | Select-Object -Unique) -join ", " } else { "none (generic mode)" })))
         [void]$hybridNoteParts.Add(("validation report: {0}" -f $hybridTranslationResult.ValidationReportPath))
-        [void]$hybridNoteParts.Add(("warnings={0}; contamination={1}; mojibake={2}; glossary={3}; compression={4}" -f `
+        [void]$hybridNoteParts.Add(("warnings={0}; contamination={1}; mojibake={2}; protected terms={3}; compression={4}" -f `
                 $hybridTranslationResult.WarningCount, `
                 $hybridTranslationResult.ContaminationCount, `
                 $hybridTranslationResult.MojibakeCount, `
@@ -9062,11 +9603,14 @@ function Process-Video {
     $translationProviderNameForSummary = if ($hybridTranslationResult) {
         "Hybrid Accuracy text translation"
     }
+    elseif ($translationUsedOpenAi) {
+        "OpenAI text translation"
+    }
     else {
         ""
     }
-    $translationModelForSummary = if ($hybridTranslationResult) {
-        $hybridTranslationResult.UsedModel
+    $translationModelForSummary = if ($translationModelSummaryParts.Count -gt 0) {
+        ($translationModelSummaryParts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) -join ", "
     }
     else {
         ""
@@ -9079,8 +9623,35 @@ function Process-Video {
     else {
         ""
     }
-    $estimatedOpenAiTextCostForSummary = if ($hybridTranslationResult -and $null -ne $hybridTranslationResult.EstimatedCostUsd) {
-        ([double]$hybridTranslationResult.EstimatedCostUsd).ToString("0.000000", [System.Globalization.CultureInfo]::InvariantCulture)
+    $translationValidationStatusForSummary = if ($translationValidationSummaryParts.Count -gt 0) {
+        ($translationValidationSummaryParts | Select-Object -Unique) -join "; "
+    }
+    else {
+        ""
+    }
+    $estimatedOpenAiTextCostForSummary = if ($hasEstimatedOpenAiTextCost) {
+        ([double]$estimatedOpenAiTextCostValue).ToString("0.000000", [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    else {
+        ""
+    }
+    $protectedTermsProfileForSummary = if ($protectedTermsProfileSummaryParts.Count -gt 0) {
+        ($protectedTermsProfileSummaryParts | Select-Object -Unique) -join ", "
+    }
+    elseif ($hybridTranslationResult) {
+        "none (generic mode)"
+    }
+    else {
+        ""
+    }
+    $protectedTermsPathForSummary = if ($protectedTermsPathSummaryParts.Count -gt 0) {
+        ($protectedTermsPathSummaryParts | Select-Object -Unique) -join "; "
+    }
+    else {
+        ""
+    }
+    $openAiTranslationSummary = if ($openAiTranslationSummaryParts.Count -gt 0) {
+        ($openAiTranslationSummaryParts | Select-Object -Unique) -join "; "
     }
     else {
         ""
@@ -9175,11 +9746,14 @@ function Process-Video {
         -EncodingArtifactCount $(if ($hybridTranslationResult) { $hybridTranslationResult.EncodingArtifactCount } else { 0 }) `
         -GlossaryViolationCount $(if ($hybridTranslationResult) { $hybridTranslationResult.GlossaryViolationCount } else { 0 }) `
         -CompressionWarningCount $(if ($hybridTranslationResult) { $hybridTranslationResult.CompressionWarningCount } else { 0 }) `
-        -TranslationValidationStatus $(if ($hybridTranslationResult) { $hybridTranslationResult.ValidationStatus } else { "" }) `
+        -TranslationValidationStatus $translationValidationStatusForSummary `
         -EstimatedOpenAiTextCostUsd $estimatedOpenAiTextCostForSummary `
         -FailedTranslatedSegmentCount $(if ($hybridTranslationResult) { $hybridTranslationResult.FailedSegmentCount } else { 0 }) `
         -GlossaryProfile $(if ($hybridTranslationResult) { $hybridTranslationResult.GlossaryProfile } else { "" }) `
-        -GlossaryPath $(if ($hybridTranslationResult) { $hybridTranslationResult.GlossaryPath } else { "" })
+        -GlossaryPath $(if ($hybridTranslationResult) { $hybridTranslationResult.GlossaryPath } else { "" }) `
+        -ProtectedTermsProfile $protectedTermsProfileForSummary `
+        -ProtectedTermsPath $protectedTermsPathForSummary `
+        -OpenAiTranslationSummary $openAiTranslationSummary
 
     return [PSCustomObject]@{
         SourceVideoName  = $videoItem.Name
@@ -9203,7 +9777,11 @@ function Process-Video {
         TranslationStatus = $translationStatusText
         TranslationNotes = $translationNotesText
         NextSteps        = $nextStepsText
-        TranslationModel = $(if ($hybridTranslationResult) { $hybridTranslationResult.UsedModel } else { "" })
+        TranslationModel = $translationModelForSummary
+        TranslationValidationStatus = $translationValidationStatusForSummary
+        OpenAiTranslationSummary = $openAiTranslationSummary
+        EstimatedOpenAiTextCostUsd = $estimatedOpenAiTextCostForSummary
+        ProtectedTermsProfile = $protectedTermsProfileForSummary
         ValidationReport = $hybridValidationReport
         ShouldFailRun    = $shouldFailRun
     }
@@ -9398,6 +9976,13 @@ $translationTargets = @(Get-TranslationTargets -Value $TranslateTo)
 if ($ProcessingMode -eq "Hybrid" -and ($translationTargets.Count -ne 1 -or $translationTargets[0] -ne "en")) {
     throw "Hybrid Accuracy currently supports exactly one target language: English ('en'). Use -TranslateTo en, or use Local/AI mode for other target-language combinations."
 }
+$protectedTermsProfileSelection = if ($ProcessingMode -eq "Hybrid") {
+    Resolve-ProtectedTermsProfileSelection -RequestedProfile $ProtectedTermsProfile
+}
+else {
+    Resolve-ProtectedTermsProfileSelection -RequestedProfile ""
+}
+$protectedTermsProfileSummary = Get-ProtectedTermsProfileSummary -Selection $protectedTermsProfileSelection
 
 $TranslationProvider = Get-TranslationModeForProcessingMode -EffectiveMode $ProcessingMode
 $requestedLegacyTranslationProvider = if ($translationProviderWasExplicit) { $PSBoundParameters["TranslationProvider"] } else { "" }
@@ -9451,6 +10036,12 @@ $translationModeSummary = Get-TranslationModeSummary `
     -ProjectMode $OpenAiProject `
     -Model $OpenAiModel `
     -TranslationRequested:($translationTargets.Count -gt 0)
+$requestedOpenAiTranslationModelLabel = if ($translationTargets.Count -gt 0 -and ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid")) {
+    Get-RequestedOpenAiTranslationModelLabel -EffectiveMode $ProcessingMode -RequestedModel $OpenAiModel -WasExplicitlySet:$openAiModelWasExplicit
+}
+else {
+    ""
+}
 
 if (($ProcessingMode -eq "Local" -or ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Public")) -and $translationTargets.Count -gt 0) {
     if (-not $whisperModelWasExplicit -and -not (Test-WhisperModelSupportsTranslation -ModelName $WhisperModel)) {
@@ -9511,6 +10102,9 @@ if (-not [string]::IsNullOrWhiteSpace($whisperModelResolutionNote)) {
 }
 Write-Log ("Resolved processing mode: {0}" -f $processingModeSummary)
 Write-Log ("Transcription path selected: {0}" -f $transcriptionPathSummary)
+if ($ProcessingMode -eq "Hybrid") {
+    Write-Log ("Protected terms profile: {0}" -f $protectedTermsProfileSummary)
+}
 if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
     Write-Log ("Local Whisper model: {0}" -f $WhisperModel)
     Write-Log ("Local Whisper timeout mode: {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
@@ -9521,7 +10115,7 @@ if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
         if ($openAiTranslationModelResolution -and -not [string]::IsNullOrWhiteSpace($openAiTranslationModelResolution.ResolutionNote)) {
             Write-Log $openAiTranslationModelResolution.ResolutionNote
         }
-        Write-Log ("OpenAI translation model: {0}" -f $OpenAiModel)
+        Write-Log ("OpenAI translation model: {0}" -f $requestedOpenAiTranslationModelLabel)
     }
 }
 if ($translationTargets.Count -gt 0) {
@@ -9537,6 +10131,27 @@ if ($translationTargets.Count -gt 0) {
     foreach ($preflightNote in $translationProviderPreflightNotes) {
         Write-Log $preflightNote "WARN"
     }
+}
+if ($ProcessingMode -eq "Hybrid" -and $translationTargets.Count -gt 0) {
+    $null = Assert-HybridRuntimePreflight -ProtectedTermsProfileSelection $protectedTermsProfileSelection
+    if ($protectedTermsProfileSelection.IsSelected -and -not [string]::IsNullOrWhiteSpace($protectedTermsProfileSelection.Path)) {
+        Write-Log ("Protected terms profile asset: {0}" -f $protectedTermsProfileSelection.Path)
+    }
+}
+if ($remoteInputSources.Count -gt 0) {
+    $scopeProbeInvoker = $null
+    try {
+        $scopeProbeInvoker = Resolve-YtDlpInvoker -PreferredCommand $YtDlpPath -PythonCommand $PythonExe
+    }
+    catch {
+        Write-Log ("Remote scope probe could not resolve yt-dlp: {0}" -f $_.Exception.Message) "WARN"
+    }
+
+    $remoteInputScopeSummary = Get-RemoteInputScopeSummary -SourceUrls $remoteInputSources -YtDlpInvoker $scopeProbeInvoker
+    Confirm-ExpandedRunScope `
+        -ScopeSummary $remoteInputScopeSummary `
+        -NoPrompt:$NoPrompt `
+        -ApproveExpandedRun:$ApproveExpandedRun
 }
 
 $masterReadme = Join-Path $OutputFolder "CODEX_MASTER_README.txt"
@@ -9801,13 +10416,16 @@ if (Test-ConsoleDebugMode) {
     if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
         Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
     }
+    if ($ProcessingMode -eq "Hybrid") {
+        Write-Host ("Protected terms profile:        {0}" -f $protectedTermsProfileSummary)
+    }
     if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
         Write-Host ("OpenAI project mode:             {0}" -f $OpenAiProject)
         if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $videosWithAudio.Count -gt 0) {
             Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
         }
         if ($translationTargets.Count -gt 0) {
-            Write-Host ("OpenAI translation model:        {0}" -f $OpenAiModel)
+            Write-Host ("OpenAI translation model:        {0}" -f $requestedOpenAiTranslationModelLabel)
         }
     }
     Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
@@ -9826,6 +10444,7 @@ else {
     Write-Host ("Video path: proxy/frame GPU preference {0}; Local Whisper {1}" -f $(if ($canUseFfmpegGpu) { "enabled with CPU fallback" } else { "off" }), $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" })) -ForegroundColor Cyan
     if ($ProcessingMode -eq "Hybrid") {
         Write-Host ("Hybrid translation: text-only OpenAI via {0}" -f $OpenAiProject) -ForegroundColor Cyan
+        Write-Host ("Protected terms: {0}" -f $protectedTermsProfileSummary) -ForegroundColor Cyan
     }
     Write-Host ("Use -DebugMode for full tool and helper detail. script_run.log keeps the deep trace.") -ForegroundColor DarkCyan
     Write-Host ""
@@ -9871,6 +10490,24 @@ if ($estimate) {
     Write-Host ""
     Write-Log ("Estimated total runtime: {0}" -f (Format-DurationHuman $estimate.TotalEstimateSeconds))
     Write-Log ("Estimated finish time: {0}" -f $eta.ToString("yyyy-MM-dd hh:mm:ss tt"))
+
+    if ($translationTargets.Count -gt 0 -and ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid")) {
+        $estimatedOpenAiModelForPreview = if (-not [string]::IsNullOrWhiteSpace($OpenAiModel)) { $OpenAiModel } else { $script:HybridAccuracyTranslationDefaultModel }
+        $roughOpenAiTextCostEstimate = Get-RoughOpenAiTextCostEstimate `
+            -TotalDurationSeconds $estimate.TotalDurationSeconds `
+            -Model $estimatedOpenAiModelForPreview `
+            -ItemCount $videos.Count
+        if ($roughOpenAiTextCostEstimate) {
+            Write-Host ("OpenAI text cost estimate:      about {0} if translation is needed for every file" -f (Format-EstimatedUsd $roughOpenAiTextCostEstimate.EstimatedCostUsd)) -ForegroundColor Cyan
+            if ($translationTargets -contains "en") {
+                Write-Host "OpenAI text cost note:          English-source files can still land at `$0 when the original transcript is copied." -ForegroundColor DarkCyan
+            }
+            if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private") {
+                Write-Host "OpenAI cost note:               this preview covers tracked text translation only, not OpenAI audio transcription." -ForegroundColor DarkCyan
+            }
+            Write-Host ""
+        }
+    }
 }
 
 $processedItems = @()
@@ -9907,6 +10544,7 @@ foreach ($video in $videos) {
             -TranslationProvider $TranslationProvider `
             -OpenAiModel $OpenAiModel `
             -OpenAiTranscriptionModel $ResolvedOpenAiTranscriptionModel `
+            -ProtectedTermsProfileSelection $protectedTermsProfileSelection `
             -FrameIntervalSeconds $FrameIntervalSeconds `
             -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
             -HeartbeatSeconds $HeartbeatSeconds
@@ -9956,6 +10594,12 @@ Write-Host ("Failed packages:     {0}" -f $failedItems.Count)
 Write-Host ("Output root:         {0}" -f $OutputFolder)
 Write-Host ("Master README:       {0}" -f $masterReadme)
 Write-Host ("Processing summary:  {0}" -f $summaryCsv)
+if ($translationTargets.Count -gt 0 -and ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid")) {
+    Write-Host ("Estimated OpenAI text total: {0}" -f (Format-EstimatedUsd $script:SessionEstimatedOpenAiTextCostUsd))
+    if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private") {
+        Write-Host "OpenAI cost note:           text total only; OpenAI audio transcription is not included." -ForegroundColor DarkCyan
+    }
+}
 
 foreach ($item in $processedItems) {
     if ($item.PackageStatus -eq "PARTIAL_SUCCESS") {
@@ -9976,6 +10620,15 @@ foreach ($item in $processedItems) {
     Write-Host ("  Lang:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($item.DetectedLanguage)) { "n/a" } else { $item.DetectedLanguage }))
     Write-Host ("  Xlate:   {0}" -f $(if ($item.TranslationTargets.Count -gt 0) { $item.TranslationTargets -join ", " } else { "none" }))
     Write-Host ("  Path:    {0}" -f $(if ([string]::IsNullOrWhiteSpace($item.TranslationProvider) -or $item.TranslationProvider -eq "none") { "none" } else { $item.TranslationProvider }))
+    if (-not [string]::IsNullOrWhiteSpace($item.ProtectedTermsProfile)) {
+        Write-Host ("  Terms:   {0}" -f $item.ProtectedTermsProfile)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($item.OpenAiTranslationSummary)) {
+        Write-Host ("  OpenAI:  {0}" -f $item.OpenAiTranslationSummary)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($item.EstimatedOpenAiTextCostUsd)) {
+        Write-Host ("  AI Cost: {0}" -f (Format-EstimatedUsd $item.EstimatedOpenAiTextCostUsd))
+    }
     if (-not [string]::IsNullOrWhiteSpace($item.TranslationStatus)) {
         Write-Host ("  Status:  {0}" -f $item.TranslationStatus)
     }

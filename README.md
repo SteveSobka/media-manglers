@@ -85,12 +85,12 @@ Release assets usually include:
 
 What to pick:
 
-- `*-vX.Y.Z.zip`: the recommended operator handoff. Each zip includes the app, plain-text guides, release notes, version file, license, notices, the tracked `python-core` sidecar, and the Hybrid `glossaries\` runtime assets.
-- loose `*.exe`: useful when you build locally and just want a quick executable check. Local build outputs live under `dist\bin\`, and they should stay beside their `python-core` and `glossaries` sidecar folders if you expect packaged helper features to work.
+- `*-vX.Y.Z.zip`: the recommended operator handoff. Each zip includes the app, plain-text guides, release notes, version file, license, notices, the tracked `python-core` sidecar, and the Hybrid protected-terms profile assets stored under `glossaries\`.
+- loose `*.exe`: useful when you build locally and just want a quick executable check. Local build outputs live under `dist\bin\`, and they should stay beside their `python-core` and `glossaries` sidecar folders if you expect packaged helper features to work. A loose EXE by itself is not the normal supported Hybrid handoff.
 
 Current migration note:
 
-- The release zips carry `python-core\src\media_manglers` and `glossaries\` beside the app so the tracked helper path and Hybrid runtime assets have a stable packaged home during the transition.
+- The release zips carry `python-core\src\media_manglers` and `glossaries\` beside the app so the tracked helper path and Hybrid protected-terms profile assets have a stable packaged home during the transition.
 - `Audio Mangler.ps1` and `Video Mangler.ps1` stay at repo root on purpose because they are the operator-facing source entry points and the inputs to the Windows packaging flow.
 - Normal runs keep the console focused on phases, heartbeats, and short status lines. Use `-DebugMode` if you want full command/helper chatter on screen while still writing the deep trace to `script_run.log`.
 
@@ -281,16 +281,16 @@ Local mode does not depend on OpenAI. If Local mode is missing something, the ap
 
 ## Example Inputs
 
-Video examples:
+Approved bounded remote smoke/regression examples:
 
-- NASA balloon sample: `https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm`
-- Blender open movie on YouTube: `https://www.youtube.com/watch?v=R6MlUcmOul8`
-
-Audio examples:
-
-- LibriVox page: `https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2`
-- Direct LibriVox MP3: `https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3`
-- Multilingual sample MP3: `https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3`
+- English: `https://www.youtube.com/watch?v=1aA1WGON49E`
+- German: `https://www.youtube.com/watch?v=hNaUbuWL8MI`
+- German: `https://www.youtube.com/watch?v=7_u8Qj78cA0`
+- French: `https://www.youtube.com/watch?v=APOqEiXEC4g`
+- Japanese: `https://www.youtube.com/watch?v=WPm2N93SmTA`
+- Spanish: `https://www.youtube.com/watch?v=5OspljwLkDQ`
+- Italian: `https://www.youtube.com/watch?v=Xe6AgUkZmog`
+- Chinese: `https://www.youtube.com/watch?v=fJ7V53jFrVc`
 
 ## Command-line summary
 
@@ -300,8 +300,10 @@ Audio examples:
 - If you do not explicitly pass `-WhisperModel` and the resolved mode is `Local`, interactive runs prompt for `small`, `medium`, or `large` and default to `medium` on Enter. `-NoPrompt` and other scripted Local runs still keep the current `large` default unless you set `-WhisperModel` yourself.
 - Hybrid Accuracy defaults `-TranslateTo` to `en` and defaults `-WhisperModel` to `medium` when you do not explicitly override either one.
 - Hybrid Accuracy text translation currently defaults to `gpt-4o-mini-2024-07-18` when you do not explicitly pass `-OpenAiModel`.
+- Hybrid Accuracy now defaults to generic mode with no Protected Terms Profile selected. Use `-ProtectedTermsProfile sim-racing` only when you intentionally want the seeded sim-racing profile.
 - `-OpenAiProject Private` means OpenAI transcription plus OpenAI translation in `AI` mode, or private-project OpenAI text translation in `Hybrid` mode. `-OpenAiProject Public` means local transcription plus OpenAI translation on the Public/shared project in `AI` mode, or Public/shared-project OpenAI text translation in `Hybrid` mode.
 - `-OpenAiModel` only matters when OpenAI translation is requested in `AI` or `Hybrid`. AI mode keeps the existing repo-side allowlist/discovery path. Hybrid now resolves its text model inside the tracked Python helper, records `requested_model` and `used_model` in `translations\en\validation_report.json`, and surfaces `Model unavailable for selected OpenAI project.` when the chosen project cannot use the requested model.
+- When remote inputs expand into playlists or a larger-than-expected batch, the apps now summarize the detected scope and require confirmation before the real run starts. Use `-ApproveExpandedRun` for reviewed non-interactive runs.
 - `-NoPrompt` disables the interactive questions. Without `-NoPrompt`, the apps prompt for missing inputs and treat Enter as Yes for `CopyRaw*`, `CreateChatGptZip`, `OpenOutputInExplorer`, and supported YouTube comments prompts.
 - `-WhisperHealthCheck` runs a Local Whisper runtime probe, prints whether this machine is CPU-only, GPU-capable, or misconfigured/uncertain for Whisper, and exits without starting a packaging run.
 - `-Version` and `-ShowVersion` are aliases for the same version-only path.
@@ -321,6 +323,7 @@ Audio examples:
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
 - `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when `AI` or `Hybrid` mode is used. Ignored in Local mode.
+- `-ProtectedTermsProfile`: Optional Hybrid-only protected-terms profile selection. Leave it blank for generic mode, or use `sim-racing` when you intentionally want the seeded sim-racing profile.
 - `-FrameIntervalSeconds`: Extract one frame every N seconds. Real default: `0.5`. Interactive runs prompt with `0.5` as the default; `-NoPrompt` runs take `0.5` automatically.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
 - `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
@@ -330,6 +333,7 @@ Audio examples:
 - `-KeepTempFiles`: Keep temporary working files and download caches instead of cleaning them up. Default: off.
 - `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
 - `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
+- `-ApproveExpandedRun`: Allow a reviewed expanded remote run to continue in non-interactive mode after the playlist/large-batch scope summary.
 - `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
 - `-WhisperHealthCheck`: Probe the selected Local Whisper runtime, print the machine classification plus the key runtime facts, and exit.
 - `-Version` / `-ShowVersion`: Print the app version and exit.
@@ -350,11 +354,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=APOqEiXEC4g' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=hNaUbuWL8MI' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -OpenAiModel gpt-4.1-mini-2025-04-14 -IncludeComments -NoPrompt
 ```
 
 ```powershell
@@ -376,6 +380,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 - `-TranslationProvider`: Legacy compatibility flag. Valid values: `Auto`, `OpenAI`, `Local`. Current main maps it into `ProcessingMode`; new runs should prefer `-ProcessingMode`.
 - `-OpenAiModel`: Optional OpenAI translation model request. Explicit values must be repo-approved for the chosen mode/project and, when discovery succeeds, visible to that key/project.
 - `-OpenAiProject`: Valid values: `Private`, `Public`. Default: `Private` when `AI` or `Hybrid` mode is used. Ignored in Local mode.
+- `-ProtectedTermsProfile`: Optional Hybrid-only protected-terms profile selection. Leave it blank for generic mode, or use `sim-racing` when you intentionally want the seeded sim-racing profile.
 - `-HeartbeatSeconds`: How often long-running steps log progress. Default: `10`.
 - `-WhisperTimeoutSeconds`: Optional explicit Local Whisper runtime-budget override in seconds. Leave it unset to use the adaptive timeout logic.
 - `-CopyRawAudio`: Copy the original source audio into the package `raw` folder. CLI default: off. Interactive default on Enter: Yes.
@@ -384,6 +389,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 - `-KeepTempFiles`: Keep temporary working files and download caches instead of cleaning them up. Default: off.
 - `-OpenOutputInExplorer`: Open the output folder in Windows Explorer when the run finishes. CLI default: off. Interactive default on Enter: Yes.
 - `-NoPrompt`: Disable interactive questions and use the non-interactive defaults described above.
+- `-ApproveExpandedRun`: Allow a reviewed expanded remote run to continue in non-interactive mode after the playlist/large-batch scope summary.
 - `-SkipEstimate`: Skip the runtime estimate stage. Default: off.
 - `-WhisperHealthCheck`: Probe the selected Local Whisper runtime, print the machine classification plus the key runtime facts, and exit.
 - `-Version` / `-ShowVersion`: Print the app version and exit.
@@ -404,11 +410,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=7_u8Qj78cA0' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=R6MlUcmOul8' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -IncludeComments -NoPrompt
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=WPm2N93SmTA' -TranslateTo en -ProcessingMode AI -OpenAiProject Public -IncludeComments -NoPrompt
 ```
 
 ```powershell
@@ -420,12 +426,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.1 release notes](docs/release-notes/RELEASE_NOTES_v0.7.1.txt)
+- [v0.7.2 release notes](docs/release-notes/RELEASE_NOTES_v0.7.2.txt)
 
 ## Repo Layout
 
 - `Audio Mangler.ps1` and `Video Mangler.ps1`: operator-facing wrappers and the Windows packaging entry points, kept at repo root on purpose.
-- `glossaries/`: tracked runtime glossary assets. Hybrid German-to-English runs use `de-en-sim-racing.json`.
+- `glossaries/`: tracked protected-terms profile assets for Hybrid mode. `de-en-sim-racing.json` is the seeded optional sim-racing profile; leaving `-ProtectedTermsProfile` blank keeps Hybrid in generic mode.
 - `tests/`: tracked unit and regression coverage.
 - `test-output/`: generated local output from smoke runs, benchmarks, and validation passes. It is intentionally ignored.
 - `tools/release/`: tracked release packaging scripts.
@@ -435,7 +441,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 
 ## Testing
 
-The smoke scripts live under `tools\smoke\` and the validators live under `tools\validation\`. When a local fixture exists under `AREA51\TestData`, the smoke helpers prefer that short local file first. If not, they fall back to `test_media`, `test_audio`, or the older remote sample URLs.
+The smoke scripts live under `tools\smoke\` and the validators live under `tools\validation\`. When a local fixture exists under `AREA51\TestData`, the smoke helpers prefer that short local file first. If not, they fall back to the approved bounded Doc66 remote set: English `1aA1WGON49E`, German `hNaUbuWL8MI` / `7_u8Qj78cA0`, French `APOqEiXEC4g`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian `Xe6AgUkZmog`, and Chinese `fJ7V53jFrVc`.
 
 Video:
 
