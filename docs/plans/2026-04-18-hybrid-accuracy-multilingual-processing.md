@@ -4,13 +4,22 @@
 
 Add a new Hybrid Accuracy processing path that keeps source audio local, creates an authoritative source-language transcript first, and sends only text transcript content to OpenAI for higher-quality English translation and later validation.
 
+## Current status
+
+This plan is now historical implementation record, not an open execution gate.
+
+- PR `#17` merged the Hybrid work into `main` on 2026-04-18.
+- Issue `#16` is closed.
+- Rig1 produced accepted longer-source Hybrid evidence for both wrappers plus a short French follow-on smoke.
+- The current default Hybrid text model remains `gpt-4o-mini-2024-07-18`.
+
 The first benchmark target is German audio or video processed as:
 
 - German source audio
 - German source-language transcript
 - English translated transcript
 
-## PASS 1 scope
+## Historical PASS 1 scope
 
 This document records the approved PASS 1 scaffold, not the full end-state implementation.
 
@@ -63,15 +72,15 @@ This PASS 1 implementation was approved for a Rig1 execution pass. Any machine-l
 
 Tracked repo docs must not hard-code machine-local absolute paths as canonical project behavior.
 
-## Follow-up validation needs
+## Follow-up work after merge
 
-These remain open after PASS 1:
+These are future follow-ups rather than blockers for the merged Hybrid v1 path:
 
-- DevBox CPU validation for the new Hybrid mode
-- live OpenAI text-translation validation on a short safe fixture
-- full batched Hybrid translation implementation
-- validation report generation integrated into package output
-- benchmark evidence proving the German Hybrid lane improves on the current AI benchmark caveats
+- benchmark scoring/reporting integration
+- broader target-language support
+- broader glossary-profile support
+- later GPU benchmarking
+- optional compatibility validation on additional machines when useful
 
 ## Later benchmarking needs
 

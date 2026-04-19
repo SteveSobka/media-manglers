@@ -269,7 +269,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.6.1.txt
+- ../release-notes/RELEASE_NOTES_v0.7.0.txt
 
 Build and test
 --------------
@@ -286,16 +286,18 @@ Show versions:
 
 Rebuild the packaged executables:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release\Build-Exe.ps1
 
-The build keeps the live output layout minimal by default:
+The build keeps the operator-facing layout simple:
 
-- dist\Video Mangler.exe
-- dist\Audio Mangler.exe
-- dist\release\Video-Mangler.exe
-- dist\release\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.6.1.zip
-- dist\release\Audio-Mangler-v0.6.1.zip
+- dist\bin\Video-Mangler.exe
+- dist\bin\Audio-Mangler.exe
+- dist\release\Video-Mangler-v0.7.0.zip
+- dist\release\Audio-Mangler-v0.7.0.zip
+
+Use the versioned ZIP in dist\release as the normal operator handoff. The
+loose EXEs in dist\bin are mainly for local build checks, quick launch tests,
+or troubleshooting.
 
 During the Python-core migration, the release zips now carry a shared
 python-core sidecar inside the app folder. That gives the tracked Python
@@ -309,18 +311,17 @@ removed automatically after a successful build.
 
 If you want to inspect the package staging contents for debugging, opt in:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Build-Exe.ps1 -KeepPackageStaging
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\release\Build-Exe.ps1 -KeepPackageStaging
 
 Smoke tests:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-SmokeTest.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1
 
-The smoke scripts now prefer short local fixtures under AREA51\TestData before
-they fall back to test_media, test_audio, or the older remote sample URLs. The
-standard fast path is the local 1_min_test_Video.mp4, and audio
-translation-to-English smoke coverage also prefers a short local
-foreign-language clip when one is present.
+When local fixtures exist under AREA51\TestData, the smoke scripts prefer those
+short local files before they fall back to test_media, test_audio, or the
+older remote sample URLs. AREA51 stays local-only; the tracked helper scripts
+now live under tools\.
 
 License
 -------

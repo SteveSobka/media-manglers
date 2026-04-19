@@ -1,8 +1,8 @@
 param(
     [ValidateSet("Source", "Release", "All")]
     [string]$Surface = "All",
-    [string]$VideoPath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
-    [string]$AudioPath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
+    [string]$VideoPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
+    [string]$AudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base",
     [switch]$SkipBuild
@@ -10,12 +10,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath
 $fixturePath = Join-Path $repoRoot "tests\fixtures\parity\local_artifact_hashes.json"
 $versionPath = Join-Path $repoRoot "VERSION"
-$videoValidator = Join-Path $PSScriptRoot "Validate-VideoToCodexPackage.ps1"
-$audioValidator = Join-Path $PSScriptRoot "Validate-AudioManglerPackage.ps1"
-$buildScript = Join-Path $PSScriptRoot "Build-Exe.ps1"
+$videoValidator = Join-Path $repoRoot "tools\validation\Validate-VideoToCodexPackage.ps1"
+$audioValidator = Join-Path $repoRoot "tools\validation\Validate-AudioManglerPackage.ps1"
+$buildScript = Join-Path $repoRoot "tools\release\Build-Exe.ps1"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $repoRoot ("test-output\artifact-parity-{0}" -f $timestamp)
 
