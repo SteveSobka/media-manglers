@@ -1,0 +1,75 @@
+Release Notes - v0.7.0
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.7.0
+
+What changed
+------------
+
+- Added the first merged Hybrid Accuracy path on `main`:
+  - `ProcessingMode Hybrid` keeps source audio local
+  - creates the authoritative source-language transcript first
+  - sends transcript text only to OpenAI for English translation
+  - writes Hybrid validation reports beside the translated transcript output
+- Cleaned up the release layout so the versioned ZIP bundles are the canonical
+  operator-facing artifacts
+- Moved tracked build, smoke, and validation scripts out of `AREA51\` and into
+  `tools\release\`, `tools\smoke\`, and `tools\validation\`
+- Stopped using tracked `dist\*.exe` files as a second confusing release
+  surface; loose local build outputs now belong under `dist\bin\`
+- Refreshed README, packaged guides, and current plan/TODO text so the repo
+  reads like the product it is today rather than a pile of stale pass notes
+
+Hybrid evidence summary
+-----------------------
+
+- Rig1 accepted the longer approved German Hybrid source in both wrappers:
+  - `Audio Mangler`: accepted `186/186`
+  - `Video Mangler`: accepted `187/187`
+- Rig1 also completed an accepted short French follow-on smoke:
+  - `Audio Mangler`: accepted `107/107`
+- Accepted longer Hybrid runs reported:
+  - `0` contamination
+  - `0` mojibake
+  - `0` glossary violations
+  - `0` compression warnings
+- The current Hybrid default model remains `gpt-4o-mini-2024-07-18`
+
+Operator notes
+--------------
+
+- Start with the versioned ZIP bundle in `dist\release\`
+- Use the loose EXE in `dist\bin\` only when you intentionally want a local
+  build output instead of the full packaged handoff
+- `Audio Mangler.ps1` and `Video Mangler.ps1` stay at repo root on purpose
+  because they are the operator-facing wrapper sources and the Windows package
+  build inputs
+- `glossaries\` remains a tracked runtime asset folder
+- `AREA51\` remains local-only scratch and fixture space, not the tracked home
+  for release tooling
+
+Validation and packaging
+------------------------
+
+- PowerShell parse checks passed for the edited wrappers and moved tooling
+  scripts
+- `python -m unittest discover -s tests -p "test_*.py" -v` passed after the
+  cleanup changes
+- `git diff --check` passed without diff-format errors
+- The refreshed packaging flow produces:
+  - `dist\bin\Video-Mangler.exe`
+  - `dist\bin\Audio-Mangler.exe`
+  - `dist\release\Video-Mangler-v0.7.0.zip`
+  - `dist\release\Audio-Mangler-v0.7.0.zip`
+
+Non-blocking follow-ups
+-----------------------
+
+- benchmark scoring/reporting integration
+- broader target-language support
+- broader glossary-profile support
+- later GPU benchmarking
+- optional compatibility validation on additional machines when useful

@@ -3,12 +3,11 @@ param(
     [string]$OutputRoot,
 
     [Parameter(Mandatory = $false)]
-    [string]$VideoPath,
+    [string]$AudioPath,
 
     [string]$PackageFolderName,
 
-    [double]$FrameIntervalSeconds = 0.5,
-    [int]$MinimumFrameCount = 3
+    [int]$MinimumSegmentCount = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +21,7 @@ function Get-LatestSmokeOutputFolder {
         }
 
         $latestSmoke = Get-ChildItem -LiteralPath $root -Directory |
-            Where-Object { $_.Name -like 'smoke-*' } |
+            Where-Object { $_.Name -like 'audio-smoke-*' } |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
@@ -74,17 +73,8 @@ function Get-PackageDirectories {
 
     return @(Get-ChildItem -LiteralPath $RootPath -Directory | Where-Object {
         (Test-Path -LiteralPath (Join-Path $_.FullName "README_FOR_CODEX.txt")) -or
-        (Test-Path -LiteralPath (Join-Path $_.FullName "frame_index.csv"))
+        (Test-Path -LiteralPath (Join-Path $_.FullName "segment_index.csv"))
     } | Sort-Object Name)
-}
-
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
-$defaultSmokeRoot = Join-Path $repoRoot "test-output"
-
-function Get-FrameIntervalLabel {
-    param([double]$Value)
-
-    return $Value.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture) -replace '\.', 'p'
 }
 
 function Get-SafeFolderName {
@@ -175,33 +165,23 @@ function Test-IsHybridSummary {
     return ($processingMode -like "Hybrid*") -or ($translationPath -like "*Hybrid Accuracy*")
 }
 
-function Test-VideoHasAudio {
-    param([string]$VideoPath)
-
-    $ffprobeExe = "C:\APPS\ffmpeg\bin\ffprobe.exe"
-    if (-not (Test-Path -LiteralPath $ffprobeExe)) {
-        return $true
-    }
-
-    $output = & $ffprobeExe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 $VideoPath
-    return ($output -match 'audio')
-}
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath
+$defaultSmokeRoot = Join-Path $repoRoot "test-output"
 
 $OutputRoot = Resolve-OutputRootPath -Path $OutputRoot -DefaultSmokeRoot $defaultSmokeRoot
 
 if (-not (Test-Path -LiteralPath $OutputRoot)) {
-    throw "Output root not found: $OutputRoot. Run .\AREA51\Run-SmokeTest.ps1 first, or pass -OutputRoot to an existing package output folder."
+    throw "Output root not found: $OutputRoot. Run .\tools\smoke\Run-AudioSmokeTest.ps1 first, or pass -OutputRoot to an existing audio package output folder."
 }
 
-$videoItem = $null
 $packageDirectories = Get-PackageDirectories -RootPath $OutputRoot
-if (-not [string]::IsNullOrWhiteSpace($VideoPath)) {
-    if (-not (Test-Path -LiteralPath $VideoPath)) {
-        throw "Video path not found: $VideoPath"
+if (-not [string]::IsNullOrWhiteSpace($AudioPath)) {
+    if (-not (Test-Path -LiteralPath $AudioPath)) {
+        throw "Audio path not found: $AudioPath"
     }
 
-    $videoItem = Get-Item -LiteralPath $VideoPath
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($videoItem.Name)
+    $audioItem = Get-Item -LiteralPath $AudioPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($audioItem.Name)
     $packageFolderName = Get-SafeFolderName -Name $baseName
 }
 elseif (-not [string]::IsNullOrWhiteSpace($PackageFolderName)) {
@@ -218,34 +198,33 @@ else {
     throw "No package folders found under: $OutputRoot"
 }
 
-$framesFolderName = "frames_{0}s" -f (Get-FrameIntervalLabel -Value $FrameIntervalSeconds)
 $packageRoot = Join-Path $OutputRoot $packageFolderName
-
 if (-not (Test-Path -LiteralPath $packageRoot)) {
     $choices = $packageDirectories | ForEach-Object { $_.Name }
     if ($choices.Count -gt 0) {
         throw ("Package folder not found: {0}. Available package folders: {1}" -f $packageRoot, ($choices -join ", "))
     }
+
     throw "Package folder not found: $packageRoot"
 }
 
-$proxyPath = Join-Path $packageRoot "proxy\review_proxy_1280.mp4"
-$audioPath = Join-Path $packageRoot "audio\audio.mp3"
-$transcriptSrt = Join-Path $packageRoot "transcript\transcript.srt"
-$transcriptJson = Join-Path $packageRoot "transcript\transcript.json"
-$transcriptText = Join-Path $packageRoot "transcript\transcript.txt"
-$frameIndexCsv = Join-Path $packageRoot "frame_index.csv"
+$reviewAudio = Join-Path $packageRoot "audio\review_audio.mp3"
+$transcriptSrt = Join-Path $packageRoot "transcript\transcript_original.srt"
+$transcriptJson = Join-Path $packageRoot "transcript\transcript_original.json"
+$transcriptText = Join-Path $packageRoot "transcript\transcript_original.txt"
+$segmentIndexCsv = Join-Path $packageRoot "segment_index.csv"
 $readmePath = Join-Path $packageRoot "README_FOR_CODEX.txt"
 $logPath = Join-Path $packageRoot "script_run.log"
-$framesFolder = Join-Path $packageRoot $framesFolderName
-$translationsFolder = Join-Path $packageRoot "translations"
-$commentsFolder = Join-Path $packageRoot "comments"
 $summaryCsv = Join-Path $OutputRoot "PROCESSING_SUMMARY.csv"
 $masterReadme = Join-Path $OutputRoot "CODEX_MASTER_README.txt"
-$hasAudio = if ($videoItem) { Test-VideoHasAudio -VideoPath $videoItem.FullName } else { $true }
+$translationsFolder = Join-Path $packageRoot "translations"
+$commentsFolder = Join-Path $packageRoot "comments"
 
-Assert-File -Path $proxyPath -Label "proxy video"
-Assert-File -Path $frameIndexCsv -Label "frame index csv"
+Assert-File -Path $reviewAudio -Label "review audio"
+Assert-File -Path $transcriptSrt -Label "transcript srt"
+Assert-File -Path $transcriptJson -Label "transcript json"
+Assert-File -Path $transcriptText -Label "transcript txt"
+Assert-File -Path $segmentIndexCsv -Label "segment index csv"
 Assert-File -Path $readmePath -Label "readme"
 Assert-File -Path $logPath -Label "script log"
 Assert-File -Path $summaryCsv -Label "processing summary"
@@ -258,44 +237,6 @@ if (-not $summaryRow) {
 
 $null = Assert-ColumnValue -Row $summaryRow -ColumnName "package_status" -Label "package status"
 $isHybridPackage = Test-IsHybridSummary -Row $summaryRow
-
-if ($hasAudio) {
-    Assert-File -Path $audioPath -Label "audio mp3"
-    Assert-File -Path $transcriptSrt -Label "transcript srt"
-    Assert-File -Path $transcriptJson -Label "transcript json"
-    Assert-File -Path $transcriptText -Label "transcript txt"
-}
-
-if (Test-Path -LiteralPath $translationsFolder) {
-    foreach ($translationFolder in @(Get-ChildItem -LiteralPath $translationsFolder -Directory)) {
-        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.srt") -Label ("translation srt ({0})" -f $translationFolder.Name)
-        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.json") -Label ("translation json ({0})" -f $translationFolder.Name)
-        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.txt") -Label ("translation txt ({0})" -f $translationFolder.Name)
-        if ($isHybridPackage) {
-            Assert-File -Path (Join-Path $translationFolder.FullName "validation_report.json") -Label ("translation validation report ({0})" -f $translationFolder.Name)
-        }
-    }
-}
-
-if (Test-Path -LiteralPath $commentsFolder) {
-    Assert-File -Path (Join-Path $commentsFolder "comments.txt") -Label "comments txt"
-    Assert-File -Path (Join-Path $commentsFolder "comments.json") -Label "comments json"
-}
-
-if (-not (Test-Path -LiteralPath $framesFolder)) {
-    throw "Frames folder not found: $framesFolder"
-}
-
-$frames = @(Get-ChildItem -LiteralPath $framesFolder -Filter "frame_*.jpg" -File | Sort-Object Name)
-if ($frames.Count -lt $MinimumFrameCount) {
-    throw "Expected at least $MinimumFrameCount extracted frames in $framesFolder but found $($frames.Count)."
-}
-
-foreach ($frame in $frames | Select-Object -First 3) {
-    if ($frame.Length -le 0) {
-        throw "Frame file is empty: $($frame.FullName)"
-    }
-}
 
 if ($isHybridPackage) {
     $validationReportFromSummary = Assert-ColumnValue -Row $summaryRow -ColumnName "translation_validation_report" -Label "translation validation report"
@@ -326,7 +267,28 @@ if ($isHybridPackage) {
     }
 }
 
-Write-Host "PASS validation completed." -ForegroundColor Green
-Write-Host ("Output root:  {0}" -f $OutputRoot)
-Write-Host ("Package root: {0}" -f $packageRoot)
-Write-Host ("Frames found: {0}" -f $frames.Count)
+$segmentRows = @(Import-Csv -LiteralPath $segmentIndexCsv)
+if ($segmentRows.Count -lt $MinimumSegmentCount) {
+    throw "Expected at least $MinimumSegmentCount segment rows in $segmentIndexCsv but found $($segmentRows.Count)."
+}
+
+if (Test-Path -LiteralPath $translationsFolder) {
+    foreach ($translationFolder in @(Get-ChildItem -LiteralPath $translationsFolder -Directory)) {
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.srt") -Label ("translation srt ({0})" -f $translationFolder.Name)
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.json") -Label ("translation json ({0})" -f $translationFolder.Name)
+        Assert-File -Path (Join-Path $translationFolder.FullName "transcript.txt") -Label ("translation txt ({0})" -f $translationFolder.Name)
+        if ($isHybridPackage) {
+            Assert-File -Path (Join-Path $translationFolder.FullName "validation_report.json") -Label ("translation validation report ({0})" -f $translationFolder.Name)
+        }
+    }
+}
+
+if (Test-Path -LiteralPath $commentsFolder) {
+    Assert-File -Path (Join-Path $commentsFolder "comments.txt") -Label "comments txt"
+    Assert-File -Path (Join-Path $commentsFolder "comments.json") -Label "comments json"
+}
+
+Write-Host "PASS audio validation completed." -ForegroundColor Green
+Write-Host ("Output root:   {0}" -f $OutputRoot)
+Write-Host ("Package root:  {0}" -f $packageRoot)
+Write-Host ("Segments found:{0,5}" -f $segmentRows.Count)

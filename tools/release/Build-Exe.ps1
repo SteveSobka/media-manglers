@@ -6,8 +6,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath
 $distFolder = Join-Path $repoRoot "dist"
+$binRoot = Join-Path $distFolder "bin"
 $releaseRoot = Join-Path $distFolder "release"
 $stagingRoot = Join-Path $distFolder "staging"
 $archiveRoot = Join-Path $distFolder "archive"
@@ -191,8 +192,8 @@ $appConfigs = @(
     [PSCustomObject]@{
         Key             = "Video"
         ScriptFile      = "Video Mangler.ps1"
-        LocalExeName    = "Video Mangler.exe"
-        ReleaseExeName  = "Video-Mangler.exe"
+        PackageExeName  = "Video Mangler.exe"
+        BinExeName      = "Video-Mangler.exe"
         ReleaseZipName  = "Video-Mangler-v{0}.zip" -f $appVersion
         ReleaseFolder   = "Video-Mangler-v{0}" -f $appVersion
         IconFile        = "assets\Video Mangler.ico"
@@ -203,8 +204,8 @@ $appConfigs = @(
     [PSCustomObject]@{
         Key             = "Audio"
         ScriptFile      = "Audio Mangler.ps1"
-        LocalExeName    = "Audio Mangler.exe"
-        ReleaseExeName  = "Audio-Mangler.exe"
+        PackageExeName  = "Audio Mangler.exe"
+        BinExeName      = "Audio-Mangler.exe"
         ReleaseZipName  = "Audio-Mangler-v{0}.zip" -f $appVersion
         ReleaseFolder   = "Audio-Mangler-v{0}" -f $appVersion
         IconFile        = "assets\Audio Mangler.ico"
@@ -226,14 +227,13 @@ if ($selectedApps.Count -eq 0) {
 }
 
 New-Item -ItemType Directory -Path $distFolder -Force | Out-Null
+New-Item -ItemType Directory -Path $binRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
 Import-Module $modulePath -Force
 
 $currentReleaseAssetNames = @(
     $appConfigs | ForEach-Object { $_.ReleaseZipName }
-) + @(
-    $appConfigs | ForEach-Object { $_.ReleaseExeName }
 )
 $archiveRunRoot = Join-Path $releaseArchiveRoot ("cleanup-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8)))
 $archivedReleaseItems = New-Object System.Collections.Generic.List[string]
@@ -257,10 +257,9 @@ if ($archivedReleaseItems.Count -gt 0) {
 
 foreach ($appConfig in $selectedApps) {
     $inputFile = Join-Path $repoRoot $appConfig.ScriptFile
-    $outputFile = Join-Path $distFolder $appConfig.LocalExeName
+    $outputFile = Join-Path $binRoot $appConfig.BinExeName
     $iconFile = Join-Path $repoRoot $appConfig.IconFile
     $stagingFolder = Join-Path $stagingRoot $appConfig.ReleaseFolder
-    $releaseExe = Join-Path $releaseRoot $appConfig.ReleaseExeName
     $releaseZip = Join-Path $releaseRoot $appConfig.ReleaseZipName
     $appFolder = Join-Path $stagingFolder "app"
     $docsFolder = Join-Path $stagingFolder "docs"
@@ -290,7 +289,6 @@ foreach ($appConfig in $selectedApps) {
         -version $appVersion
 
     Remove-PathIfPresent -Path $stagingFolder
-    Remove-PathIfPresent -Path $releaseExe
     Remove-PathIfPresent -Path $releaseZip
 
     try {
@@ -298,8 +296,7 @@ foreach ($appConfig in $selectedApps) {
         Ensure-Directory $docsFolder
         Ensure-Directory $releaseRoot
 
-        Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.LocalExeName) -Force
-        Copy-Item -LiteralPath $outputFile -Destination $releaseExe -Force
+        Copy-Item -LiteralPath $outputFile -Destination (Join-Path $appFolder $appConfig.PackageExeName) -Force
         Copy-PythonCoreSidecar -PythonCoreSourceRoot $pythonCoreSourceRoot -PyprojectFile $pyprojectFile -DestinationRoot $appFolder
         Copy-Item -LiteralPath $readmeTextSource -Destination (Join-Path $docsFolder "README.txt") -Force
         Copy-Item -LiteralPath $appGuideSource -Destination (Join-Path $docsFolder $appConfig.AppGuide) -Force
@@ -317,7 +314,7 @@ foreach ($appConfig in $selectedApps) {
     }
 
     Write-Host ("Built {0}: {1}" -f $appConfig.ProductName, $outputFile) -ForegroundColor Green
-    Write-Host ("Release exe: {0}" -f $releaseExe) -ForegroundColor Green
+    Write-Host ("Loose exe:   {0}" -f $outputFile) -ForegroundColor Green
     Write-Host ("Release zip: {0}" -f $releaseZip) -ForegroundColor Green
     Write-Host "Python core sidecar: included in the release zip app folder" -ForegroundColor Green
     if ($KeepPackageStaging) {

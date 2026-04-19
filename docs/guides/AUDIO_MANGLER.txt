@@ -310,15 +310,15 @@ Validation
 
 Smoke test:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1
 
 Translation smoke test:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1 -TranslateTo en -ProcessingMode Local
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1 -TranslateTo en -ProcessingMode Local
 
 Validator:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-AudioManglerPackage.ps1
 
 Run-AudioSmokeTest.ps1 now prefers short local fixtures under AREA51\TestData
 before it falls back to test_audio or the older remote sample URLs. The fast

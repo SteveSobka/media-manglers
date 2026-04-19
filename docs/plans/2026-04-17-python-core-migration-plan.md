@@ -31,10 +31,10 @@
 ## Current Findings
 
 - `Video Mangler.ps1` and `Audio Mangler.ps1` each expose `129` functions, with `118` shared by name and purpose.
-- The current Windows release path is still PowerShell-first: `AREA51/Build-Exe.ps1` builds the wrappers with `ps2exe` and packages docs plus release zips.
+- The current Windows release path is still PowerShell-first: `tools/release/Build-Exe.ps1` builds the wrappers with `ps2exe` and packages docs plus release zips.
 - The repo-governance mismatch is now resolved by a repo-safe `governance/LATEST_EVIDENCE_POINTER.md` that records where local evidence lives without redefining repo truth.
 - Broader artifact parity now lives in:
-  - `AREA51/Run-ArtifactParityChecks.ps1`
+  - `tools/validation/Run-ArtifactParityChecks.ps1`
   - `tests/fixtures/parity/local_artifact_hashes.json`
 - `README_FOR_CODEX.txt` is now generated through the tracked `media_manglers write-package-readme` command in both wrappers, while preserving the existing PowerShell fallback path.
 - `segment_index.csv` cannot use a fixed-content hash reliably because it reflects live Whisper transcript output, so the parity harness validates schema plus transcript-row consistency for that artifact instead of pinning one transcript text snapshot.
@@ -87,7 +87,7 @@
   - the PowerShell wrappers continue to fall back to the legacy inline helper path when that sidecar is absent
   - standalone wrapper EXEs therefore remain compatible during the transition instead of being forced onto the new sidecar immediately
 - Validation completed in this pass:
-  - `AREA51\Build-Exe.ps1 -App All` passed
+  - `tools\release\Build-Exe.ps1 -App All` passed
   - both release ZIPs contain the tracked `python-core` files and exclude `__pycache__` / `.pyc`
   - extracted release-zip runs for both packaged EXEs completed Local smoke/validator passes while invoking `python -m media_manglers`
 
@@ -99,7 +99,7 @@
   - `README_FOR_CODEX.txt` generation now runs through `media_manglers write-package-readme`
   - wrapper UX, filenames, package layout, and release behavior stayed unchanged
 - Current gate for any next Phase 4 pass:
-  - keep `AREA51/Run-ArtifactParityChecks.ps1` green for both source-wrapper and extracted release-zip runs
+  - keep `tools/validation/Run-ArtifactParityChecks.ps1` green for both source-wrapper and extracted release-zip runs
   - move only one additional non-interactive step at a time
   - stop if transcript-derived parity becomes unclear or release behavior changes
 
@@ -107,13 +107,13 @@
 
 - End every phase with the most relevant parse/tests/smoke/build checks available for that phase.
 - Keep the PowerShell validators as acceptance checks wherever possible:
-  - `AREA51\Validate-VideoToCodexPackage.ps1`
-  - `AREA51\Validate-AudioManglerPackage.ps1`
+  - `tools\validation\Validate-VideoToCodexPackage.ps1`
+  - `tools\validation\Validate-AudioManglerPackage.ps1`
 - Current gate-closing validation now also includes:
   - `python -m unittest discover -s tests -p "test_*.py"`
-  - `AREA51\Run-ArtifactParityChecks.ps1 -Surface Source`
-  - `AREA51\Build-Exe.ps1 -App All`
-  - `AREA51\Run-ArtifactParityChecks.ps1 -Surface Release -SkipBuild`
+  - `tools\validation\Run-ArtifactParityChecks.ps1 -Surface Source`
+  - `tools\release\Build-Exe.ps1 -App All`
+  - `tools\validation\Run-ArtifactParityChecks.ps1 -Surface Release -SkipBuild`
 - Do not claim parity without evidence from current scripts, validators, or build outputs.
 
 ## Current Risks

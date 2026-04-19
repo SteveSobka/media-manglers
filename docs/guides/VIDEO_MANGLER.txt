@@ -334,19 +334,19 @@ Validation
 
 Smoke test:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-SmokeTest.ps1
 
 Translation smoke test:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1 -TranslateTo en -ProcessingMode Local
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-SmokeTest.ps1 -TranslateTo en -ProcessingMode Local
 
 Validator:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-VideoToCodexPackage.ps1 -FrameIntervalSeconds 0.5
 
 Run-SmokeTest.ps1 now prefers the short local fixture
-AREA51\TestData\1_min_test_Video.mp4 before it falls back to test_media or the
-older remote sample URL.
+AREA51\TestData\1_min_test_Video.mp4 when that local-only helper file exists,
+before it falls back to test_media or the older remote sample URL.
 
 Notes
 -----

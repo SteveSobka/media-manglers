@@ -4,6 +4,7 @@ test-output/
 test_media/
 /*.mkv
 dist/release/
+dist/bin/
 dist/archive/
 dist/staging/
 AREA51/Test-Video/

@@ -80,19 +80,18 @@ Most people should start with the latest GitHub release:
 
 Release assets usually include:
 
-- `Video-Mangler.exe`
-- `Audio-Mangler.exe`
-- versioned zip bundles with the app, docs, release notes, version file, license, and notices
+- `Video-Mangler-vX.Y.Z.zip`
+- `Audio-Mangler-vX.Y.Z.zip`
 
 What to pick:
 
-- `*.exe`: just the app
-- `*.zip`: the app plus the plain-text guides, release notes, version file, license, notices, and the tracked `python-core` sidecar used by the migration path
+- `*-vX.Y.Z.zip`: the recommended operator handoff. Each zip includes the app, plain-text guides, release notes, version file, license, notices, and the tracked `python-core` sidecar used by the migration path.
+- loose `*.exe`: useful when you build locally and just want a quick executable check. Local build outputs live under `dist\bin\`.
 
 Current migration note:
 
-- The release zips now carry `python-core\src\media_manglers` beside the app so the tracked Python helper path has a stable packaged home during the transition.
-- Standalone `.exe` assets still keep the current compatibility path because the PowerShell wrapper can fall back to the legacy inline helper logic when that sidecar is not present.
+- The release zips carry `python-core\src\media_manglers` beside the app so the tracked Python helper path has a stable packaged home during the transition.
+- `Audio Mangler.ps1` and `Video Mangler.ps1` stay at repo root on purpose because they are the operator-facing source entry points and the inputs to the Windows packaging flow.
 
 ## Setup Notes
 
@@ -118,8 +117,6 @@ That difference matters. Public AI mode does not behave the same way as Private 
 
 Hybrid Accuracy is currently an initial v1 path. Its first benchmark target is German source media, it supports source-language to English only for now, and broader target-language support is a future follow-up.
 
-Current PASS 2 note:
-
 - Hybrid now keeps the authoritative source-language transcript in `transcript\` and writes the English text-translation validation report to `translations\en\validation_report.json`.
 - Hybrid text translation defaults to `gpt-4o-mini-2024-07-18` when you do not pass `-OpenAiModel`, and the per-run report records both the requested model and the used model.
 
@@ -134,7 +131,7 @@ Interactive translation now asks `Translate the transcript into another language
 
 Local Whisper no longer uses one fixed wall-clock cutoff for every run. Before a Local Whisper run starts, the apps now log the source duration, selected model, whether the Local path looks CPU-only or GPU-capable, the estimated transcription duration, the resolved adaptive timeout, and the separate stall watchdog. Very long interactive Local runs offer a simple continue/switch-smaller/cancel prompt, while `-NoPrompt` runs stay non-interactive. `-WhisperTimeoutSeconds` remains available as an explicit manual override when you need one.
 
-Before a long Local Whisper run, you can now call `-WhisperHealthCheck` in either app to print a short runtime-health summary and exit. That check reports the selected Python interpreter, torch version, torch CUDA version, `cuda_available`, any detected GPU device names, the selected Local Whisper device, and a plain-English classification of the current machine as CPU-only, GPU-capable, or misconfigured/uncertain for Local Whisper. On the current CPU-only developer validation box used on 2026-04-18, the health check reports CPU-only for Local Whisper; real CUDA sign-off still needs a separate GPU-capable machine.
+Before a long Local Whisper run, you can now call `-WhisperHealthCheck` in either app to print a short runtime-health summary and exit. That check reports the selected Python interpreter, torch version, torch CUDA version, `cuda_available`, any detected GPU device names, the selected Local Whisper device, and a plain-English classification of the current machine as CPU-only, GPU-capable, or misconfigured/uncertain for Local Whisper. On CPU-only boxes the health check reports CPU-only for Local Whisper; real CUDA sign-off still needs a separate GPU-capable machine.
 
 The apps explain exactly what is missing. For local translation dependencies, they use a prompt-install flow: they tell you what is missing, what it unlocks, and let you install, skip, or cancel. They do not silently install things or silently jump to OpenAI.
 
@@ -422,24 +419,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.6.1 release notes](docs/release-notes/RELEASE_NOTES_v0.6.1.txt)
+- [v0.7.0 release notes](docs/release-notes/RELEASE_NOTES_v0.7.0.txt)
+
+## Repo Layout
+
+- `Audio Mangler.ps1` and `Video Mangler.ps1`: operator-facing wrappers and the Windows packaging entry points, kept at repo root on purpose.
+- `glossaries/`: tracked runtime glossary assets. Hybrid German-to-English runs use `de-en-sim-racing.json`.
+- `tests/`: tracked unit and regression coverage.
+- `test-output/`: generated local output from smoke runs, benchmarks, and validation passes. It is intentionally ignored.
+- `tools/release/`: tracked release packaging scripts.
+- `tools/smoke/`: tracked smoke helpers for bounded local validation.
+- `tools/validation/`: tracked package validators and release/source parity checks.
+- `AREA51/`: local-only scratch space and optional private fixtures. It is not part of the tracked product surface.
 
 ## Testing
 
-The smoke scripts now prefer short local fixtures under `AREA51\TestData` before they fall back to `test_media`, `test_audio`, or the older remote sample URLs. The standard fast path is the local `1_min_test_Video.mp4`, and audio translation-to-English smoke coverage also prefers a short local foreign-language clip when one is present.
+The smoke scripts live under `tools\smoke\` and the validators live under `tools\validation\`. When a local fixture exists under `AREA51\TestData`, the smoke helpers prefer that short local file first. If not, they fall back to `test_media`, `test_audio`, or the older remote sample URLs.
 
 Video:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-SmokeTest.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-VideoToCodexPackage.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-SmokeTest.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-VideoToCodexPackage.ps1
 ```
 
 Audio:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Run-AudioSmokeTest.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\AREA51\Validate-AudioManglerPackage.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-AudioManglerPackage.ps1
 ```
 
 ## Benchmark Snapshot

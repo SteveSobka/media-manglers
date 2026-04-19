@@ -1,7 +1,7 @@
 param(
-    [string]$TestMediaFolder = (Join-Path $PSScriptRoot "..\test_media"),
+    [string]$TestMediaFolder = (Join-Path $PSScriptRoot "..\..\test_media"),
     [string]$VideoPath,
-    [string]$PreferredShortFixturePath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
+    [string]$PreferredShortFixturePath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
     [string]$RemoteSampleUrl = "https://svs.gsfc.nasa.gov/vis/a010000/a014400/a014429/14429_NASA_Balloon_Program_YT.webm",
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base",
@@ -40,9 +40,9 @@ function Get-RepresentativeSmokeTestMedia {
     return $Files | Sort-Object Length | Select-Object -First 1
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath
 $videoScript = Join-Path $repoRoot "Video Mangler.ps1"
-$validator = Join-Path $PSScriptRoot "Validate-VideoToCodexPackage.ps1"
+$validator = Join-Path $repoRoot "tools\validation\Validate-VideoToCodexPackage.ps1"
 $runId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
 $outputRoot = Join-Path $repoRoot ("test-output\smoke-{0}" -f $runId)
 $usingRemoteSample = $false

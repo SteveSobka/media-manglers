@@ -1,8 +1,8 @@
 param(
-    [string]$TestAudioFolder = (Join-Path $PSScriptRoot "..\test_audio"),
+    [string]$TestAudioFolder = (Join-Path $PSScriptRoot "..\..\test_audio"),
     [string]$AudioPath,
-    [string]$PreferredShortAudioPath = (Join-Path $PSScriptRoot "TestData\1_min_test_Video.mp4"),
-    [string]$PreferredShortForeignAudioPath = (Join-Path $PSScriptRoot "TestData\German_audio_short_45s.mp3"),
+    [string]$PreferredShortAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
+    [string]$PreferredShortForeignAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\German_audio_short_45s.mp3"),
     [string]$RemoteSampleUrl = "https://archive.org/download/gettysburg_johng_librivox/gettysburg_address.mp3",
     [string]$RemoteSampleFallbackUrl = "https://librivox.org/the-gettysburg-address-by-abraham-lincoln-version-2",
     [string]$TranslationSampleUrl = "https://ia801802.us.archive.org/11/items/multilingual028_2103_librivox/msw028_10_maravigliosamente_jacopodalentini_le_128kb.mp3",
@@ -109,9 +109,9 @@ function Invoke-AudioPackaging {
     return [int]$commandExitCode
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).ProviderPath
 $audioScript = Join-Path $repoRoot "Audio Mangler.ps1"
-$validator = Join-Path $PSScriptRoot "Validate-AudioManglerPackage.ps1"
+$validator = Join-Path $repoRoot "tools\validation\Validate-AudioManglerPackage.ps1"
 $runId = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
 $outputRoot = Join-Path $repoRoot ("test-output\audio-smoke-{0}" -f $runId)
 $usingRemoteSample = $false
