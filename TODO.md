@@ -12,10 +12,6 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #24: Investigate v0.7.2 packaged Video Mangler stall and harden packaged validation watchdogs
-  Status: validated hotfix branch on Rig1; pending PR review/merge
-  Current note: Preserved workspace `C:\DATA\TEMP\CODEX\postrelease-v072-packaged-20260419-135152` shows the empty French post-release attempt never reached `_script_bootstrap.log` or `script_run.log`, while a separate preserved packaged rerun later the same day completed normally on the revoked French source. Current branch conclusion is that the opaque long wait was primarily a packaged-validation harness problem, not a reproducible approved-source app defect. The branch now adds tracked first-output/bootstrap watchdogs for packaged validation, updates the packaged validators to accept generic/no-profile Hybrid runs with blank `lane_id`, replaces the revoked French short source with `XRka52Y3kyA`, and validates the `v0.7.3` hotfix candidate on Rig1 without reintroducing DevBox CPU as a blocker.
-
 ## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
@@ -31,6 +27,10 @@ Rules:
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
 ## Recently Completed
+
+- [x] Issue #24: Investigate v0.7.2 packaged Video Mangler stall and harden packaged validation watchdogs
+  Status: merged to main, released as `v0.7.3`, and closed on 2026-04-19
+  Current note: PR `#25` merged the packaged-validation watchdog hotfix into `main`, and GitHub release `v0.7.3` is now the current release surface. The shipped validation tooling now enforces first-output/bootstrap deadlines plus bounded heartbeats/timeouts for packaged remote runs, the tracked package validators no longer reject intentional blank `lane_id` values in generic/no-profile Hybrid packages, and the revoked French short validation source was removed from tracked guidance in favor of `XRka52Y3kyA`. Rig1 remained the accepted validation surface for this hotfix, and DevBox CPU was explicitly not treated as a blocker.
 
 - [x] Issue #22: Improve Hybrid operator UX, optional term profiles, early standalone preflight, and playlist safety
   Status: merged to main, released as `v0.7.2`, and closed on 2026-04-19
