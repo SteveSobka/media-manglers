@@ -1,0 +1,51 @@
+Release Notes - v0.7.4
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.7.4
+
+What changed
+------------
+
+- Fixed the Hybrid benchmark defect where the Brooklands control could corrupt
+  the named entity `Brooklands` into `Brooklyn` in the affected English
+  translation lanes.
+- Passed benchmark manifest `expected_named_entities` hints into Hybrid runs so
+  focused benchmark evidence can enforce proper-noun preservation without
+  silently forcing a protected-terms profile on generic content.
+- Hardened Hybrid validation/retry so listed bad forms can trigger repair and
+  the final validation status now reflects the actual final validation result.
+- Added a focused Brooklands follow-up benchmark note that preserves the pilot
+  history while documenting the fix proof separately.
+
+Operator notes
+--------------
+
+- Start with the versioned ZIP bundle in `dist\release\`.
+- The translation-side Brooklands corruption is fixed for the validated Hybrid
+  benchmark lanes in this patch.
+- A separate source-transcript-side Brooklands recall weakness still remains as
+  a distinct follow-up and is not the same defect as the fixed Hybrid
+  translation issue.
+
+Validation and packaging
+------------------------
+
+- Rig1 is the accepted validation surface for this patch pass.
+- DevBox CPU validation is not a blocker for `v0.7.4`.
+- The expected validation set for this release is preserved focused rerun
+  evidence, benchmark report regeneration against the focused rerun root,
+  PowerShell parse checks, unit tests, `git diff --check`, and a fresh packaged
+  build from merged `main`.
+
+Non-blocking follow-ups
+-----------------------
+
+- investigate Brooklands source-transcript recall weakness in local benchmark
+  evidence
+- run the canonical long benchmark suite
+- run the technical terminology shadow benchmark set
+- investigate `hybrid-private-medium-gpt-5-mini` availability on Rig1
+- expand benchmark parity coverage to `Video Mangler`

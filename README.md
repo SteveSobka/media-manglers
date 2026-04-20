@@ -426,7 +426,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.3 release notes](docs/release-notes/RELEASE_NOTES_v0.7.3.txt)
+- [v0.7.4 release notes](docs/release-notes/RELEASE_NOTES_v0.7.4.txt)
 
 ## Repo Layout
 
