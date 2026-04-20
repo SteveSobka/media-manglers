@@ -31,7 +31,7 @@ class ReleaseGuidanceTests(unittest.TestCase):
     def test_current_version_has_matching_release_notes_and_readme_link(self) -> None:
         version = (self.repo_root / "VERSION").read_text(encoding="utf-8").strip()
 
-        self.assertEqual(version, "0.7.4")
+        self.assertEqual(version, "0.7.5")
         self.assertTrue(
             (self.repo_root / "docs" / "release-notes" / f"RELEASE_NOTES_v{version}.txt").exists()
         )

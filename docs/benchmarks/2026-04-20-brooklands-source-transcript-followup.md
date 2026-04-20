@@ -122,6 +122,20 @@ python .\tools\benchmarks\benchmark_report.py --run-root 'C:\DATA\TEMP\CODEX\mm-
     is not promoted here as a settled Brooklands-sensitive recommendation on
     Rig1
 
+Current reporting status on the follow-up branch:
+
+- regenerated summary output at
+  `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420\summary\`
+  now keeps the medium-lane Brooklands rows explicitly in the source-side bucket
+  instead of making them look like the old Hybrid translation defect came back
+- `local-medium-gpu` and `local-medium-cpu` now report
+  `named_entity_source_substitution_count=1`,
+  `named_entity_translation_substitution_count=0`,
+  `brooklands_source_variant_flag=True`, and
+  `brooklands_to_brooklyn_flag=False`
+- `local-large-gpu` stays a separate rejected/source-missing comparison case
+  instead of being mixed into the translation-side Brooklands defect history
+
 ## Interpretation
 
 - The remaining Brooklands warning is real, but it is a raw/source transcript

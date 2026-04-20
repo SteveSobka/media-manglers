@@ -110,7 +110,7 @@ The main operator choice is now `ProcessingMode`:
 
 Mode details:
 
-- `AI Private = OpenAI transcription + OpenAI translation`
+- `AI Private = OpenAI transcription + OpenAI text translation when translation is actually needed`
 - `AI Public = local transcription + OpenAI translation on the Public/shared project`
 - `Hybrid = local transcription + OpenAI text-only English translation`
 
@@ -118,6 +118,7 @@ That difference matters. Public AI mode does not behave the same way as Private 
 
 Hybrid Accuracy is currently an initial v1 path. Its first benchmark target is German source media, it supports source-language to English only for now, and broader target-language support is a future follow-up.
 
+- If the detected source language already matches the requested target language, the apps now copy the original transcript into `translations\<lang>\` and skip the OpenAI text-translation call. In `AI Private`, that still allows OpenAI transcription when the chosen mode requires it.
 - Hybrid now keeps the authoritative source-language transcript in `transcript\` and writes the English text-translation validation report to `translations\en\validation_report.json`.
 - Hybrid text translation defaults to `gpt-4o-mini-2024-07-18` when you do not pass `-OpenAiModel`, and the per-run report records both the requested model and the used model.
 
@@ -426,7 +427,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.4 release notes](docs/release-notes/RELEASE_NOTES_v0.7.4.txt)
+- [v0.7.5 release notes](docs/release-notes/RELEASE_NOTES_v0.7.5.txt)
 
 ## Repo Layout
 
