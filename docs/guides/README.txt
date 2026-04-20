@@ -269,7 +269,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.7.2.txt
+- ../release-notes/RELEASE_NOTES_v0.7.3.txt
 
 Build and test
 --------------
@@ -292,8 +292,8 @@ The build keeps the operator-facing layout simple:
 
 - dist\bin\Video-Mangler.exe
 - dist\bin\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.7.2.zip
-- dist\release\Audio-Mangler-v0.7.2.zip
+- dist\release\Video-Mangler-v0.7.3.zip
+- dist\release\Audio-Mangler-v0.7.3.zip
 
 Use the versioned ZIP in dist\release as the normal operator handoff. The
 loose EXEs in dist\bin are mainly for local build checks, quick launch tests,
@@ -327,9 +327,13 @@ Smoke tests:
 When local fixtures exist under AREA51\TestData, the smoke scripts prefer those
 short local files before they fall back to the approved bounded Doc66 remote
 set: English `1aA1WGON49E`, German `hNaUbuWL8MI` / `7_u8Qj78cA0`, French
-`APOqEiXEC4g`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian
+`XRka52Y3kyA`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian
 `Xe6AgUkZmog`, and Chinese `fJ7V53jFrVc`. AREA51 stays local-only; the tracked
 helper scripts now live under tools\.
+
+For extracted release-zip Hybrid validation with launch watchdogs:
+
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Run-PackagedVideoRemoteValidation.ps1 -WorkingRoot C:\DATA\TEMP\CODEX\pkg-video-check -InputUrl 'https://www.youtube.com/watch?v=hNaUbuWL8MI'
 
 License
 -------

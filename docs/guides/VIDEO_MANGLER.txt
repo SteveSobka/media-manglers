@@ -249,7 +249,7 @@ Approved bounded remote smoke video examples:
 
   https://www.youtube.com/watch?v=1aA1WGON49E
   https://www.youtube.com/watch?v=hNaUbuWL8MI
-  https://www.youtube.com/watch?v=APOqEiXEC4g
+  https://www.youtube.com/watch?v=XRka52Y3kyA
 
 Command-line summary
 --------------------
@@ -355,7 +355,7 @@ Example commands:
 
 - AI Private remote video run:
 
-  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=APOqEiXEC4g' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+  powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=XRka52Y3kyA' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 
 - AI Public run with an explicit approved translation model and comments:
 

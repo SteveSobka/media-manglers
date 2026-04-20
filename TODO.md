@@ -12,6 +12,10 @@ Rules:
 
 ## Active Workstreams
 
+- [ ] Issue #24: Investigate v0.7.2 packaged Video Mangler stall and harden packaged validation watchdogs
+  Status: validated hotfix branch on Rig1; pending PR review/merge
+  Current note: Preserved workspace `C:\DATA\TEMP\CODEX\postrelease-v072-packaged-20260419-135152` shows the empty French post-release attempt never reached `_script_bootstrap.log` or `script_run.log`, while a separate preserved packaged rerun later the same day completed normally on the revoked French source. Current branch conclusion is that the opaque long wait was primarily a packaged-validation harness problem, not a reproducible approved-source app defect. The branch now adds tracked first-output/bootstrap watchdogs for packaged validation, updates the packaged validators to accept generic/no-profile Hybrid runs with blank `lane_id`, replaces the revoked French short source with `XRka52Y3kyA`, and validates the `v0.7.3` hotfix candidate on Rig1 without reintroducing DevBox CPU as a blocker.
+
 ## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content

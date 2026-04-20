@@ -4,7 +4,7 @@ param(
     [string]$PreferredShortAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
     [string]$PreferredShortForeignAudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\German_audio_short_45s.mp3"),
     [string]$RemoteSampleUrl = "https://www.youtube.com/watch?v=1aA1WGON49E",
-    [string]$RemoteSampleFallbackUrl = "https://www.youtube.com/watch?v=APOqEiXEC4g",
+    [string]$RemoteSampleFallbackUrl = "https://www.youtube.com/watch?v=XRka52Y3kyA",
     [string]$TranslationSampleUrl = "https://www.youtube.com/watch?v=hNaUbuWL8MI",
     [string]$WhisperModel = "base",
     [int]$HeartbeatSeconds = 10,
