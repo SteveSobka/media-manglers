@@ -12,9 +12,9 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #28: Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
-  Status: fix validated on branch `wip/0.7.4-brooklands-hybrid-entity-fix-2026-04-20`; awaiting review/merge
-  Current note: The merged canonical-short pilot correctly surfaced translation-side `Brooklands -> Brooklyn` corruption on the Brooklands control in `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. The current issue-28 branch now passes benchmark manifest expected named-entity hints into Hybrid translation/repair validation, and the focused Brooklands rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-fix-20260420-2` preserves `Brooklands` correctly in all three previously corrupted Hybrid lanes. A separate source-transcript-side Brooklands recall warning still remains outside this fix.
+- [ ] Issue #34: Investigate Brooklands source-transcript recall weakness in local benchmark evidence
+  Status: open follow-up
+  Current note: PR `#33` fixed the translation-side `Brooklands -> Brooklyn` corruption in the affected Hybrid benchmark lanes, but the focused Brooklands rerun still scores a warning because the local/source transcript does not always literally preserve `Brooklands`. This is a separate transcription/benchmark-quality follow-up, not a reopening of the fixed Hybrid translation defect.
 
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up
@@ -46,11 +46,11 @@ Rules:
   Status: repo-only follow-up
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
-- [ ] Investigate Brooklands source-transcript named-entity recall in local benchmark lanes
-  Status: repo-only follow-up
-  Current note: The issue-28 branch fixes the Hybrid translation-side `Brooklands -> Brooklyn` corruption, but the focused rerun still scores a warning because the local Brooklands source transcript does not literally preserve `Brooklands` in all benchmark evidence. That is a separate transcription/benchmark-quality follow-up and should not be conflated with the fixed Hybrid translation defect.
-
 ## Recently Completed
+
+- [x] Issue #28: Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
+  Status: merged to main, released as `v0.7.4`, and closed on 2026-04-20
+  Current note: PR `#33` merged the focused benchmark fix into `main`, and GitHub release `v0.7.4` is now the current release surface. The Brooklands control no longer corrupts `Brooklands` into `Brooklyn` in the validated Hybrid benchmark lanes (`hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`). The branch also added tracked `v0.7.4` release notes plus a focused Brooklands follow-up benchmark note. A separate source-transcript-side Brooklands recall weakness remains tracked in issue `#34`, and DevBox CPU was explicitly not treated as a blocker for this patch.
 
 - [x] Issue #26: Add benchmark scoring and reporting integration
   Status: merged to main and closed on 2026-04-20
