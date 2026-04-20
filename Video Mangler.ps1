@@ -7,6 +7,8 @@ param(
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
     [string]$WhisperModel = "base.en",
+    [ValidateSet("Auto", "CPU", "GPU")]
+    [string]$WhisperDevice = "Auto",
     [string]$Language = "",
     [string]$TranslateTo = "",
     [ValidateSet("Local", "AI", "Hybrid")]
@@ -4188,6 +4190,63 @@ function New-ChatGptZipPackage {
     }
 }
 
+function Resolve-WhisperDevicePreference {
+    param(
+        [ValidateSet("Auto", "CPU", "GPU")]
+        [string]$RequestedDevice = "Auto",
+        [psobject]$WhisperProbe,
+        [bool]$RequiresLocalWhisper
+    )
+
+    $normalizedDevice = if ([string]::IsNullOrWhiteSpace($RequestedDevice)) {
+        "Auto"
+    }
+    else {
+        $RequestedDevice.Trim()
+    }
+
+    $gpuCapable = $false
+    if ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and $WhisperProbe.TorchImportOk -and $WhisperProbe.CudaAvailable) {
+        $gpuCapable = $true
+    }
+
+    if (-not $RequiresLocalWhisper) {
+        return [PSCustomObject]@{
+            RequestedDevice = $normalizedDevice
+            PreferGpu       = $false
+            SummaryLabel    = "not used in AI Private mode"
+        }
+    }
+
+    switch ($normalizedDevice) {
+        "Auto" {
+            return [PSCustomObject]@{
+                RequestedDevice = "Auto"
+                PreferGpu       = $gpuCapable
+                SummaryLabel    = if ($gpuCapable) { "Auto (GPU preferred with CPU fallback)" } else { "Auto (CPU fallback)" }
+            }
+        }
+        "CPU" {
+            return [PSCustomObject]@{
+                RequestedDevice = "CPU"
+                PreferGpu       = $false
+                SummaryLabel    = "CPU forced"
+            }
+        }
+        "GPU" {
+            if (-not $gpuCapable) {
+                throw "WhisperDevice GPU was requested, but the selected Local Whisper runtime is not GPU-capable on this machine."
+            }
+
+            return [PSCustomObject]@{
+                RequestedDevice = "GPU"
+                PreferGpu       = $true
+                SummaryLabel    = "GPU requested with CPU fallback"
+            }
+        }
+    }
+}
+
 function New-MasterReadme {
     param(
         [string]$MasterReadmePath,
@@ -7292,13 +7351,20 @@ function Add-SummaryRow {
         [string]$GlossaryPath = "",
         [string]$ProtectedTermsProfile = "",
         [string]$ProtectedTermsPath = "",
-        [string]$OpenAiTranslationSummary = ""
+        [string]$OpenAiTranslationSummary = "",
+        [double]$SourceDurationSeconds = 0,
+        [string]$WhisperRequestedDevice = "",
+        [string]$WhisperSelectedDevice = "",
+        [int]$WhisperDeviceSwitchCount = 0
     )
 
     $row = [PSCustomObject]@{
+        app_surface            = $script:AppName
+        app_version            = (Get-AppVersion)
         source_video           = $SourceVideo
         output_folder_name     = $OutputFolderName
         output_path            = $OutputPath
+        source_duration_seconds = [math]::Round([double]$SourceDurationSeconds, 3)
         frame_count            = $FrameCount
         frame_interval_seconds = $FrameIntervalSeconds
         frames_folder          = (Get-FramesFolderName -Value $FrameIntervalSeconds)
@@ -7348,6 +7414,9 @@ function Add-SummaryRow {
         protected_terms_profile = $ProtectedTermsProfile
         protected_terms_path   = $ProtectedTermsPath
         openai_translation_summary = $OpenAiTranslationSummary
+        whisper_requested_device = $WhisperRequestedDevice
+        whisper_selected_device = $WhisperSelectedDevice
+        whisper_device_switch_count = $WhisperDeviceSwitchCount
         comments_text          = $CommentsText
         comments_json          = $CommentsJson
         comments_summary       = $CommentsSummary
@@ -9700,6 +9769,7 @@ function Process-Video {
         -SourceVideo $videoItem.Name `
         -OutputFolderName $safeBaseName `
         -OutputPath $videoOutputRoot `
+        -SourceDurationSeconds $sourceDurationSeconds `
         -FrameCount $frameCount `
         -ProxyVideo $proxyVideo `
         -AudioFile $audioFile `
@@ -9721,6 +9791,9 @@ function Process-Video {
         -ProxyMode $proxyMode `
         -FrameMode $frameMode `
         -WhisperMode $whisperMode `
+        -WhisperRequestedDevice $(if ($transcriptResult) { $transcriptResult.RequestedDevice } else { "" }) `
+        -WhisperSelectedDevice $(if ($transcriptResult) { $transcriptResult.SelectedDevice } else { "" }) `
+        -WhisperDeviceSwitchCount $(if ($transcriptResult) { $transcriptResult.DeviceSwitchCount } else { 0 }) `
         -FrameIntervalSeconds $FrameIntervalSeconds `
         -PackageStatus $packageStatus `
         -TranslationStatus $translationStatusText `
@@ -10379,10 +10452,12 @@ if ($nvencSupported -and $cudaHwaccelSupported -and $nvidiaPresent) {
     $canUseFfmpegGpu = $true
 }
 
-$canUseWhisperGpu = $false
-if ($whisperProbe.WhisperImportOk -and $whisperProbe.TorchImportOk -and $whisperProbe.CudaAvailable) {
-    $canUseWhisperGpu = $true
-}
+$whisperDevicePreference = Resolve-WhisperDevicePreference `
+    -RequestedDevice $WhisperDevice `
+    -WhisperProbe $whisperProbe `
+    -RequiresLocalWhisper:$requiresLocalWhisper
+$canUseWhisperGpu = [bool]$whisperDevicePreference.PreferGpu
+$localWhisperPathSummary = [string]$whisperDevicePreference.SummaryLabel
 
 if (Test-ConsoleDebugMode) {
     Write-Host ""
@@ -10401,7 +10476,7 @@ if (Test-ConsoleDebugMode) {
     Write-Host ""
     Write-Host ("Proxy path selected:             {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }))
     Write-Host ("Frame extraction path selected:  {0}" -f $(if ($canUseFfmpegGpu) { "GPU preferred with CPU fallback" } else { "CPU" }))
-    Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
+    Write-Host ("Local Whisper path:             {0}" -f $localWhisperPathSummary)
     Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
     Write-Host ("Selected frame interval:         {0} seconds" -f $FrameIntervalSeconds)
     Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
@@ -10415,6 +10490,7 @@ if (Test-ConsoleDebugMode) {
     Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
     if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
         Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
+        Write-Host ("Local Whisper device request:   {0}" -f $WhisperDevice)
     }
     if ($ProcessingMode -eq "Hybrid") {
         Write-Host ("Protected terms profile:        {0}" -f $protectedTermsProfileSummary)
@@ -10441,7 +10517,7 @@ else {
     Write-Host ""
     Write-Host ("Run plan: {0} video item(s), mode {1}, output {2}" -f $videos.Count, $processingModeSummary, $OutputFolder) -ForegroundColor Cyan
     Write-Host ("Translations: {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" })) -ForegroundColor Cyan
-    Write-Host ("Video path: proxy/frame GPU preference {0}; Local Whisper {1}" -f $(if ($canUseFfmpegGpu) { "enabled with CPU fallback" } else { "off" }), $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" })) -ForegroundColor Cyan
+    Write-Host ("Video path: proxy/frame GPU preference {0}; Local Whisper {1}" -f $(if ($canUseFfmpegGpu) { "enabled with CPU fallback" } else { "off" }), $localWhisperPathSummary) -ForegroundColor Cyan
     if ($ProcessingMode -eq "Hybrid") {
         Write-Host ("Hybrid translation: text-only OpenAI via {0}" -f $OpenAiProject) -ForegroundColor Cyan
         Write-Host ("Protected terms: {0}" -f $protectedTermsProfileSummary) -ForegroundColor Cyan
