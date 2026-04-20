@@ -86,9 +86,15 @@ provider does not confirm it clearly.
 Mode behavior:
 
 - Local mode: local transcription plus local translation
-- AI Private: OpenAI transcription plus OpenAI translation
+- AI Private: OpenAI transcription plus OpenAI text translation when translation
+  is actually needed
 - AI Public: local transcription plus OpenAI translation on the Public/shared
   project
+
+If the detected source language already matches the requested target language,
+the apps now copy the original transcript into translations\<lang>\ and skip
+the OpenAI text-translation call. In AI Private, that still allows OpenAI
+transcription when the chosen mode requires it.
 
 Interactive Local runs now ask which Whisper model to use. The beginner-friendly
 default on Enter is medium, and the prompt shows small, medium, and large with
@@ -269,7 +275,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.7.4.txt
+- ../release-notes/RELEASE_NOTES_v0.7.5.txt
 
 Build and test
 --------------
@@ -292,8 +298,8 @@ The build keeps the operator-facing layout simple:
 
 - dist\bin\Video-Mangler.exe
 - dist\bin\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.7.4.zip
-- dist\release\Audio-Mangler-v0.7.4.zip
+- dist\release\Video-Mangler-v0.7.5.zip
+- dist\release\Audio-Mangler-v0.7.5.zip
 
 Use the versioned ZIP in dist\release as the normal operator handoff. The
 loose EXEs in dist\bin are mainly for local build checks, quick launch tests,

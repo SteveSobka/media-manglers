@@ -14,7 +14,11 @@ Rules:
 
 - [ ] Issue #34: Investigate Brooklands source-transcript recall weakness in local benchmark evidence
   Status: open follow-up
-  Current note: PR `#33` fixed the translation-side `Brooklands -> Brooklyn` corruption in the affected Hybrid benchmark lanes, but the focused Brooklands rerun still scores a warning because the local/source transcript does not always literally preserve `Brooklands`. This is a separate transcription/benchmark-quality follow-up, not a reopening of the fixed Hybrid translation defect.
+  Current note: PR `#33` fixed the translation-side `Brooklands -> Brooklyn` corruption in the affected Hybrid benchmark lanes, and the current issue-34 follow-up keeps that boundary intact. Preserved evidence plus the focused Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420` still show a real raw/source transcript substitution problem on the local medium lanes instead: `local-medium-gpu` preserved `Brooklyns`, and `local-medium-cpu` preserved `Brooklynz`, so the warning is source-side rather than a reopened Hybrid translation defect. The benchmark reporter now separates source-side substitution/missing counts from translation-side corruption, and the regenerated summary keeps the medium-lane rows at `warning` with `brooklands_source_variant_flag=True` while the `local-large-gpu` comparison remains a separate rejected/source-missing follow-up instead of a new translation regression.
+
+- [ ] Issue #36: Avoid unnecessary OpenAI translation cost for English-to-English AI/Hybrid runs
+  Status: open follow-up
+  Current note: Preserved package evidence from `C:\DATA\EVIDENCE\Project-PaceBoard-CDS\STATIC\MEDIA\iRacing\Bubba Teachs AI how to load iRacing and access basic controls` confirmed a real runtime bug on `main`: `AI Private` correctly used OpenAI `whisper-1` transcription, detected the source language as English, then still called OpenAI text translation via `gpt-5-mini-2025-08-07` for `en -> en`. The current branch fixes the language-code comparison in both wrappers so English-to-English now copies the original transcript into `translations\en\`, records `Original transcript copy (no OpenAI call)` in the package summary, keeps `AI Private` transcription behavior intact, and reports `estimated_openai_text_cost_usd = 0.000000` for the no-op text-translation path. Focused Rig1 proof run: `C:\DATA\TEMP\CODEX\mm-english-ai-noop-20260420-b`.
 
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up

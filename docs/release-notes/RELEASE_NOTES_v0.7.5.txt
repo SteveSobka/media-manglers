@@ -1,0 +1,56 @@
+Release Notes - v0.7.5
+
+Date: 2026-04-20
+
+Scope
+
+- repository/app version: 0.7.5
+- release type: focused runtime + benchmark-reporting follow-up
+- validation surface: Rig1
+
+What changed
+
+- Fixed an AI/Hybrid translation routing bug where detected English source could
+  still fall through into paid OpenAI text translation when the requested
+  target was also English.
+- English-to-English no-op translation now copies the original transcript into
+  `translations\en\` and skips the OpenAI text-translation call instead of
+  paraphrasing the transcript through a chat-completions model.
+- Preserved the existing operator intent boundary: `AI Private` can still use
+  OpenAI transcription when the chosen mode explicitly requires it.
+- Added clearer summary/report metadata for transcript-copy translation targets
+  so benchmark/reporting surfaces can distinguish skipped translation from paid
+  translation.
+- Carried forward the Brooklands source-transcript follow-up reporting
+  clarification so raw/source transcript substitution is kept separate from the
+  already-fixed translation-side `Brooklands -> Brooklyn` defect.
+
+Why this matters
+
+- Operators should not pay OpenAI text-translation cost for English-source to
+  English-target runs when no translation is actually needed.
+- Review packages and benchmark summaries now make it clearer when translation
+  was intentionally skipped and the original transcript was copied.
+- The remaining Brooklands warning is now explicitly a source-transcript recall
+  issue, not a regression of the v0.7.4 Hybrid translation fix.
+
+Validation focus
+
+- issue #34 preserved as the source-transcript-side Brooklands follow-up
+- new issue #36 tracks the unnecessary English-to-English OpenAI text
+  translation/cost bug
+- focused validation for this pass stays bounded to:
+  - Brooklands source-side evidence/report regeneration
+  - one bounded English AI Private no-op translation check
+- DevBox CPU validation is not a blocker for v0.7.5
+
+Known follow-ups after this patch
+
+- investigate Brooklands source-transcript recall weakness in local benchmark
+  evidence (#34)
+- run the canonical long benchmark suite (#29)
+- run the technical terminology shadow benchmark set (#30)
+- investigate `hybrid-private-medium-gpt-5-mini` availability on Rig1 Private
+  project (#31)
+- expand benchmark parity coverage to Video Mangler after the Audio-first
+  baseline stabilizes (#32)

@@ -1447,6 +1447,36 @@ function Get-PrimaryLanguageTag {
     return ($normalized -split '-')[0].ToLowerInvariant()
 }
 
+function Get-CanonicalLanguageCode {
+    param([string]$Language)
+
+    if ([string]::IsNullOrWhiteSpace($Language)) {
+        return ""
+    }
+
+    $normalized = $Language.Trim().ToLowerInvariant().Replace("_", "-")
+    switch ($normalized) {
+        "english" { return "en" }
+        "spanish" { return "es" }
+        "french" { return "fr" }
+        "german" { return "de" }
+        "italian" { return "it" }
+        "portuguese" { return "pt" }
+        "japanese" { return "ja" }
+        "korean" { return "ko" }
+        "chinese" { return "zh" }
+        "arabic" { return "ar" }
+        "russian" { return "ru" }
+        default {
+            if ($normalized -match '^[a-z]{2,3}(-[a-z0-9]+)?$') {
+                return Get-PrimaryLanguageTag -LanguageCode $normalized
+            }
+
+            return $normalized
+        }
+    }
+}
+
 function Get-RemoteAudioTrackFormatHints {
     param([psobject]$Format)
 
@@ -6709,7 +6739,10 @@ function Resolve-TranslationTargetProvider {
         [int]$HeartbeatSeconds = 10
     )
 
-    if ($TargetLanguage -eq $DetectedLanguage) {
+    $targetLanguageCode = Get-CanonicalLanguageCode -Language $TargetLanguage
+    $detectedLanguageCode = Get-CanonicalLanguageCode -Language $DetectedLanguage
+
+    if (-not [string]::IsNullOrWhiteSpace($targetLanguageCode) -and $targetLanguageCode -eq $detectedLanguageCode) {
         return [PSCustomObject]@{
             Action = "ready"
             Provider = "Original transcript copy"
@@ -9168,19 +9201,25 @@ function Process-Video {
                     Ensure-Directory $translationFolder
 
                     if ($providerUsed -eq "Original transcript copy") {
-                        if ($detectedLanguage -eq "en") {
-                            Write-OperatorNote "OpenAI Translation: not used for this file; source already English, original transcript copied" -Color DarkCyan
+                        $detectedLanguageCode = Get-CanonicalLanguageCode -Language $detectedLanguage
+                        $targetLanguageCode = Get-CanonicalLanguageCode -Language $targetLanguage
+                        $sourceDisplayCode = if (-not [string]::IsNullOrWhiteSpace($detectedLanguageCode)) { $detectedLanguageCode } else { $detectedLanguage }
+                        if ($detectedLanguageCode -eq "en") {
+                            $openAiTranslationNote = "OpenAI Translation: not used for this file; source already English, original transcript copied"
                         }
                         else {
-                            $sourceDisplayName = Get-LanguageDisplayName -Code $detectedLanguage
-                            Write-OperatorNote ("OpenAI Translation: not used for this file; target already matches the detected source language ({0}), original transcript copied" -f $sourceDisplayName) -Color DarkCyan
+                            $sourceDisplayName = Get-LanguageDisplayName -Code $sourceDisplayCode
+                            $openAiTranslationNote = ("OpenAI Translation: not used for this file; target already matches the detected source language ({0}), original transcript copied" -f $sourceDisplayName)
                         }
+
+                        Write-OperatorNote $openAiTranslationNote -Color DarkCyan
+                        [void]$openAiTranslationSummaryParts.Add($openAiTranslationNote)
                         $providerUsed = "Original transcript copy (no OpenAI call)"
                         $null = Write-TranscriptArtifactsFromSegments `
                             -OutputFolder $translationFolder `
                             -Segments $transcriptData.Segments `
-                            -Language $detectedLanguage `
-                            -SourceLanguage $detectedLanguage `
+                            -Language $(if (-not [string]::IsNullOrWhiteSpace($targetLanguageCode)) { $targetLanguageCode } else { $targetLanguage }) `
+                            -SourceLanguage $(if (-not [string]::IsNullOrWhiteSpace($detectedLanguageCode)) { $detectedLanguageCode } else { $detectedLanguage }) `
                             -Task "copy" `
                             -JsonName "transcript.json" `
                             -SrtName "transcript.srt" `
@@ -9669,11 +9708,15 @@ function Process-Video {
     else {
         $resolvedWhisperModel
     }
+    $usedCopyTranslation = $translationProviderDetails | Where-Object { $_ -like "*=Original transcript copy (no OpenAI call)" }
     $translationProviderNameForSummary = if ($hybridTranslationResult) {
         "Hybrid Accuracy text translation"
     }
     elseif ($translationUsedOpenAi) {
         "OpenAI text translation"
+    }
+    elseif (@($usedCopyTranslation).Count -gt 0) {
+        "Original transcript copy"
     }
     else {
         ""
@@ -9700,6 +9743,9 @@ function Process-Video {
     }
     $estimatedOpenAiTextCostForSummary = if ($hasEstimatedOpenAiTextCost) {
         ([double]$estimatedOpenAiTextCostValue).ToString("0.000000", [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    elseif (@($usedCopyTranslation).Count -gt 0) {
+        "0.000000"
     }
     else {
         ""

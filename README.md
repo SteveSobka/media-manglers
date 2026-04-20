@@ -110,7 +110,7 @@ The main operator choice is now `ProcessingMode`:
 
 Mode details:
 
-- `AI Private = OpenAI transcription + OpenAI translation`
+- `AI Private = OpenAI transcription + OpenAI text translation when translation is actually needed`
 - `AI Public = local transcription + OpenAI translation on the Public/shared project`
 - `Hybrid = local transcription + OpenAI text-only English translation`
 
@@ -118,6 +118,7 @@ That difference matters. Public AI mode does not behave the same way as Private 
 
 Hybrid Accuracy is currently an initial v1 path. Its first benchmark target is German source media, it supports source-language to English only for now, and broader target-language support is a future follow-up.
 
+- If the detected source language already matches the requested target language, the apps now copy the original transcript into `translations\<lang>\` and skip the OpenAI text-translation call. In `AI Private`, that still allows OpenAI transcription when the chosen mode requires it.
 - Hybrid now keeps the authoritative source-language transcript in `transcript\` and writes the English text-translation validation report to `translations\en\validation_report.json`.
 - Hybrid text translation defaults to `gpt-4o-mini-2024-07-18` when you do not pass `-OpenAiModel`, and the per-run report records both the requested model and the used model.
 
@@ -426,7 +427,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.4 release notes](docs/release-notes/RELEASE_NOTES_v0.7.4.txt)
+- [v0.7.5 release notes](docs/release-notes/RELEASE_NOTES_v0.7.5.txt)
 
 ## Repo Layout
 
@@ -472,6 +473,7 @@ Media Manglers now carries a tracked benchmark workflow instead of relying on on
 - Benchmark guide: [docs/benchmarks/README.txt](docs/benchmarks/README.txt)
 - Latest canonical short benchmark summary: [docs/benchmarks/2026-04-20-short-suite-pilot.md](docs/benchmarks/2026-04-20-short-suite-pilot.md)
 - Latest Brooklands defect follow-up: [docs/benchmarks/2026-04-20-brooklands-hybrid-followup.md](docs/benchmarks/2026-04-20-brooklands-hybrid-followup.md)
+- Latest Brooklands source-transcript follow-up: [docs/benchmarks/2026-04-20-brooklands-source-transcript-followup.md](docs/benchmarks/2026-04-20-brooklands-source-transcript-followup.md)
 - Canonical long suite: defined in [tools/benchmarks/manifests/canonical-long.json](tools/benchmarks/manifests/canonical-long.json)
 
 Current pilot guidance on Rig1:
@@ -483,7 +485,9 @@ Current pilot guidance on Rig1:
 Important current caveats:
 
 - The canonical short pilot intentionally preserves the original `Brooklands -> Brooklyn` Hybrid defect evidence, while the focused issue-28 follow-up tracks the branch-level fix proof separately.
-- The issue-28 fix removes the Hybrid translation-side Brooklands corruption in the focused rerun lanes, but benchmark scoring still shows a separate source-transcript Brooklands recall warning.
+- The issue-28 fix removes the Hybrid translation-side Brooklands corruption in the focused rerun lanes.
+- Issue #34 is a separate raw/source transcript problem. On Rig1, the focused Brooklands follow-up still shows source-side substitution on the local medium lanes (`Brooklyns` on GPU and `Brooklynz` on CPU in the preserved raw evidence). A direct `-Language de` probe did not lift the medium-lane recall.
+- The focused issue-34 comparison run also showed that `local-large-gpu` did not finish within the current adaptive runtime budget on this source, so it is not yet a settled Brooklands-sensitive recommendation on Rig1.
 - The canonical short pilot used `Audio Mangler` as the primary benchmark surface so transcript/translation quality stays readable instead of being dominated by video/frame overhead.
 - `hybrid-private-medium-gpt-5-mini` was attempted in the pilot but the current Private project on Rig1 could not use that model, so it remains unproven rather than silently treated as a winner.
 - Bounded benchmark passes use the approved Doc66 single-video motorsport/sim-racing set only. Playlists are not part of the recurring short-suite workflow.

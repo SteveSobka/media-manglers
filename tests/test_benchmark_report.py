@@ -43,8 +43,73 @@ class BenchmarkReportTests(unittest.TestCase):
         )
 
         self.assertTrue(result["brooklands_to_brooklyn_flag"])
+        self.assertFalse(result["brooklands_source_variant_flag"])
         self.assertEqual(result["named_entity_issue_count"], 1)
+        self.assertEqual(result["named_entity_source_substitution_count"], 0)
+        self.assertEqual(result["named_entity_translation_substitution_count"], 1)
+        self.assertEqual(result["named_entity_source_missing_count"], 0)
+        self.assertEqual(result["named_entity_translation_missing_count"], 0)
         self.assertEqual(result["checks"][0]["bad_form_matches"], ["Brooklyn"])
+        self.assertEqual(result["checks"][0]["translation_bad_form_matches"], ["Brooklyn"])
+        self.assertEqual(result["checks"][0]["source_bad_form_matches"], [])
+        self.assertEqual(result["checks"][0]["translation_issue"], "substituted variant in English translation")
+
+    def test_build_named_entity_checks_flags_brooklands_source_variant(self) -> None:
+        source_entry = {
+            "source_id": "de-brooklands",
+            "expected_named_entities": [
+                {
+                    "term": "Brooklands",
+                    "category": "track",
+                    "expected_in_source": True,
+                    "expected_in_translation": True,
+                    "bad_forms": ["Brooklyn", "Brooklyns"],
+                }
+            ],
+        }
+
+        result = benchmark_report.build_named_entity_checks(
+            source_entry,
+            source_text="Die erste Rennstrecke der Welt entstand in Brooklyns.",
+            translation_text="Brooklands was the first racetrack in the world.",
+        )
+
+        self.assertTrue(result["brooklands_source_variant_flag"])
+        self.assertFalse(result["brooklands_to_brooklyn_flag"])
+        self.assertEqual(result["named_entity_issue_count"], 1)
+        self.assertEqual(result["named_entity_source_substitution_count"], 1)
+        self.assertEqual(result["named_entity_translation_substitution_count"], 0)
+        self.assertEqual(result["named_entity_source_missing_count"], 0)
+        self.assertEqual(result["named_entity_translation_missing_count"], 0)
+        self.assertEqual(result["checks"][0]["source_bad_form_matches"], ["Brooklyns"])
+        self.assertEqual(result["checks"][0]["source_issue"], "substituted variant in source transcript")
+        self.assertEqual(result["checks"][0]["translation_issue"], "")
+
+    def test_build_named_entity_checks_does_not_fake_translation_missing_without_artifact(self) -> None:
+        source_entry = {
+            "source_id": "de-brooklands",
+            "expected_named_entities": [
+                {
+                    "term": "Brooklands",
+                    "category": "track",
+                    "expected_in_source": True,
+                    "expected_in_translation": True,
+                    "bad_forms": ["Brooklyn", "Brooklyns"],
+                }
+            ],
+        }
+
+        result = benchmark_report.build_named_entity_checks(
+            source_entry,
+            source_text="Die erste Rennstrecke der Welt entstand in Brooklyns.",
+            translation_text="",
+        )
+
+        self.assertEqual(result["named_entity_source_substitution_count"], 1)
+        self.assertEqual(result["named_entity_translation_substitution_count"], 0)
+        self.assertEqual(result["named_entity_source_missing_count"], 0)
+        self.assertEqual(result["named_entity_translation_missing_count"], 0)
+        self.assertEqual(result["checks"][0]["translation_issue"], "")
 
     def test_collect_results_marks_english_copy_as_translation_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -207,6 +272,16 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(row["requested_openai_transcription_model"], "")
         self.assertIn("protected_terms_profile", row)
         self.assertEqual(row["protected_terms_profile"], "")
+        self.assertIn("named_entity_source_substitution_count", row)
+        self.assertEqual(row["named_entity_source_substitution_count"], 0)
+        self.assertIn("named_entity_translation_substitution_count", row)
+        self.assertEqual(row["named_entity_translation_substitution_count"], 0)
+        self.assertIn("named_entity_source_missing_count", row)
+        self.assertEqual(row["named_entity_source_missing_count"], 0)
+        self.assertIn("named_entity_translation_missing_count", row)
+        self.assertEqual(row["named_entity_translation_missing_count"], 0)
+        self.assertIn("brooklands_source_variant_flag", row)
+        self.assertFalse(row["brooklands_source_variant_flag"])
         self.assertEqual(row["benchmark_status"], "accepted")
 
 

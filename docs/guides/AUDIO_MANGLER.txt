@@ -63,7 +63,8 @@ original spoken source, not weak platform auto-translation.
 Mode choices:
 
 - Local mode: local transcription plus local translation
-- AI Private: OpenAI transcription plus OpenAI translation
+- AI Private: OpenAI transcription plus OpenAI text translation when translation
+  is actually needed
 - AI Public: local transcription plus OpenAI translation on the Public/shared
   project
 - Hybrid: local transcription first, then OpenAI text-only English translation
@@ -71,6 +72,11 @@ Mode choices:
 That difference matters. AI Public does not behave the same way as AI Private,
 and AI Public does not imply that source audio is uploaded to OpenAI for
 transcription.
+
+If the detected source language already matches the requested target language,
+the app now copies the original transcript into translations\<lang>\ and skips
+the OpenAI text-translation call. In AI Private, that still allows OpenAI
+transcription when the chosen mode requires it.
 
 Local translation paths:
 

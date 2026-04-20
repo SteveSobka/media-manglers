@@ -44,6 +44,8 @@ Current benchmark status
   docs\benchmarks\2026-04-20-short-suite-pilot.md
 - Latest Brooklands defect follow-up:
   docs\benchmarks\2026-04-20-brooklands-hybrid-followup.md
+- Latest Brooklands source-transcript follow-up:
+  docs\benchmarks\2026-04-20-brooklands-source-transcript-followup.md
 - Latest canonical long benchmark status:
   defined in manifests; full long-suite rerun not yet completed under the new
   benchmark-reporting framework
@@ -65,9 +67,15 @@ Important caveats
   Brooklands -> Brooklyn Hybrid defect evidence, and the focused issue-28
   follow-up tracks the branch-level fix proof separately.
 - The issue-28 fix removes the Hybrid translation-side Brooklands corruption in
-  the focused rerun lanes, but a separate source-transcript Brooklands recall
-  warning still remains in benchmark scoring.
+  the focused rerun lanes.
+- Issue #34 is a separate raw/source transcript problem. On Rig1, the focused
+  Brooklands follow-up still shows source-side substitution on the local medium
+  lanes (`Brooklyns` on GPU and `Brooklynz` on CPU in the preserved raw
+  evidence). A direct `-Language de` probe did not lift the medium-lane recall.
 - The 2026-04-20 short-suite pilot attempted hybrid-private-medium-gpt-5-mini,
   but the current Rig1 Private project could not use that model.
+- The focused issue-34 comparison run also showed that `local-large-gpu` did
+  not finish within the current adaptive runtime budget on this source, so it
+  is not yet a settled Brooklands-sensitive recommendation on Rig1.
 - The technical terminology shadow set exists because racing-history clips alone
   will not catch SimHub / Crew Chief / UI vocabulary regressions.
