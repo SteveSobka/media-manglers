@@ -286,7 +286,7 @@ Approved bounded remote smoke/regression examples:
 - English: `https://www.youtube.com/watch?v=1aA1WGON49E`
 - German: `https://www.youtube.com/watch?v=hNaUbuWL8MI`
 - German: `https://www.youtube.com/watch?v=7_u8Qj78cA0`
-- French: `https://www.youtube.com/watch?v=APOqEiXEC4g`
+- French: `https://www.youtube.com/watch?v=XRka52Y3kyA`
 - Japanese: `https://www.youtube.com/watch?v=WPm2N93SmTA`
 - Spanish: `https://www.youtube.com/watch?v=5OspljwLkDQ`
 - Italian: `https://www.youtube.com/watch?v=Xe6AgUkZmog`
@@ -354,7 +354,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -Input
 ```
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=APOqEiXEC4g' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
+powershell -NoProfile -ExecutionPolicy Bypass -File '.\Video Mangler.ps1' -InputUrl 'https://www.youtube.com/watch?v=XRka52Y3kyA' -TranslateTo en -ProcessingMode AI -OpenAiProject Private -NoPrompt
 ```
 
 ```powershell
@@ -426,7 +426,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 - [Overview guide](docs/guides/README.txt)
 - [Video Mangler guide](docs/guides/VIDEO_MANGLER.txt)
 - [Audio Mangler guide](docs/guides/AUDIO_MANGLER.txt)
-- [v0.7.2 release notes](docs/release-notes/RELEASE_NOTES_v0.7.2.txt)
+- [v0.7.3 release notes](docs/release-notes/RELEASE_NOTES_v0.7.3.txt)
 
 ## Repo Layout
 
@@ -441,7 +441,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File '.\Audio Mangler.ps1' -Input
 
 ## Testing
 
-The smoke scripts live under `tools\smoke\` and the validators live under `tools\validation\`. When a local fixture exists under `AREA51\TestData`, the smoke helpers prefer that short local file first. If not, they fall back to the approved bounded Doc66 remote set: English `1aA1WGON49E`, German `hNaUbuWL8MI` / `7_u8Qj78cA0`, French `APOqEiXEC4g`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian `Xe6AgUkZmog`, and Chinese `fJ7V53jFrVc`.
+The smoke scripts live under `tools\smoke\` and the validators live under `tools\validation\`. When a local fixture exists under `AREA51\TestData`, the smoke helpers prefer that short local file first. If not, they fall back to the approved bounded Doc66 remote set: English `1aA1WGON49E`, German `hNaUbuWL8MI` / `7_u8Qj78cA0`, French `XRka52Y3kyA`, Japanese `WPm2N93SmTA`, Spanish `5OspljwLkDQ`, Italian `Xe6AgUkZmog`, and Chinese `fJ7V53jFrVc`.
 
 Video:
 
@@ -455,6 +455,12 @@ Audio:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\smoke\Run-AudioSmokeTest.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Validate-AudioManglerPackage.ps1
+```
+
+Packaged remote Hybrid validation with launch watchdogs:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Run-PackagedVideoRemoteValidation.ps1 -WorkingRoot C:\DATA\TEMP\CODEX\pkg-video-check -InputUrl 'https://www.youtube.com/watch?v=hNaUbuWL8MI'
 ```
 
 ## Benchmark Snapshot

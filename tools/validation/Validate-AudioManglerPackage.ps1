@@ -242,8 +242,11 @@ if ($isHybridPackage) {
     $validationReportFromSummary = Assert-ColumnValue -Row $summaryRow -ColumnName "translation_validation_report" -Label "translation validation report"
     Assert-File -Path $validationReportFromSummary -Label "translation validation report"
 
+    if (-not ($summaryRow.PSObject.Properties.Name -contains "lane_id")) {
+        throw "Missing required summary column: lane_id"
+    }
+
     foreach ($columnName in @(
-        "lane_id",
         "privacy_class",
         "source_language",
         "target_language",

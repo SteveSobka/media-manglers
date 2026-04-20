@@ -1,0 +1,48 @@
+Release Notes - v0.7.3
+======================
+
+Tracked version
+---------------
+
+- repository/app version: 0.7.3
+
+What changed
+------------
+
+- Added a tracked packaged-run watchdog helper plus a packaged Video remote
+  validation script so extracted release-zip validation now fails clearly when
+  a packaged EXE does not produce early console output or bootstrap evidence.
+- Hardened `tools\validation\Run-ArtifactParityChecks.ps1` so packaged EXE
+  parity runs no longer wait forever in silence. The release path now records
+  stdout/stderr logs, prints heartbeat status, and enforces first-output,
+  bootstrap, and overall runtime deadlines.
+- Replaced the revoked French short validation source in tracked docs, guides,
+  and helper defaults with the approved replacement:
+  `https://www.youtube.com/watch?v=XRka52Y3kyA`
+
+Operator notes
+--------------
+
+- Start with the versioned ZIP bundle in `dist\release\`.
+- For packaged remote Hybrid validation, use the tracked watchdog-backed helper
+  under `tools\validation\Run-PackagedVideoRemoteValidation.ps1`.
+- The previously approved short French source is now revoked for normal
+  validation and has been removed from tracked smoke/help guidance.
+
+Validation and packaging
+------------------------
+
+- Rig1 is the accepted validation surface for this hotfix pass.
+- DevBox CPU validation is not a blocker for `v0.7.3`.
+- The expected validation set for this release is preserved-workspace review,
+  bounded packaged German/French validation with watchdogs, PowerShell parse
+  checks, unit tests, `git diff --check`, and a fresh packaged build.
+
+Non-blocking follow-ups
+-----------------------
+
+- protected-terms profile authoring/generator helper
+- broader target-language support
+- broader protected-terms profile coverage
+- benchmark scoring/reporting integration
+- optional compatibility validation on additional machines when useful

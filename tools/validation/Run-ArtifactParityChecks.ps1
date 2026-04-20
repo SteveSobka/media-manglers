@@ -5,6 +5,10 @@ param(
     [string]$AudioPath = (Join-Path $PSScriptRoot "..\..\AREA51\TestData\1_min_test_Video.mp4"),
     [double]$FrameIntervalSeconds = 0.5,
     [string]$WhisperModel = "base",
+    [int]$PackagedHeartbeatSeconds = 15,
+    [int]$FirstOutputDeadlineSeconds = 30,
+    [int]$BootstrapDeadlineSeconds = 60,
+    [int]$PackagedTimeoutSeconds = 1800,
     [switch]$SkipBuild
 )
 
@@ -16,8 +20,15 @@ $versionPath = Join-Path $repoRoot "VERSION"
 $videoValidator = Join-Path $repoRoot "tools\validation\Validate-VideoToCodexPackage.ps1"
 $audioValidator = Join-Path $repoRoot "tools\validation\Validate-AudioManglerPackage.ps1"
 $buildScript = Join-Path $repoRoot "tools\release\Build-Exe.ps1"
+$watchdogHelper = Join-Path $repoRoot "tools\validation\PackagedRunWatchdog.ps1"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runRoot = Join-Path $repoRoot ("test-output\artifact-parity-{0}" -f $timestamp)
+
+if (-not (Test-Path -LiteralPath $watchdogHelper)) {
+    throw "Packaged run watchdog helper not found: $watchdogHelper"
+}
+
+. $watchdogHelper
 
 function Ensure-Directory {
     param([string]$Path)
@@ -53,14 +64,21 @@ function Invoke-ExeAndRequireSuccess {
     param(
         [string]$FilePath,
         [string[]]$Arguments,
-        [string]$Label
+        [string]$Label,
+        [string]$OutputRoot
     )
 
-    Write-Host ("Running: {0}" -f $Label) -ForegroundColor Cyan
-    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw ("{0} failed with exit code {1}" -f $Label, $process.ExitCode)
-    }
+    Invoke-PackagedRunWithWatchdog `
+        -FilePath $FilePath `
+        -Arguments $Arguments `
+        -Label $Label `
+        -WorkingDirectory (Split-Path -Path $FilePath -Parent) `
+        -OutputRoot $OutputRoot `
+        -LogRoot $OutputRoot `
+        -HeartbeatSeconds $PackagedHeartbeatSeconds `
+        -FirstOutputDeadlineSeconds $FirstOutputDeadlineSeconds `
+        -BootstrapDeadlineSeconds $BootstrapDeadlineSeconds `
+        -TimeoutSeconds $PackagedTimeoutSeconds | Out-Null
 }
 
 function Invoke-PowerShellFile {
@@ -399,7 +417,8 @@ function Invoke-VideoReleaseRun {
             "-NoPrompt",
             "-ProcessingMode", "Local"
         ) `
-        -Label "Release Video Mangler.exe"
+        -Label "Release Video Mangler.exe" `
+        -OutputRoot $OutputRoot
 
     Invoke-PowerShellFile `
         -ScriptPath $videoValidator `
@@ -428,7 +447,8 @@ function Invoke-AudioReleaseRun {
             "-NoPrompt",
             "-ProcessingMode", "Local"
         ) `
-        -Label "Release Audio Mangler.exe"
+        -Label "Release Audio Mangler.exe" `
+        -OutputRoot $OutputRoot
 
     Invoke-PowerShellFile `
         -ScriptPath $audioValidator `
