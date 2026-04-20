@@ -96,7 +96,12 @@ Each benchmark result row represents one source/lane/app run.
 - `named_entity_required_count`
 - `named_entity_source_present_count`
 - `named_entity_translation_present_count`
+- `named_entity_source_substitution_count`
+- `named_entity_translation_substitution_count`
+- `named_entity_source_missing_count`
+- `named_entity_translation_missing_count`
 - `named_entity_issue_count`
+- `brooklands_source_variant_flag`
 - `brooklands_to_brooklyn_flag`
 - `benchmark_accuracy_penalty`
 - `benchmark_speed_penalty`
@@ -111,6 +116,10 @@ Each benchmark result row represents one source/lane/app run.
 - `category`
 - `source_present`
 - `translation_present`
+- `source_bad_form_matches`
+- `translation_bad_form_matches`
+- `source_issue`
+- `translation_issue`
 - `bad_form_matches`
 - `issue`
 
@@ -122,6 +131,16 @@ CSV keeps only the rolled-up counts and key boolean flags.
 - `warning`: package succeeded, but benchmark scoring found quality risks
 - `rejected`: run failed or benchmark-critical corruption was detected
 - `deferred`: the lane/source was intentionally not run in the current pilot
+
+## Source-vs-translation interpretation
+
+- Source-transcript substitution and omission are tracked separately from
+  translation-side corruption.
+- `brooklands_source_variant_flag` means the raw/source transcript used a
+  Brooklands-like bad form such as `Brooklyns`; it does not mean the already
+  fixed Hybrid `Brooklands -> Brooklyn` translation defect came back.
+- `brooklands_to_brooklyn_flag` remains reserved for the English
+  translation-side corruption.
 
 ## Compatibility note
 
