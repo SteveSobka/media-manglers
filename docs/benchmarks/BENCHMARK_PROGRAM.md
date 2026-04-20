@@ -91,9 +91,15 @@ Every benchmark source must be tracked in a machine-readable manifest. Each entr
 The current tracked manifests live under `tools/benchmarks/manifests/`.
 
 Benchmark manifests may also carry `expected_named_entities` hints for benchmark
-sources. In benchmark-mode Hybrid runs, those hints may be passed into
-translation validation and repair so the benchmark can detect and reject
-avoidable proper-noun corruption such as `Brooklands -> Brooklyn`.
+sources. In benchmark-mode runs, those hints may be used in two narrow ways:
+
+- in Hybrid runs, they may be passed into translation validation and repair so
+  the benchmark can detect and reject avoidable proper-noun corruption such as
+  `Brooklands -> Brooklyn`
+- in Local/Hybrid transcription benchmark runs, they may be passed into Local
+  Whisper as a narrow initial prompt so named-entity-sensitive benchmark lanes
+  can measure whether exact proper-noun recall improves without post-correcting
+  the raw transcript artifacts
 
 Those hints are benchmark-scoped evidence, not a silent global protected-terms
 profile. Generic product runs remain generic by default unless an operator

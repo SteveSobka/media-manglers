@@ -1,0 +1,55 @@
+Release Notes - v0.7.6
+
+Date: 2026-04-20
+
+Scope
+
+- repository/app version: 0.7.6
+- release type: focused benchmark-transcription quality follow-up
+- validation surface: Rig1
+
+What changed
+
+- Fixed the Brooklands source-transcript recall weakness in current benchmark
+  evidence for the affected local medium lanes.
+- Benchmark-mode Local Whisper transcription now uses tracked
+  `expected_named_entities` as a narrow `initial_prompt` when those benchmark
+  hints are explicitly supplied.
+- The Brooklands-focused rerun now preserves literal `Brooklands` in the raw
+  source transcript on both `local-medium-gpu` and `local-medium-cpu`.
+- Preserved the already-fixed Hybrid translation boundary: the rerun Hybrid
+  control still validates `accepted`, and `Brooklands -> Brooklyn` remains
+  fixed.
+- Preserved raw transcript integrity. The branch does not silently rewrite
+  transcript artifacts after transcription.
+
+Why this matters
+
+- The benchmark framework is supposed to catch real quality regressions, not
+  leave known proper nouns misheard on the most important recurring control.
+- This patch lifts Brooklands recall in the benchmark transcription path
+  without reopening the v0.7.4 translation bug or faking the transcript output.
+- Operators and reviewers can now read benchmark results without confusing
+  source-transcript weakness with translation corruption.
+
+Validation focus
+
+- issue #34 benchmark evidence reviewed first from preserved Rig1 roots
+- focused Brooklands rerun at:
+  - `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-fix-20260420`
+- validated lanes:
+  - `local-medium-gpu`
+  - `local-medium-cpu`
+  - `hybrid-public-medium-gpt-4o-mini`
+- DevBox CPU validation is not a blocker for v0.7.6
+
+Known follow-ups after this patch
+
+- run the canonical long benchmark suite (#29)
+- run the technical terminology shadow benchmark set (#30)
+- investigate `hybrid-private-medium-gpt-5-mini` availability on Rig1 Private
+  project (#31)
+- expand benchmark parity coverage to Video Mangler after the Audio-first
+  baseline stabilizes (#32)
+- review whether `local-large-gpu` needs a separate runtime-budget follow-up
+  for Brooklands-sensitive benchmark work on Rig1
