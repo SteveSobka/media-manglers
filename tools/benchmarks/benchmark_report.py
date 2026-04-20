@@ -88,7 +88,12 @@ RESULT_FIELD_ORDER = [
     "named_entity_required_count",
     "named_entity_source_present_count",
     "named_entity_translation_present_count",
+    "named_entity_source_substitution_count",
+    "named_entity_translation_substitution_count",
+    "named_entity_source_missing_count",
+    "named_entity_translation_missing_count",
     "named_entity_issue_count",
+    "brooklands_source_variant_flag",
     "brooklands_to_brooklyn_flag",
     "benchmark_accuracy_penalty",
     "benchmark_speed_penalty",
@@ -174,6 +179,23 @@ def _contains_term(text: str, term: str) -> bool:
     return _search_normalized(term) in _search_normalized(text)
 
 
+def _collect_bad_form_matches(text: str, bad_forms: list[str]) -> list[str]:
+    if not text:
+        return []
+    matches: list[str] = []
+    matched_norms: list[str] = []
+    original_index = {value: index for index, value in enumerate(bad_forms)}
+    for value in sorted(bad_forms, key=lambda item: len(_search_normalized(item)), reverse=True):
+        if not _contains_term(text, value):
+            continue
+        normalized_value = _search_normalized(value)
+        if any(normalized_value in existing for existing in matched_norms):
+            continue
+        matches.append(value)
+        matched_norms.append(normalized_value)
+    return sorted(matches, key=lambda item: original_index.get(item, 0))
+
+
 def build_named_entity_checks(
     source_entry: dict[str, Any],
     *,
@@ -181,6 +203,7 @@ def build_named_entity_checks(
     translation_text: str,
 ) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
+    brooklands_source_variant_flag = False
     brooklands_to_brooklyn_flag = False
     expectations = source_entry.get("expected_named_entities") or []
 
@@ -191,19 +214,35 @@ def build_named_entity_checks(
         expected_in_source = bool(item.get("expected_in_source"))
         expected_in_translation = bool(item.get("expected_in_translation"))
         bad_forms = [str(value).strip() for value in (item.get("bad_forms") or []) if str(value).strip()]
-        bad_form_matches = [value for value in bad_forms if _contains_term(translation_text, value)]
+        source_bad_form_matches = _collect_bad_form_matches(source_text, bad_forms)
+        translation_bad_form_matches = _collect_bad_form_matches(translation_text, bad_forms)
         source_present = _contains_term(source_text, term)
-        translation_present = _contains_term(translation_text, term)
+        translation_available = bool(translation_text.strip())
+        translation_present = translation_available and _contains_term(translation_text, term)
         issues: list[str] = []
+        source_issue = ""
+        translation_issue = ""
 
-        if expected_in_source and not source_present:
-            issues.append("missing from source transcript")
-        if expected_in_translation and not translation_present:
-            issues.append("missing from English translation")
-        if bad_form_matches:
-            issues.append("bad form in translation")
+        if expected_in_source and source_bad_form_matches:
+            source_issue = "substituted variant in source transcript" if not source_present else "bad form in source transcript"
+            issues.append(source_issue)
+        elif expected_in_source and not source_present:
+            source_issue = "missing from source transcript"
+            issues.append(source_issue)
 
-        if term.casefold() == "brooklands" and any(value.casefold().startswith("brooklyn") for value in bad_form_matches):
+        if translation_available and expected_in_translation and translation_bad_form_matches:
+            translation_issue = "bad form in English translation" if translation_present else "substituted variant in English translation"
+            issues.append(translation_issue)
+        elif translation_available and expected_in_translation and not translation_present:
+            translation_issue = "missing from English translation"
+            issues.append(translation_issue)
+        elif translation_available and translation_bad_form_matches:
+            translation_issue = "bad form in English translation"
+            issues.append(translation_issue)
+
+        if term.casefold() == "brooklands" and any(value.casefold().startswith("brooklyn") for value in source_bad_form_matches):
+            brooklands_source_variant_flag = True
+        if term.casefold() == "brooklands" and any(value.casefold().startswith("brooklyn") for value in translation_bad_form_matches):
             brooklands_to_brooklyn_flag = True
 
         checks.append(
@@ -212,7 +251,11 @@ def build_named_entity_checks(
                 "category": str(item.get("category") or ""),
                 "source_present": source_present,
                 "translation_present": translation_present,
-                "bad_form_matches": bad_form_matches,
+                "source_bad_form_matches": source_bad_form_matches,
+                "translation_bad_form_matches": translation_bad_form_matches,
+                "bad_form_matches": translation_bad_form_matches,
+                "source_issue": source_issue,
+                "translation_issue": translation_issue,
                 "issue": "; ".join(issues),
             }
         )
@@ -222,11 +265,16 @@ def build_named_entity_checks(
         "named_entity_required_count": len(checks),
         "named_entity_source_present_count": sum(1 for item in checks if item["source_present"]),
         "named_entity_translation_present_count": sum(1 for item in checks if item["translation_present"]),
+        "named_entity_source_substitution_count": sum(1 for item in checks if item["source_bad_form_matches"]),
+        "named_entity_translation_substitution_count": sum(1 for item in checks if item["translation_bad_form_matches"]),
+        "named_entity_source_missing_count": sum(1 for item in checks if item["source_issue"] == "missing from source transcript"),
+        "named_entity_translation_missing_count": sum(1 for item in checks if item["translation_issue"] == "missing from English translation"),
         "named_entity_issue_count": sum(
             1
             for item in checks
-            if item["issue"] or item["bad_form_matches"]
+            if item["issue"]
         ),
+        "brooklands_source_variant_flag": brooklands_source_variant_flag,
         "brooklands_to_brooklyn_flag": brooklands_to_brooklyn_flag,
     }
 
@@ -423,7 +471,12 @@ def _build_result_row(
         "named_entity_required_count": named_entity_summary["named_entity_required_count"],
         "named_entity_source_present_count": named_entity_summary["named_entity_source_present_count"],
         "named_entity_translation_present_count": named_entity_summary["named_entity_translation_present_count"],
+        "named_entity_source_substitution_count": named_entity_summary["named_entity_source_substitution_count"],
+        "named_entity_translation_substitution_count": named_entity_summary["named_entity_translation_substitution_count"],
+        "named_entity_source_missing_count": named_entity_summary["named_entity_source_missing_count"],
+        "named_entity_translation_missing_count": named_entity_summary["named_entity_translation_missing_count"],
         "named_entity_issue_count": named_entity_summary["named_entity_issue_count"],
+        "brooklands_source_variant_flag": named_entity_summary["brooklands_source_variant_flag"],
         "brooklands_to_brooklyn_flag": named_entity_summary["brooklands_to_brooklyn_flag"],
         "benchmark_accuracy_penalty": 0.0,
         "benchmark_speed_penalty": 0.0,
@@ -638,10 +691,27 @@ def _write_markdown_summary(path: Path, payload: dict[str, Any]) -> None:
     for row in rows:
         notes: list[str] = []
         if row["brooklands_to_brooklyn_flag"]:
-            notes.append("Brooklands->Brooklyn")
+            notes.append("translation Brooklands->Brooklyn")
+        if row["brooklands_source_variant_flag"]:
+            notes.append("source Brooklands variant")
         if row["translation_skipped_reason"]:
             notes.append(row["translation_skipped_reason"])
-        if row["named_entity_issue_count"] > 0 and not row["brooklands_to_brooklyn_flag"]:
+        if row["named_entity_source_substitution_count"] > 0 and not row["brooklands_source_variant_flag"]:
+            notes.append(f"source substitutions={row['named_entity_source_substitution_count']}")
+        if row["named_entity_source_missing_count"] > 0:
+            notes.append(f"source missing={row['named_entity_source_missing_count']}")
+        if row["named_entity_translation_substitution_count"] > 0 and not row["brooklands_to_brooklyn_flag"]:
+            notes.append(f"translation substitutions={row['named_entity_translation_substitution_count']}")
+        if row["named_entity_translation_missing_count"] > 0:
+            notes.append(f"translation missing={row['named_entity_translation_missing_count']}")
+        if row["named_entity_issue_count"] > 0 and not (
+            row["brooklands_to_brooklyn_flag"]
+            or row["brooklands_source_variant_flag"]
+            or row["named_entity_source_substitution_count"] > 0
+            or row["named_entity_source_missing_count"] > 0
+            or row["named_entity_translation_substitution_count"] > 0
+            or row["named_entity_translation_missing_count"] > 0
+        ):
             notes.append(f"named-entity issues={row['named_entity_issue_count']}")
         if row["validation_warning_count"] > 0:
             notes.append(f"validation warnings={row['validation_warning_count']}")

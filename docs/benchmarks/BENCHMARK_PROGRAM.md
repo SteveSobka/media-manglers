@@ -173,6 +173,13 @@ Current core checks include:
 
 The benchmark scorer must flag `Brooklands -> Brooklyn` as a named-entity corruption.
 
+The benchmark outputs must also separate:
+- source-transcript substitution or omission
+- translation-side corruption
+
+That distinction matters because a raw/source transcript warning should not be
+misread as a reopened translation defect after the issue-28 Hybrid fix.
+
 ## Protected terms policy inside benchmarks
 
 - Generic mode is the default benchmark baseline.

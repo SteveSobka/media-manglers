@@ -14,7 +14,7 @@ Rules:
 
 - [ ] Issue #34: Investigate Brooklands source-transcript recall weakness in local benchmark evidence
   Status: open follow-up
-  Current note: PR `#33` fixed the translation-side `Brooklands -> Brooklyn` corruption in the affected Hybrid benchmark lanes, but the focused Brooklands rerun still scores a warning because the local/source transcript does not always literally preserve `Brooklands`. This is a separate transcription/benchmark-quality follow-up, not a reopening of the fixed Hybrid translation defect.
+  Current note: PR `#33` fixed the translation-side `Brooklands -> Brooklyn` corruption in the affected Hybrid benchmark lanes, and the current issue-34 branch keeps that boundary intact. Preserved evidence plus the focused Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420` show a real raw/source transcript substitution problem on the local medium lanes instead: `local-medium-gpu` preserved `Brooklyns`, and `local-medium-cpu` preserved `Brooklynz`, so the warning is source-side rather than a reopened Hybrid translation defect. A direct `Audio Mangler.ps1` probe with `-Language de` did not lift the medium-lane recall, and the branch now adds clearer benchmark reporting so source-side substitution/omission is separated from translation-side corruption. The comparison `local-large-gpu` run did not finish within the current adaptive runtime budget on this source, so a stronger lane recommendation still needs follow-up.
 
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up

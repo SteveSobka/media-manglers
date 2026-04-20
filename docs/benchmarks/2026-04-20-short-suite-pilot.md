@@ -15,6 +15,9 @@ Historical note:
 - The focused issue-28 follow-up evidence that fixes the Hybrid
   `Brooklands -> Brooklyn` corruption is tracked separately at
   `docs/benchmarks/2026-04-20-brooklands-hybrid-followup.md`.
+- The separate issue-34 source-transcript follow-up that keeps the remaining
+  Brooklands warning scoped to raw/source transcript evidence is tracked at
+  `docs/benchmarks/2026-04-20-brooklands-source-transcript-followup.md`.
 
 - Primary benchmark surface: `Audio Mangler`
 - Suite: `canonical-short`
