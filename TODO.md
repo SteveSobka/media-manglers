@@ -13,8 +13,8 @@ Rules:
 ## Active Workstreams
 
 - [ ] Issue #28: Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
-  Status: open follow-up after PR `#27`
-  Current note: The merged canonical-short pilot still flags `Brooklands -> Brooklyn` corruption on the Brooklands control in `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. This remains an open quality defect and was intentionally surfaced, not fixed, by the benchmark/reporting merge pass.
+  Status: fix validated on branch `wip/0.7.4-brooklands-hybrid-entity-fix-2026-04-20`; awaiting review/merge
+  Current note: The merged canonical-short pilot correctly surfaced translation-side `Brooklands -> Brooklyn` corruption on the Brooklands control in `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. The current issue-28 branch now passes benchmark manifest expected named-entity hints into Hybrid translation/repair validation, and the focused Brooklands rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-fix-20260420-2` preserves `Brooklands` correctly in all three previously corrupted Hybrid lanes. A separate source-transcript-side Brooklands recall warning still remains outside this fix.
 
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up
@@ -45,6 +45,10 @@ Rules:
 - [ ] Design a simple protected-terms profile authoring helper after the v0.7.2 hotfix lands
   Status: repo-only follow-up
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
+
+- [ ] Investigate Brooklands source-transcript named-entity recall in local benchmark lanes
+  Status: repo-only follow-up
+  Current note: The issue-28 branch fixes the Hybrid translation-side `Brooklands -> Brooklyn` corruption, but the focused rerun still scores a warning because the local Brooklands source transcript does not literally preserve `Brooklands` in all benchmark evidence. That is a separate transcription/benchmark-quality follow-up and should not be conflated with the fixed Hybrid translation defect.
 
 ## Recently Completed
 

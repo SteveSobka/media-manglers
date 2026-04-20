@@ -90,6 +90,15 @@ Every benchmark source must be tracked in a machine-readable manifest. Each entr
 
 The current tracked manifests live under `tools/benchmarks/manifests/`.
 
+Benchmark manifests may also carry `expected_named_entities` hints for benchmark
+sources. In benchmark-mode Hybrid runs, those hints may be passed into
+translation validation and repair so the benchmark can detect and reject
+avoidable proper-noun corruption such as `Brooklands -> Brooklyn`.
+
+Those hints are benchmark-scoped evidence, not a silent global protected-terms
+profile. Generic product runs remain generic by default unless an operator
+explicitly selects a protected-terms profile.
+
 ## Lane policy
 
 Core benchmark lanes:
