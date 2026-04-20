@@ -7,6 +7,8 @@ param(
     [string]$PythonExe = "py",
     [string]$YtDlpPath = "yt-dlp",
     [string]$WhisperModel = "base",
+    [ValidateSet("Auto", "CPU", "GPU")]
+    [string]$WhisperDevice = "Auto",
     [string]$Language = "",
     [string]$TranslateTo = "",
     [ValidateSet("Local", "AI", "Hybrid")]
@@ -3523,6 +3525,63 @@ function New-ChatGptZipPackage {
     }
 }
 
+function Resolve-WhisperDevicePreference {
+    param(
+        [ValidateSet("Auto", "CPU", "GPU")]
+        [string]$RequestedDevice = "Auto",
+        [psobject]$WhisperProbe,
+        [bool]$RequiresLocalWhisper
+    )
+
+    $normalizedDevice = if ([string]::IsNullOrWhiteSpace($RequestedDevice)) {
+        "Auto"
+    }
+    else {
+        $RequestedDevice.Trim()
+    }
+
+    $gpuCapable = $false
+    if ($WhisperProbe -and $WhisperProbe.WhisperImportOk -and $WhisperProbe.TorchImportOk -and $WhisperProbe.CudaAvailable) {
+        $gpuCapable = $true
+    }
+
+    if (-not $RequiresLocalWhisper) {
+        return [PSCustomObject]@{
+            RequestedDevice = $normalizedDevice
+            PreferGpu       = $false
+            SummaryLabel    = "not used in AI Private mode"
+        }
+    }
+
+    switch ($normalizedDevice) {
+        "Auto" {
+            return [PSCustomObject]@{
+                RequestedDevice = "Auto"
+                PreferGpu       = $gpuCapable
+                SummaryLabel    = if ($gpuCapable) { "Auto (GPU preferred with CPU fallback)" } else { "Auto (CPU fallback)" }
+            }
+        }
+        "CPU" {
+            return [PSCustomObject]@{
+                RequestedDevice = "CPU"
+                PreferGpu       = $false
+                SummaryLabel    = "CPU forced"
+            }
+        }
+        "GPU" {
+            if (-not $gpuCapable) {
+                throw "WhisperDevice GPU was requested, but the selected Local Whisper runtime is not GPU-capable on this machine."
+            }
+
+            return [PSCustomObject]@{
+                RequestedDevice = "GPU"
+                PreferGpu       = $true
+                SummaryLabel    = "GPU requested with CPU fallback"
+            }
+        }
+    }
+}
+
 function New-MasterReadme {
     param(
         [string]$MasterReadmePath,
@@ -3609,13 +3668,20 @@ function Add-SummaryRow {
         [string]$GlossaryPath = "",
         [string]$ProtectedTermsProfile = "",
         [string]$ProtectedTermsPath = "",
-        [string]$OpenAiTranslationSummary = ""
+        [string]$OpenAiTranslationSummary = "",
+        [double]$SourceDurationSeconds = 0,
+        [string]$WhisperRequestedDevice = "",
+        [string]$WhisperSelectedDevice = "",
+        [int]$WhisperDeviceSwitchCount = 0
     )
 
     $row = [PSCustomObject]@{
+        app_surface             = $script:AppName
+        app_version             = (Get-AppVersion)
         source_audio             = $SourceAudio
         output_folder_name       = $OutputFolderName
         output_path              = $OutputPath
+        source_duration_seconds  = [math]::Round([double]$SourceDurationSeconds, 3)
         review_audio             = $AudioFile
         transcript_original_srt  = $OriginalTranscriptSrt
         transcript_original_json = $OriginalTranscriptJson
@@ -3661,6 +3727,9 @@ function Add-SummaryRow {
         protected_terms_profile  = $ProtectedTermsProfile
         protected_terms_path     = $ProtectedTermsPath
         openai_translation_summary = $OpenAiTranslationSummary
+        whisper_requested_device = $WhisperRequestedDevice
+        whisper_selected_device  = $WhisperSelectedDevice
+        whisper_device_switch_count = $WhisperDeviceSwitchCount
         comments_text            = $CommentsText
         comments_json            = $CommentsJson
         comments_summary         = $CommentsSummary
@@ -9375,6 +9444,7 @@ function Process-Audio {
         -SourceAudio $audioItem.Name `
         -OutputFolderName $safeBaseName `
         -OutputPath $audioOutputRoot `
+        -SourceDurationSeconds $sourceDurationSeconds `
         -AudioFile $reviewAudioPath `
         -OriginalTranscriptSrt $originalTranscriptSrt `
         -OriginalTranscriptJson $originalTranscriptJson `
@@ -9391,6 +9461,9 @@ function Process-Audio {
         -CommentsJson $commentsJsonPath `
         -CommentsSummary $commentsSummary `
         -WhisperMode $whisperMode `
+        -WhisperRequestedDevice $(if ($transcriptResult) { $transcriptResult.RequestedDevice } else { "" }) `
+        -WhisperSelectedDevice $(if ($transcriptResult) { $transcriptResult.SelectedDevice } else { "" }) `
+        -WhisperDeviceSwitchCount $(if ($transcriptResult) { $transcriptResult.DeviceSwitchCount } else { 0 }) `
         -PackageStatus $packageStatus `
         -TranslationStatus $translationStatusText `
         -TranslationNotes $translationNotesText `
@@ -9944,72 +10017,75 @@ if ($null -eq $whisperProbe) {
     $whisperProbe = Get-WhisperExecutionMode -PythonCommand $PythonExe
 }
 
-    $canUseWhisperGpu = $false
-    if ($whisperProbe.WhisperImportOk -and $whisperProbe.TorchImportOk -and $whisperProbe.CudaAvailable) {
-        $canUseWhisperGpu = $true
-    }
+$whisperDevicePreference = Resolve-WhisperDevicePreference `
+    -RequestedDevice $WhisperDevice `
+    -WhisperProbe $whisperProbe `
+    -RequiresLocalWhisper:$requiresLocalWhisper
+$canUseWhisperGpu = [bool]$whisperDevicePreference.PreferGpu
+$localWhisperPathSummary = [string]$whisperDevicePreference.SummaryLabel
 
-    if (Test-ConsoleDebugMode) {
-        Write-Host ""
-        Write-Host "Resolved tools"
-        Write-Host "--------------"
-        Write-Host ("FFmpeg:   {0}" -f $FFmpegPath)
-        Write-Host ("FFprobe:  {0}" -f $FFprobePath)
-        Write-Host ("Python:   {0}" -f $PythonExe)
-        Write-Host ("yt-dlp:   {0}" -f $(if ($ytDlpInvoker) { $ytDlpInvoker.DisplayName } else { "not resolved" }))
-        Write-Host ""
-        Write-Host "Hardware Acceleration Detection"
-        Write-Host "-------------------------------"
-        Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($canUseWhisperGpu) { "Yes" } else { "No" }))
-        $null = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent
-        Write-Host ""
-        Write-Host ("Local Whisper path:             {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" }))
-        Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
-        Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
-        Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
-        if ($downloadedInputPaths.Count -gt 0) {
-            Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
-            Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
-            Write-Host ("Downloaded audio count:          {0}" -f $downloadedInputCount)
-        }
-        Write-Host ("Output folder:                   {0}" -f $OutputFolder)
-        Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
-        if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
-            Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
-        }
-        if ($ProcessingMode -eq "Hybrid") {
-            Write-Host ("Protected terms profile:        {0}" -f $protectedTermsProfileSummary)
-        }
-        if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
-            Write-Host ("OpenAI project mode:             {0}" -f $OpenAiProject)
-            if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $audioItems.Count -gt 0) {
-                Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
-            }
-            if ($translationTargets.Count -gt 0) {
-                Write-Host ("OpenAI translation model:        {0}" -f $requestedOpenAiTranslationModelLabel)
-            }
-        }
-        Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
-        Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
-        Write-Host ("Translation path selected:       {0}" -f $translationModeSummary)
-        Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
-        Write-Host ""
-        Write-Host "Audio items to process:"
-        $audioItems | ForEach-Object { Write-Host " - $($_.FullName)" }
-        Write-Host ""
+if (Test-ConsoleDebugMode) {
+    Write-Host ""
+    Write-Host "Resolved tools"
+    Write-Host "--------------"
+    Write-Host ("FFmpeg:   {0}" -f $FFmpegPath)
+    Write-Host ("FFprobe:  {0}" -f $FFprobePath)
+    Write-Host ("Python:   {0}" -f $PythonExe)
+    Write-Host ("yt-dlp:   {0}" -f $(if ($ytDlpInvoker) { $ytDlpInvoker.DisplayName } else { "not resolved" }))
+    Write-Host ""
+    Write-Host "Hardware Acceleration Detection"
+    Write-Host "-------------------------------"
+    Write-Host ("Whisper/PyTorch CUDA available:  {0}" -f $(if ($whisperProbe.WhisperImportOk -and $whisperProbe.TorchImportOk -and $whisperProbe.CudaAvailable) { "Yes" } else { "No" }))
+    $null = Write-WhisperProbeReport -WhisperProbe $whisperProbe -IncludeNvidiaPresence $true -NvidiaPresent $nvidiaPresent
+    Write-Host ""
+    Write-Host ("Local Whisper path:             {0}" -f $localWhisperPathSummary)
+    Write-Host ("Local Whisper timeout mode:      {0}" -f $(if ($WhisperTimeoutSeconds -gt 0) { "explicit override ({0}s)" -f $WhisperTimeoutSeconds } else { "adaptive" }))
+    Write-Host ("Heartbeat interval:              {0} seconds" -f $HeartbeatSeconds)
+    Write-Host ("Input source:                    {0}" -f $inputSourceDisplay)
+    if ($downloadedInputPaths.Count -gt 0) {
+        Write-Host ("Downloaded input cache:          {0}" -f ($downloadedInputPaths -join "; "))
+        Write-Host ("Downloaded source type:          {0}" -f ($downloadedInputKinds -join ", "))
+        Write-Host ("Downloaded audio count:          {0}" -f $downloadedInputCount)
     }
-    else {
-        Write-Host ""
-        Write-Host ("Run plan: {0} audio item(s), mode {1}, output {2}" -f $audioItems.Count, $processingModeSummary, $OutputFolder) -ForegroundColor Cyan
-        Write-Host ("Translations: {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" })) -ForegroundColor Cyan
-        Write-Host ("Local Whisper: {0}" -f $(if ($requiresLocalWhisper) { $(if ($canUseWhisperGpu) { "GPU preferred with CPU fallback" } else { "CPU fallback" }) } else { "not used in AI Private mode" })) -ForegroundColor Cyan
-        if ($ProcessingMode -eq "Hybrid") {
-            Write-Host ("Hybrid translation: text-only OpenAI via {0}" -f $OpenAiProject) -ForegroundColor Cyan
-            Write-Host ("Protected terms: {0}" -f $protectedTermsProfileSummary) -ForegroundColor Cyan
-        }
-        Write-Host ("Use -DebugMode for full tool and helper detail. script_run.log keeps the deep trace.") -ForegroundColor DarkCyan
-        Write-Host ""
+    Write-Host ("Output folder:                   {0}" -f $OutputFolder)
+    Write-Host ("Processing mode:                 {0}" -f $processingModeSummary)
+    if ($ProcessingMode -eq "Local" -or $ProcessingMode -eq "Hybrid") {
+        Write-Host ("Local Whisper model:            {0}" -f $WhisperModel)
+        Write-Host ("Local Whisper device request:   {0}" -f $WhisperDevice)
     }
+    if ($ProcessingMode -eq "Hybrid") {
+        Write-Host ("Protected terms profile:        {0}" -f $protectedTermsProfileSummary)
+    }
+    if ($ProcessingMode -eq "AI" -or $ProcessingMode -eq "Hybrid") {
+        Write-Host ("OpenAI project mode:             {0}" -f $OpenAiProject)
+        if ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private" -and $audioItems.Count -gt 0) {
+            Write-Host ("OpenAI transcription model:      {0}" -f $ResolvedOpenAiTranscriptionModel)
+        }
+        if ($translationTargets.Count -gt 0) {
+            Write-Host ("OpenAI translation model:        {0}" -f $requestedOpenAiTranslationModelLabel)
+        }
+    }
+    Write-Host ("Transcription path selected:     {0}" -f $transcriptionPathSummary)
+    Write-Host ("Translation targets:             {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" }))
+    Write-Host ("Translation path selected:       {0}" -f $translationModeSummary)
+    Write-Host ("Comments export:                 {0}" -f $(if ($IncludeComments.IsPresent -or $doIncludeComments) { "requested when available" } else { "off" }))
+    Write-Host ""
+    Write-Host "Audio items to process:"
+    $audioItems | ForEach-Object { Write-Host " - $($_.FullName)" }
+    Write-Host ""
+}
+else {
+    Write-Host ""
+    Write-Host ("Run plan: {0} audio item(s), mode {1}, output {2}" -f $audioItems.Count, $processingModeSummary, $OutputFolder) -ForegroundColor Cyan
+    Write-Host ("Translations: {0}" -f $(if ($translationTargets.Count -gt 0) { $translationTargets -join ", " } else { "none" })) -ForegroundColor Cyan
+    Write-Host ("Local Whisper: {0}" -f $localWhisperPathSummary) -ForegroundColor Cyan
+    if ($ProcessingMode -eq "Hybrid") {
+        Write-Host ("Hybrid translation: text-only OpenAI via {0}" -f $OpenAiProject) -ForegroundColor Cyan
+        Write-Host ("Protected terms: {0}" -f $protectedTermsProfileSummary) -ForegroundColor Cyan
+    }
+    Write-Host ("Use -DebugMode for full tool and helper detail. script_run.log keeps the deep trace.") -ForegroundColor DarkCyan
+    Write-Host ""
+}
 
     $estimate = $null
     if (-not $SkipEstimate) {

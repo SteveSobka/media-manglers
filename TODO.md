@@ -12,6 +12,10 @@ Rules:
 
 ## Active Workstreams
 
+- [ ] Issue #26: Add benchmark scoring and reporting integration
+  Status: in progress on Rig1 feature branch
+  Current note: This pass has now promoted the current benchmark program into tracked docs/manifests, added the tracked benchmark runner plus aggregation/scoring outputs, extended package summaries with benchmark-friendly metadata (including app/version, source duration, requested/actual Whisper device, and benchmark schema fields), and produced a bounded Rig1 canonical-short pilot using the approved Doc66 motorsport/sim-racing sources. The local `docs\benchmarks\BENCHMARK_PROGRAM.md` prep file is being intentionally adopted into tracked branch content instead of discarded, the pilot summary is tracked in `docs\benchmarks\2026-04-20-short-suite-pilot.md`, and DevBox CPU is explicitly not a blocker.
+
 ## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
@@ -25,6 +29,10 @@ Rules:
 - [ ] Design a simple protected-terms profile authoring helper after the v0.7.2 hotfix lands
   Status: repo-only follow-up
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
+
+- [ ] Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
+  Status: repo-only follow-up
+  Current note: The 2026-04-20 canonical-short pilot intentionally left the benchmark scorer loud enough to catch `Brooklands -> Brooklyn` corruption on the German Brooklands control. The current flagged lanes are `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. This is a real quality defect surfaced by the new benchmark program, not a benchmark harness failure.
 
 ## Recently Completed
 

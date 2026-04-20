@@ -463,11 +463,32 @@ Packaged remote Hybrid validation with launch watchdogs:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validation\Run-PackagedVideoRemoteValidation.ps1 -WorkingRoot C:\DATA\TEMP\CODEX\pkg-video-check -InputUrl 'https://www.youtube.com/watch?v=hNaUbuWL8MI'
 ```
 
-## Benchmark Snapshot
+## Benchmark Program
 
-A one-time longer German-to-English benchmark on 2026-04-17 compared Local Whisper `small`, `medium`, and `large` against AI Public and AI Private using the same 19m35s YouTube source through the normal Audio Mangler packaging path. On this CPU-only developer box, `small` was the fastest Local lane, `medium` was the best Local balance, `large` gave the best Local detail but took more than 2 hours, AI Public was fastest overall but weakest on transcript quality in the current scripted path, and AI Private was the best convenience/quality mix with a few cleanup caveats.
+Media Manglers now carries a tracked benchmark workflow instead of relying on one-off benchmark notes.
 
-The short version for operators is: use `Local medium` for longer privacy-sensitive CPU-only work, use `Local large` only when you explicitly want the best Local quality and can wait, and treat AI lanes as convenience-first options with different quality/privacy tradeoffs. Full methodology, exact timings, caption-comparison limits, and caveats are in [docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md](docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md).
+- Benchmark program: [docs/benchmarks/BENCHMARK_PROGRAM.md](docs/benchmarks/BENCHMARK_PROGRAM.md)
+- Benchmark schema: [docs/benchmarks/BENCHMARK_RESULTS_SCHEMA.md](docs/benchmarks/BENCHMARK_RESULTS_SCHEMA.md)
+- Benchmark guide: [docs/benchmarks/README.txt](docs/benchmarks/README.txt)
+- Latest canonical short benchmark summary: [docs/benchmarks/2026-04-20-short-suite-pilot.md](docs/benchmarks/2026-04-20-short-suite-pilot.md)
+- Canonical long suite: defined in [tools/benchmarks/manifests/canonical-long.json](tools/benchmarks/manifests/canonical-long.json)
+
+Current pilot guidance on Rig1:
+
+- Best current local lane: `local-medium-gpu`
+- Best current accuracy lane: `local-medium-gpu`
+- Best current speed lane: `hybrid-private-medium-gpt-4o-mini`
+
+Important current caveats:
+
+- The Brooklands control still catches `Brooklands -> Brooklyn` corruption in the current Hybrid `gpt-4o-mini` and `gpt-4.1-mini` translation lanes.
+- The canonical short pilot used `Audio Mangler` as the primary benchmark surface so transcript/translation quality stays readable instead of being dominated by video/frame overhead.
+- `hybrid-private-medium-gpt-5-mini` was attempted in the pilot but the current Private project on Rig1 could not use that model, so it remains unproven rather than silently treated as a winner.
+- Bounded benchmark passes use the approved Doc66 single-video motorsport/sim-racing set only. Playlists are not part of the recurring short-suite workflow.
+
+Historical note:
+
+- The earlier one-off German comparison remains useful background evidence and is still tracked at [docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md](docs/benchmarks/2026-04-17-german-to-english-transcription-benchmark.md).
 
 ## License And Notices
 
