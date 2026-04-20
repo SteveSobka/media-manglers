@@ -12,9 +12,25 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #26: Add benchmark scoring and reporting integration
-  Status: in progress on Rig1 feature branch
-  Current note: This pass has now promoted the current benchmark program into tracked docs/manifests, added the tracked benchmark runner plus aggregation/scoring outputs, extended package summaries with benchmark-friendly metadata (including app/version, source duration, requested/actual Whisper device, and benchmark schema fields), and produced a bounded Rig1 canonical-short pilot using the approved Doc66 motorsport/sim-racing sources. The local `docs\benchmarks\BENCHMARK_PROGRAM.md` prep file is being intentionally adopted into tracked branch content instead of discarded, the pilot summary is tracked in `docs\benchmarks\2026-04-20-short-suite-pilot.md`, and DevBox CPU is explicitly not a blocker.
+- [ ] Issue #28: Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
+  Status: open follow-up after PR `#27`
+  Current note: The merged canonical-short pilot still flags `Brooklands -> Brooklyn` corruption on the Brooklands control in `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. This remains an open quality defect and was intentionally surfaced, not fixed, by the benchmark/reporting merge pass.
+
+- [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
+  Status: open follow-up
+  Current note: The canonical long suite is now defined in tracked manifests on `main`, but the full long-suite execution was intentionally deferred during the framework landing pass.
+
+- [ ] Issue #30: Run the technical terminology shadow benchmark set under the merged framework
+  Status: open follow-up
+  Current note: The shadow-set manifest is now tracked on `main`, but the first real execution pass for Crew Chief / SimHub / settings vocabulary coverage is still pending.
+
+- [ ] Issue #31: Investigate hybrid-private-medium-gpt-5-mini unavailability on Rig1 Private project
+  Status: open follow-up
+  Current note: The benchmark pilot attempted the lane and preserved the failure honestly instead of silently substituting a different model. This now needs environment/model-availability follow-up, not benchmark-runner changes.
+
+- [ ] Issue #32: Expand benchmark parity coverage to Video Mangler after the Audio-first baseline stabilizes
+  Status: open follow-up
+  Current note: `Audio Mangler` is the merged primary benchmark surface for recurring language quality work. A later pass should add a smaller recurring Video parity subset without letting video/frame overhead dominate the language benchmark.
 
 ## Repo-Only Active Work
 
@@ -30,11 +46,11 @@ Rules:
   Status: repo-only follow-up
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
-- [ ] Investigate Brooklands named-entity corruption in current Hybrid benchmark lanes
-  Status: repo-only follow-up
-  Current note: The 2026-04-20 canonical-short pilot intentionally left the benchmark scorer loud enough to catch `Brooklands -> Brooklyn` corruption on the German Brooklands control. The current flagged lanes are `hybrid-public-medium-gpt-4o-mini`, `hybrid-public-medium-gpt-4.1-mini`, and `hybrid-private-medium-gpt-4o-mini`. This is a real quality defect surfaced by the new benchmark program, not a benchmark harness failure.
-
 ## Recently Completed
+
+- [x] Issue #26: Add benchmark scoring and reporting integration
+  Status: merged to main and closed on 2026-04-20
+  Current note: PR `#27` merged the benchmark/reporting framework into `main`. The repo now carries tracked benchmark docs/specs under `docs\benchmarks\`, tracked manifests for canonical short / canonical long / technical terminology shadow suites plus the lane matrix, benchmark runner/reporting tooling under `tools\benchmarks\`, additive benchmark-friendly summary fields in both wrappers, and the first tracked canonical-short pilot summary at `docs\benchmarks\2026-04-20-short-suite-pilot.md`. Rig1 remained the accepted validation surface, and DevBox CPU was explicitly not treated as a blocker. The merge intentionally surfaced but did not fix the Brooklands named-entity defect, which is now tracked separately in issue `#28`.
 
 - [x] Issue #24: Investigate v0.7.2 packaged Video Mangler stall and harden packaged validation watchdogs
   Status: merged to main, released as `v0.7.3`, and closed on 2026-04-19
