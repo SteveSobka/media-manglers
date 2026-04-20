@@ -76,19 +76,33 @@ class HybridTextTests(unittest.TestCase):
                 "text": "Use Sweary Messages",
             },
         ]
+        self.brooklands_expected_entities = [
+            {
+                "term": "Brooklands",
+                "category": "track",
+                "expected_in_translation": True,
+                "bad_forms": ["Brooklyn", "Brooklyns", "Brooklyn's"],
+            }
+        ]
 
-    def _write_source_transcript(self, root: Path) -> Path:
+    def _write_source_transcript(
+        self,
+        root: Path,
+        *,
+        segments: list[dict[str, object]] | None = None,
+        extra_payload: dict[str, object] | None = None,
+    ) -> Path:
         transcript_path = root / "transcript.json"
+        payload = {
+            "language": "de",
+            "source_language": "de",
+            "task": "transcribe",
+            "segments": segments or self.source_segments,
+        }
+        if extra_payload:
+            payload.update(extra_payload)
         transcript_path.write_text(
-            json.dumps(
-                {
-                    "language": "de",
-                    "source_language": "de",
-                    "task": "transcribe",
-                    "segments": self.source_segments,
-                },
-                ensure_ascii=False,
-            ),
+            json.dumps(payload, ensure_ascii=False),
             encoding="utf-8",
         )
         return transcript_path
@@ -114,6 +128,17 @@ class HybridTextTests(unittest.TestCase):
         self.assertEqual([segment["id"] for segment in transcript["segments"]], [1, 2, 3, 4])
         self.assertEqual(transcript["segments"][2]["start"], 2.0)
         self.assertEqual(transcript["segments"][2]["end"], 3.0)
+
+    def test_load_source_transcript_segments_preserves_expected_named_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript_path = self._write_source_transcript(
+                Path(temp_dir),
+                extra_payload={"expected_named_entities": self.brooklands_expected_entities},
+            )
+            transcript = hybrid_text.load_source_transcript_segments(transcript_path)
+
+        self.assertEqual(transcript["expected_named_entities"][0]["term"], "Brooklands")
+        self.assertEqual(transcript["expected_named_entities"][0]["bad_forms"], ["Brooklyn", "Brooklyns", "Brooklyn's"])
 
     def test_validate_hybrid_target_languages_defaults_to_en(self) -> None:
         self.assertEqual(hybrid_text.validate_hybrid_target_languages([]), ["en"])
@@ -181,6 +206,28 @@ class HybridTextTests(unittest.TestCase):
         self.assertNotIn("Crew Chief", system_content)
         self.assertNotIn("Full Course Yellow", system_content)
         self.assertIn('"protected_terms_profile": ""', user_content)
+
+    def test_build_translation_request_payload_includes_expected_named_entities(self) -> None:
+        batch = hybrid_text.build_segment_batches(
+            self.source_segments,
+            batch_size=2,
+            context_segments=1,
+        )[0]
+
+        payload = hybrid_text.build_translation_request_payload(
+            batch,
+            source_language="de",
+            target_language="en",
+            glossary={"profile": "", "lane_id": "", "terms": []},
+            model="gpt-4o-mini-2024-07-18",
+            expected_named_entities=self.brooklands_expected_entities,
+        )
+
+        system_content = str(payload["messages"][0]["content"])
+        user_content = str(payload["messages"][1]["content"])
+        self.assertIn("Expected named entities may be supplied", system_content)
+        self.assertIn('"term": "Brooklands"', user_content)
+        self.assertIn('"bad_forms"', user_content)
 
     def test_parse_translation_response_accepts_keyed_json(self) -> None:
         parsed = hybrid_text.parse_translation_response(
@@ -263,6 +310,57 @@ class HybridTextTests(unittest.TestCase):
         )
 
         self.assertGreater(report["glossary_violation_count"], 0)
+        self.assertFalse(report["valid"])
+
+    def test_validate_translated_segments_flags_named_entity_bad_form(self) -> None:
+        report = hybrid_text.validate_translated_segments(
+            source_segments=[
+                {
+                    "id": 1,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "Die erste Rennstrecke der Welt wurde 1907 eroffnet.",
+                }
+            ],
+            translated_segments=[
+                {
+                    "id": 1,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "Brooklyn opened in 1907 as the world's first racetrack.",
+                }
+            ],
+            expected_named_entities=self.brooklands_expected_entities,
+        )
+
+        self.assertEqual(report["named_entity_violation_count"], 1)
+        self.assertEqual(report["named_entity_violations"][0]["bad_form_matches"], ["Brooklyn"])
+        self.assertFalse(report["valid"])
+
+    def test_validate_translated_segments_requires_expected_named_entity_in_final_validation(self) -> None:
+        report = hybrid_text.validate_translated_segments(
+            source_segments=[
+                {
+                    "id": 1,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "Die erste Rennstrecke der Welt wurde 1907 eroffnet.",
+                }
+            ],
+            translated_segments=[
+                {
+                    "id": 1,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "The world's first racetrack opened in 1907.",
+                }
+            ],
+            expected_named_entities=self.brooklands_expected_entities,
+            enforce_expected_entity_presence=True,
+        )
+
+        self.assertEqual(report["named_entity_violation_count"], 1)
+        self.assertIn("missing from English translation", report["named_entity_violations"][0]["issue"])
         self.assertFalse(report["valid"])
 
     def test_write_translation_artifacts_writes_json_srt_and_text(self) -> None:
@@ -483,6 +581,71 @@ class HybridTextTests(unittest.TestCase):
             self.assertEqual(result["glossary_path"], "")
             self.assertEqual(result["protected_terms_path"], "")
             self.assertEqual(result["protected_terms_violation_count"], 0)
+
+    def test_run_hybrid_translation_retries_named_entity_bad_form_and_accepts_repair(self) -> None:
+        source_segments = [
+            {
+                "id": 1,
+                "start": 0.0,
+                "end": 2.0,
+                "text": "Die erste Rennstrecke der Welt wurde 1907 eroffnet.",
+            }
+        ]
+        first_response = {
+            "content": json.dumps(
+                {
+                    "translations": {
+                        "1": "Brooklyn opened in 1907 as the world's first racetrack.",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            "usage": {"prompt_tokens": 9, "completion_tokens": 5, "total_tokens": 14},
+            "model": "gpt-4o-mini-2024-07-18",
+        }
+        second_response = {
+            "content": json.dumps(
+                {
+                    "translations": {
+                        "1": "Brooklands opened in 1907 as the world's first racetrack.",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            "usage": {"prompt_tokens": 11, "completion_tokens": 6, "total_tokens": 17},
+            "model": "gpt-4o-mini-2024-07-18",
+        }
+        transport = FakeTransport(
+            model_ids=["gpt-4o-mini-2024-07-18"],
+            responses=[first_response, second_response],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            transcript_path = self._write_source_transcript(temp_root, segments=source_segments)
+
+            result = hybrid_text.run_hybrid_translation(
+                transcript_json_path=transcript_path,
+                output_dir=temp_root / "translations" / "en",
+                source_language="de",
+                target_language="en",
+                openai_project="Public",
+                requested_model="gpt-4o-mini-2024-07-18",
+                expected_named_entities=self.brooklands_expected_entities,
+                batch_size=1,
+                context_segments=1,
+                transport=transport,
+            )
+
+            self.assertEqual(result["validation_status"], "accepted")
+            self.assertTrue(result["retry_used"])
+            self.assertEqual(result["named_entity_violation_count"], 0)
+            self.assertEqual(len(transport.translate_calls), 2)
+            retry_payload = str(transport.translate_calls[1]["messages"][1]["content"])
+            self.assertIn("Brooklands", retry_payload)
+            self.assertIn("Brooklyn", retry_payload)
+            transcript_txt = Path(result["transcript_artifacts"]["transcript_txt_path"])
+            self.assertIn("Brooklands", transcript_txt.read_text(encoding="utf-8"))
 
     def test_run_hybrid_translation_recovers_failed_batch_with_single_segment_recovery(self) -> None:
         bad_response = {

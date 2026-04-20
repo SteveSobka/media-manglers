@@ -269,7 +269,7 @@ Useful docs
 
 - VIDEO_MANGLER.txt
 - AUDIO_MANGLER.txt
-- ../release-notes/RELEASE_NOTES_v0.7.3.txt
+- ../release-notes/RELEASE_NOTES_v0.7.4.txt
 
 Build and test
 --------------
@@ -292,8 +292,8 @@ The build keeps the operator-facing layout simple:
 
 - dist\bin\Video-Mangler.exe
 - dist\bin\Audio-Mangler.exe
-- dist\release\Video-Mangler-v0.7.3.zip
-- dist\release\Audio-Mangler-v0.7.3.zip
+- dist\release\Video-Mangler-v0.7.4.zip
+- dist\release\Audio-Mangler-v0.7.4.zip
 
 Use the versioned ZIP in dist\release as the normal operator handoff. The
 loose EXEs in dist\bin are mainly for local build checks, quick launch tests,

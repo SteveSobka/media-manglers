@@ -19,6 +19,8 @@ param(
     [ValidateSet("Private", "Public")]
     [string]$OpenAiProject = "Private",
     [string]$ProtectedTermsProfile = "",
+    [string]$ExpectedNamedEntitiesJson = "",
+    [string]$ExpectedNamedEntitiesPath = "",
     [int]$HeartbeatSeconds = 10,
     [int]$WhisperTimeoutSeconds = 0,
     [switch]$CopyRawAudio,
@@ -6251,11 +6253,40 @@ function Invoke-HybridAccuracyTextTranslation {
         [string]$GlossaryPath,
         [string]$OpenAiProject = "Private",
         [string]$RequestedModel = "",
+        [string]$ExpectedNamedEntitiesJson = "",
+        [string]$ExpectedNamedEntitiesPath = "",
         [int]$HeartbeatSeconds = 10
     )
 
     Ensure-Directory $TranslationFolder
     $validationReportPath = Join-Path $TranslationFolder "validation_report.json"
+    $expectedNamedEntities = @()
+    $expectedNamedEntitiesRaw = ""
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedNamedEntitiesPath)) {
+        if (-not (Test-Path -LiteralPath $ExpectedNamedEntitiesPath)) {
+            throw ("ExpectedNamedEntitiesPath not found: {0}" -f $ExpectedNamedEntitiesPath)
+        }
+        $expectedNamedEntitiesRaw = Get-Content -LiteralPath $ExpectedNamedEntitiesPath -Raw -Encoding UTF8
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ExpectedNamedEntitiesJson)) {
+        $expectedNamedEntitiesRaw = $ExpectedNamedEntitiesJson
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($expectedNamedEntitiesRaw)) {
+        try {
+            $parsedExpectedNamedEntities = $expectedNamedEntitiesRaw | ConvertFrom-Json
+        }
+        catch {
+            throw "Expected named-entity hints must be valid JSON."
+        }
+
+        if ($parsedExpectedNamedEntities -is [System.Array]) {
+            $expectedNamedEntities = @($parsedExpectedNamedEntities)
+        }
+        elseif ($null -ne $parsedExpectedNamedEntities) {
+            $expectedNamedEntities = @($parsedExpectedNamedEntities)
+        }
+    }
     $cliResult = Invoke-MediaManglersPythonCli `
         -PythonCommand $PythonCommand `
         -Command "hybrid-translate" `
@@ -6268,6 +6299,7 @@ function Invoke-HybridAccuracyTextTranslation {
             glossary_path        = $GlossaryPath
             openai_project       = $OpenAiProject
             requested_model      = $RequestedModel
+            expected_named_entities = $expectedNamedEntities
         } `
         -StepName ("Hybrid Accuracy text translation ({0})" -f $TargetLanguage) `
         -HeartbeatSeconds $HeartbeatSeconds `
@@ -8522,6 +8554,8 @@ function Process-Audio {
         [string]$OpenAiModel,
         [string]$OpenAiTranscriptionModel,
         [psobject]$ProtectedTermsProfileSelection = $null,
+        [string]$ExpectedNamedEntitiesJson = "",
+        [string]$ExpectedNamedEntitiesPath = "",
         [int]$WhisperTimeoutSeconds = 0,
         [int]$HeartbeatSeconds = 10
     )
@@ -8960,6 +8994,9 @@ function Process-Audio {
                         Write-OperatorNote ("OpenAI Translation: {0} / {1} / text-only" -f $OpenAiProject, $requestedModelLabel)
                         Write-Log "Hybrid Accuracy keeps source audio local and uploads transcript text only for English translation."
                         Write-Log ("Protected terms profile: {0}" -f $protectedTermsProfileDisplay)
+                        if (-not [string]::IsNullOrWhiteSpace($ExpectedNamedEntitiesJson) -or -not [string]::IsNullOrWhiteSpace($ExpectedNamedEntitiesPath)) {
+                            Write-Log "Benchmark expected named-entity hints were supplied for Hybrid validation."
+                        }
                         $hybridTranslationResult = Invoke-HybridAccuracyTextTranslation `
                             -PythonCommand $PythonCommand `
                             -TranscriptJsonPath $originalTranscriptJson `
@@ -8969,6 +9006,8 @@ function Process-Audio {
                             -GlossaryPath $protectedTermsProfilePath `
                             -OpenAiProject $OpenAiProject `
                             -RequestedModel $OpenAiModel `
+                            -ExpectedNamedEntitiesJson $ExpectedNamedEntitiesJson `
+                            -ExpectedNamedEntitiesPath $ExpectedNamedEntitiesPath `
                             -HeartbeatSeconds $HeartbeatSeconds
 
                         $providerUsed = if ([string]::IsNullOrWhiteSpace($hybridTranslationResult.UsedModel)) {
@@ -10174,6 +10213,8 @@ else {
                 -OpenAiModel $OpenAiModel `
                 -OpenAiTranscriptionModel $ResolvedOpenAiTranscriptionModel `
                 -ProtectedTermsProfileSelection $protectedTermsProfileSelection `
+                -ExpectedNamedEntitiesJson $ExpectedNamedEntitiesJson `
+                -ExpectedNamedEntitiesPath $ExpectedNamedEntitiesPath `
                 -WhisperTimeoutSeconds $WhisperTimeoutSeconds `
                 -HeartbeatSeconds $HeartbeatSeconds
 

@@ -246,6 +246,14 @@ if (-not $AggregateOnly) {
             if (-not [string]::IsNullOrWhiteSpace([string]$lane.protected_terms_profile)) {
                 $argList += @("-ProtectedTermsProfile", [string]$lane.protected_terms_profile)
             }
+            $expectedNamedEntitiesPath = ""
+            if ($null -ne $source.PSObject.Properties['expected_named_entities'] -and @($source.expected_named_entities).Count -gt 0) {
+                $expectedNamedEntitiesPath = Join-Path $runRoot "expected_named_entities.json"
+                (@($source.expected_named_entities) | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $expectedNamedEntitiesPath -Encoding UTF8
+            }
+            if (-not [string]::IsNullOrWhiteSpace($expectedNamedEntitiesPath)) {
+                $argList += @("-ExpectedNamedEntitiesPath", $expectedNamedEntitiesPath)
+            }
 
             $commandText = Format-CommandLine -Arguments $argList
             $laneMeta = [ordered]@{
@@ -268,6 +276,8 @@ if (-not $AggregateOnly) {
                 requested_openai_model = [string]$lane.openai_model
                 requested_openai_transcription_model = [string]$lane.openai_transcription_model
                 requested_protected_terms_profile = [string]$lane.protected_terms_profile
+                expected_named_entities = @($source.expected_named_entities)
+                expected_named_entities_path = $expectedNamedEntitiesPath
                 run_requested_at_utc = (Get-Date).ToUniversalTime().ToString("o")
                 input_cache_root = $inputCachePath
                 output_root = $outputPath

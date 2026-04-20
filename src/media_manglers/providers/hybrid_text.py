@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import socket
 from typing import Any, Protocol
+import unicodedata
 from urllib import error, request
 
 from ..core.transcripts import write_transcript_files
@@ -365,6 +366,19 @@ def _estimate_word_count(text: str) -> int:
     return len(_WORD_PATTERN.findall(text))
 
 
+def _search_normalized(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(character for character in normalized.casefold() if not unicodedata.combining(character))
+
+
+def _contains_term(text: str, term: str) -> bool:
+    if not text or not term:
+        return False
+    if term.casefold() in text.casefold():
+        return True
+    return _search_normalized(term) in _search_normalized(text)
+
+
 def _clip_text(value: str, *, limit: int = 240) -> str:
     normalized = str(value or "").strip()
     if len(normalized) <= limit:
@@ -438,6 +452,9 @@ def load_source_transcript_segments(transcript_json_path: str | Path) -> JsonObj
         "source_language": str(payload.get("source_language", "") or "").strip(),
         "task": str(payload.get("task", "") or "").strip(),
         "text": str(payload.get("text", "") or "").strip(),
+        "expected_named_entities": _normalize_expected_named_entities(
+            payload.get("expected_named_entities") or [],
+        ),
         "segments": segments,
     }
 
@@ -474,6 +491,29 @@ def load_glossary(glossary_path: str | Path) -> JsonObject:
         if str(term.get("source_term", "") or "").strip()
     ]
     return payload
+
+
+def _normalize_expected_named_entities(expected_named_entities: Any) -> list[JsonObject]:
+    normalized: list[JsonObject] = []
+    for item in expected_named_entities or []:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        normalized.append(
+            {
+                "term": term,
+                "category": str(item.get("category") or "").strip(),
+                "expected_in_translation": bool(item.get("expected_in_translation")),
+                "bad_forms": [
+                    str(value).strip()
+                    for value in (item.get("bad_forms") or [])
+                    if str(value).strip()
+                ],
+            }
+        )
+    return normalized
 
 
 def build_segment_batches(
@@ -515,6 +555,7 @@ def build_translation_request_payload(
     target_language: str,
     glossary: JsonObject,
     model: str,
+    expected_named_entities: list[JsonObject] | None = None,
     repair_instructions: list[str] | None = None,
     previous_response_text: str = "",
 ) -> JsonObject:
@@ -532,6 +573,7 @@ def build_translation_request_payload(
             details.append(f"forbidden: {forbidden}")
         glossary_lines.append(" - " + "; ".join(details))
 
+    normalized_expected_named_entities = _normalize_expected_named_entities(expected_named_entities)
     protected_terms_profile = str(glossary.get("profile", "") or "").strip()
     has_protected_terms = bool(glossary_lines)
     system_lines = [
@@ -540,6 +582,8 @@ def build_translation_request_payload(
         'Use this schema exactly: {"translations":{"<segment_id>":"<english translation>"}}.',
         "Do not summarize, compress, merge, omit, or reorder segments.",
         "Preserve meaning and speaker intent.",
+        "Preserve real place names, track names, product names, brand names, and other proper nouns exactly when they are identifiable from context.",
+        "Do not replace a named entity with a nearby-looking English word or place name.",
         (
             "Preserve product, app, brand, UI, and domain terms according to the protected terms profile."
             if has_protected_terms
@@ -547,6 +591,10 @@ def build_translation_request_payload(
         ),
         "If a source segment is blank, return an empty string for that segment id.",
     ]
+    if normalized_expected_named_entities:
+        system_lines.append(
+            "Expected named entities may be supplied for this file. Keep them exactly as written in English and avoid any listed bad forms.",
+        )
     if protected_terms_profile == "de-en-sim-racing":
         system_lines.extend(
             [
@@ -583,6 +631,7 @@ def build_translation_request_payload(
         ],
         "protected_terms_profile": protected_terms_profile,
         "protected_terms_rules": glossary_lines,
+        "expected_named_entities": normalized_expected_named_entities,
     }
     if protected_terms_profile == "de-en-sim-racing":
         user_payload["known_bad_example"] = {
@@ -740,6 +789,66 @@ def detect_glossary_violations(
     return violations
 
 
+def detect_named_entity_violations(
+    translated_segments: list[dict[str, Any]],
+    expected_named_entities: list[JsonObject] | None,
+    *,
+    enforce_expected_in_translation: bool = False,
+) -> list[JsonObject]:
+    violations: list[JsonObject] = []
+    normalized_expected = _normalize_expected_named_entities(expected_named_entities)
+    if not normalized_expected:
+        return violations
+
+    normalized_translated = [
+        _normalize_segment(segment, fallback_id=index)
+        for index, segment in enumerate(translated_segments, start=1)
+    ]
+    combined_translation_text = "\n".join(
+        segment["text"] for segment in normalized_translated if segment["text"]
+    )
+
+    for item in normalized_expected:
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        bad_forms = [str(value).strip() for value in (item.get("bad_forms") or []) if str(value).strip()]
+        bad_form_matches = [value for value in bad_forms if _contains_term(combined_translation_text, value)]
+        translation_present = _contains_term(combined_translation_text, term)
+        if not bad_form_matches and not (
+            enforce_expected_in_translation
+            and bool(item.get("expected_in_translation"))
+            and not translation_present
+        ):
+            continue
+
+        matching_segment_ids = sorted(
+            {
+                segment["id"]
+                for segment in normalized_translated
+                if any(_contains_term(segment["text"], candidate) for candidate in [term, *bad_forms])
+            }
+        )
+        issues: list[str] = []
+        if enforce_expected_in_translation and bool(item.get("expected_in_translation")) and not translation_present:
+            issues.append("missing from English translation")
+        if bad_form_matches:
+            issues.append("bad form in English translation")
+
+        violations.append(
+            {
+                "term": term,
+                "category": str(item.get("category") or "").strip(),
+                "translation_present": translation_present,
+                "bad_form_matches": bad_form_matches,
+                "matching_segment_ids": matching_segment_ids,
+                "issue": "; ".join(issues),
+            }
+        )
+
+    return violations
+
+
 def _collect_segment_warning(
     warning_map: dict[int, list[JsonObject]],
     *,
@@ -755,6 +864,8 @@ def validate_translated_segments(
     translated_segments: list[dict[str, Any]],
     *,
     glossary: JsonObject | None = None,
+    expected_named_entities: list[JsonObject] | None = None,
+    enforce_expected_entity_presence: bool = False,
     unexpected_segment_ids: list[int] | None = None,
 ) -> JsonObject:
     normalized_source = [
@@ -912,6 +1023,23 @@ def validate_translated_segments(
             },
         )
 
+    named_entity_violations = detect_named_entity_violations(
+        normalized_translated,
+        expected_named_entities,
+        enforce_expected_in_translation=enforce_expected_entity_presence,
+    )
+    for violation in named_entity_violations:
+        for segment_id in violation.get("matching_segment_ids") or []:
+            _collect_segment_warning(
+                warning_map,
+                segment_id=int(segment_id),
+                issue="named_entity_violation",
+                detail={
+                    "term": violation.get("term"),
+                    "bad_form_matches": violation.get("bad_form_matches"),
+                },
+            )
+
     segment_warnings = [
         {
             "segment_id": segment_id,
@@ -930,6 +1058,7 @@ def validate_translated_segments(
     warning_count = (
         len(segment_warnings)
         + len(glossary_violations)
+        + len(named_entity_violations)
         + len(unexpected_ids)
     )
     valid = (
@@ -938,6 +1067,7 @@ def validate_translated_segments(
         and not contamination_matches
         and not mojibake_matches
         and not glossary_violations
+        and not named_entity_violations
         and not compression_warnings
         and not garbage_pattern_matches
     )
@@ -964,6 +1094,8 @@ def validate_translated_segments(
         "encoding_artifact_count": len(mojibake_matches),
         "glossary_violations": glossary_violations,
         "glossary_violation_count": len(glossary_violations),
+        "named_entity_violations": named_entity_violations,
+        "named_entity_violation_count": len(named_entity_violations),
         "compression_warnings": compression_warnings,
         "compression_warning_count": len(compression_warnings),
         "garbage_pattern_matches": garbage_pattern_matches,
@@ -1170,6 +1302,30 @@ def _build_retry_instructions(validation: JsonObject) -> list[str]:
         instructions.append("Remove mojibake or broken encoding artifacts.")
     if validation.get("glossary_violation_count"):
         instructions.append("Follow the protected terms profile exactly for protected product and UI terms.")
+    if validation.get("named_entity_violation_count"):
+        named_entity_violations = validation.get("named_entity_violations") or []
+        terms = list(
+            dict.fromkeys(
+                str(item.get("term") or "").strip()
+                for item in named_entity_violations
+                if str(item.get("term") or "").strip()
+            )
+        )
+        bad_forms = list(
+            dict.fromkeys(
+                str(match).strip()
+                for item in named_entity_violations
+                for match in (item.get("bad_form_matches") or [])
+                if str(match).strip()
+            )
+        )
+        instruction = "Preserve expected named entities exactly"
+        if terms:
+            instruction += ": " + ", ".join(terms)
+        instruction += "."
+        if bad_forms:
+            instruction += " Do not use these bad forms: " + ", ".join(bad_forms) + "."
+        instructions.append(instruction)
     if validation.get("compression_warning_count"):
         instructions.append("Do not summarize or compress the meaning.")
     if validation.get("garbage_pattern_count"):
@@ -1227,6 +1383,7 @@ def _translate_batch(
     source_language: str,
     target_language: str,
     glossary: JsonObject,
+    expected_named_entities: list[JsonObject] | None,
     model_resolution: ModelResolution,
     transport: TranslationTransport,
 ) -> JsonObject:
@@ -1243,6 +1400,7 @@ def _translate_batch(
             target_language=target_language,
             glossary=glossary,
             model=model_resolution.used_model,
+            expected_named_entities=expected_named_entities,
             repair_instructions=(
                 _build_retry_instructions(attempt_details[-1]["validation"])
                 if attempt_details and attempt_details[-1].get("validation")
@@ -1280,6 +1438,7 @@ def _translate_batch(
                     "contamination_count": 0,
                     "mojibake_count": 0,
                     "glossary_violation_count": 0,
+                    "named_entity_violation_count": 0,
                     "compression_warning_count": 0,
                     "garbage_pattern_count": 0,
                     "empty_translation_count": 0,
@@ -1310,6 +1469,7 @@ def _translate_batch(
                 batch.get("segments") or [],
                 translated_segments,
                 glossary=glossary,
+                expected_named_entities=expected_named_entities,
                 unexpected_segment_ids=unexpected_ids,
             )
         except HybridTranslationError as exc:
@@ -1325,6 +1485,7 @@ def _translate_batch(
                 "contamination_count": 0,
                 "mojibake_count": 0,
                 "glossary_violation_count": 0,
+                "named_entity_violation_count": 0,
                 "compression_warning_count": 0,
                 "garbage_pattern_count": 0,
                 "empty_translation_count": 0,
@@ -1388,6 +1549,7 @@ def _translate_batch_with_single_segment_recovery(
     source_language: str,
     target_language: str,
     glossary: JsonObject,
+    expected_named_entities: list[JsonObject] | None,
     model_resolution: ModelResolution,
     transport: TranslationTransport,
     context_segments: int,
@@ -1397,6 +1559,7 @@ def _translate_batch_with_single_segment_recovery(
         source_language=source_language,
         target_language=target_language,
         glossary=glossary,
+        expected_named_entities=expected_named_entities,
         model_resolution=model_resolution,
         transport=transport,
     )
@@ -1432,6 +1595,7 @@ def _translate_batch_with_single_segment_recovery(
             source_language=source_language,
             target_language=target_language,
             glossary=glossary,
+            expected_named_entities=expected_named_entities,
             model_resolution=model_resolution,
             transport=transport,
         )
@@ -1452,6 +1616,7 @@ def _translate_batch_with_single_segment_recovery(
         batch.get("segments") or [],
         recovered_segments,
         glossary=glossary,
+        expected_named_entities=expected_named_entities,
     )
 
     failure_messages = [
@@ -1500,6 +1665,7 @@ def run_hybrid_translation(
     target_language: str = HYBRID_DEFAULT_TARGET_LANGUAGE,
     openai_project: str = "Private",
     requested_model: str = "",
+    expected_named_entities: list[JsonObject] | None = None,
     batch_size: int = HYBRID_DEFAULT_BATCH_SIZE,
     context_segments: int = HYBRID_DEFAULT_CONTEXT_SEGMENTS,
     transport: TranslationTransport | None = None,
@@ -1517,6 +1683,9 @@ def run_hybrid_translation(
 
     resolved_glossary_path = str(glossary_path or "").strip()
     glossary = load_glossary(resolved_glossary_path) if resolved_glossary_path else {"profile": "", "lane_id": "", "terms": []}
+    normalized_expected_named_entities = _normalize_expected_named_entities(
+        expected_named_entities or transcript.get("expected_named_entities") or [],
+    )
     normalized_source_language = (
         str(source_language or "").strip().lower()
         or str(transcript.get("source_language") or "").strip().lower()
@@ -1554,6 +1723,7 @@ def run_hybrid_translation(
             source_language=normalized_source_language,
             target_language=target_languages[0],
             glossary=glossary,
+            expected_named_entities=normalized_expected_named_entities,
             model_resolution=model_resolution,
             transport=effective_transport,
             context_segments=int(context_segments or HYBRID_DEFAULT_CONTEXT_SEGMENTS),
@@ -1576,13 +1746,6 @@ def run_hybrid_translation(
             if str(batch_result.get("error") or "").strip():
                 warnings.append(str(batch_result["error"]))
 
-    validation_status = (
-        "accepted"
-        if len(accepted_translated_segments) == len(source_segments)
-        else "rejected"
-        if not accepted_translated_segments
-        else "partial"
-    )
     failed_segment_ids = sorted(set(failed_segment_ids))
     overall_validation = validate_translated_segments(
         [
@@ -1592,6 +1755,16 @@ def run_hybrid_translation(
         ],
         accepted_translated_segments,
         glossary=glossary,
+        expected_named_entities=normalized_expected_named_entities,
+        enforce_expected_entity_presence=True,
+    )
+    has_full_segment_coverage = len(accepted_translated_segments) == len(source_segments)
+    validation_status = (
+        "accepted"
+        if has_full_segment_coverage and overall_validation.get("valid")
+        else "rejected"
+        if not accepted_translated_segments or has_full_segment_coverage
+        else "partial"
     )
     resolved_estimated_cost_usd = (
         estimated_cost_usd
@@ -1653,6 +1826,7 @@ def run_hybrid_translation(
         "glossary_profile": str(glossary.get("profile") or ""),
         "protected_terms_path": resolved_glossary_path,
         "protected_terms_profile": str(glossary.get("profile") or ""),
+        "expected_named_entities": normalized_expected_named_entities,
         "privacy_class": HYBRID_PRIVACY_CLASS,
         "segment_count": len(source_segments),
         "translated_segment_count": len(accepted_translated_segments),
@@ -1674,6 +1848,8 @@ def run_hybrid_translation(
         + sum(int(item.get("glossary_violation_count") or 0) for item in failed_batch_validations),
         "protected_terms_violation_count": int(overall_validation.get("glossary_violation_count") or 0)
         + sum(int(item.get("glossary_violation_count") or 0) for item in failed_batch_validations),
+        "named_entity_violation_count": int(overall_validation.get("named_entity_violation_count") or 0)
+        + sum(int(item.get("named_entity_violation_count") or 0) for item in failed_batch_validations),
         "compression_warning_count": int(overall_validation.get("compression_warning_count") or 0)
         + sum(int(item.get("compression_warning_count") or 0) for item in failed_batch_validations),
         "garbage_pattern_count": int(overall_validation.get("garbage_pattern_count") or 0)
@@ -1706,6 +1882,7 @@ def run_hybrid_translation(
         "contamination_matches": (overall_validation.get("contamination_matches") or []) + failed_batch_contamination_matches,
         "mojibake_matches": (overall_validation.get("mojibake_matches") or []) + failed_batch_mojibake_matches,
         "glossary_violations": (overall_validation.get("glossary_violations") or []) + failed_batch_glossary_violations,
+        "named_entity_violations": (overall_validation.get("named_entity_violations") or []),
         "compression_warnings": (overall_validation.get("compression_warnings") or []) + failed_batch_compression_warnings,
         "garbage_pattern_matches": (overall_validation.get("garbage_pattern_matches") or []) + failed_batch_garbage_matches,
         "shape_ok": bool(overall_validation.get("shape_ok")),
@@ -1730,6 +1907,7 @@ def validate_from_request(payload: JsonObject) -> JsonObject:
     if transcript_json_path:
         transcript = load_source_transcript_segments(str(transcript_json_path))
         source_segments = transcript["segments"]
+        expected_named_entities = transcript.get("expected_named_entities") or []
         source_language = (
             str(transcript.get("source_language") or "").strip()
             or str(transcript.get("language") or "").strip()
@@ -1739,6 +1917,7 @@ def validate_from_request(payload: JsonObject) -> JsonObject:
             _normalize_segment(segment, fallback_id=index)
             for index, segment in enumerate(source_segments_payload or [], start=1)
         ]
+        expected_named_entities = payload.get("expected_named_entities") or []
         source_language = str(payload.get("source_language") or "").strip()
 
     glossary = load_glossary(glossary_path) if glossary_path else {"profile": "", "lane_id": "", "terms": []}
@@ -1746,6 +1925,8 @@ def validate_from_request(payload: JsonObject) -> JsonObject:
         source_segments,
         translated_segments_payload,
         glossary=glossary,
+        expected_named_entities=expected_named_entities,
+        enforce_expected_entity_presence=True,
     )
     report["source_language"] = source_language
     report["target_languages"] = validate_hybrid_target_languages(
@@ -1794,6 +1975,7 @@ def translate_from_request(payload: JsonObject) -> JsonObject:
         target_language=str(payload.get("target_language") or HYBRID_DEFAULT_TARGET_LANGUAGE),
         openai_project=str(payload.get("openai_project") or "Private"),
         requested_model=str(payload.get("requested_model") or ""),
+        expected_named_entities=payload.get("expected_named_entities") or [],
         batch_size=int(payload.get("batch_size") or HYBRID_DEFAULT_BATCH_SIZE),
         context_segments=int(payload.get("context_segments") or HYBRID_DEFAULT_CONTEXT_SEGMENTS),
         output_report_path=payload.get("output_report_path"),
