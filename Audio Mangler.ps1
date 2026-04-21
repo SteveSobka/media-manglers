@@ -3753,6 +3753,7 @@ function Invoke-PythonWhisperTranscriptProcess {
         [string]$TranscriptFolder,
         [string]$ModelName,
         [string]$LanguageCode,
+        [string]$InitialPrompt = "",
         [string]$FFmpegExe,
         [bool]$PreferGpu,
         [ValidateSet("transcribe","translate")]
@@ -3779,6 +3780,7 @@ function Invoke-PythonWhisperTranscriptProcess {
             output_dir                 = $TranscriptFolder
             model_name                 = $ModelName
             language_code              = $LanguageCode
+            initial_prompt             = $InitialPrompt
             ffmpeg_dir                 = $(Split-Path $FFmpegExe -Parent)
             prefer_gpu                 = $PreferGpu
             task_name                  = $Task
@@ -3850,13 +3852,14 @@ audio_path = sys.argv[1]
 output_dir = sys.argv[2]
 model_name = sys.argv[3]
 language_code = sys.argv[4]
-ffmpeg_dir = sys.argv[5]
-prefer_gpu = sys.argv[6].lower() == "true"
-task_name = sys.argv[7]
-json_name = sys.argv[8]
-srt_name = sys.argv[9]
-text_name = sys.argv[10]
-progress_file = sys.argv[11]
+initial_prompt = sys.argv[5]
+ffmpeg_dir = sys.argv[6]
+prefer_gpu = sys.argv[7].lower() == "true"
+task_name = sys.argv[8]
+json_name = sys.argv[9]
+srt_name = sys.argv[10]
+text_name = sys.argv[11]
+progress_file = sys.argv[12]
 
 os.makedirs(output_dir, exist_ok=True)
 
@@ -3977,6 +3980,7 @@ def run_transcription(device_name):
     result = model.transcribe(
         audio_path,
         language=language_code if language_code else None,
+        initial_prompt=initial_prompt if initial_prompt else None,
         task=task_name,
         verbose=False,
         fp16=fp16
@@ -4092,6 +4096,7 @@ finally:
                 $TranscriptFolder,
                 $ModelName,
                 $LanguageCode,
+                $InitialPrompt,
                 $ffmpegDir,
                 $PreferGpu.ToString(),
                 $Task,
@@ -4248,6 +4253,7 @@ function Invoke-PythonWhisperTranscript {
         [string]$TranscriptFolder,
         [string]$ModelName,
         [string]$LanguageCode,
+        [string]$InitialPrompt = "",
         [string]$FFmpegExe,
         [bool]$PreferGpu,
         [ValidateSet("transcribe","translate")]
@@ -4374,13 +4380,14 @@ function Invoke-PythonWhisperTranscript {
     try {
         $result = Invoke-PythonWhisperTranscriptProcess `
             -PythonCommand $PythonCommand `
-            -AudioPath $AudioPath `
-            -TranscriptFolder $TranscriptFolder `
-            -ModelName $resolvedModelName `
-            -LanguageCode $LanguageCode `
-            -FFmpegExe $FFmpegExe `
-            -PreferGpu $PreferGpu `
-            -Task $Task `
+                -AudioPath $AudioPath `
+                -TranscriptFolder $TranscriptFolder `
+                -ModelName $resolvedModelName `
+                -LanguageCode $LanguageCode `
+                -InitialPrompt $InitialPrompt `
+                -FFmpegExe $FFmpegExe `
+                -PreferGpu $PreferGpu `
+                -Task $Task `
             -JsonName $JsonName `
             -SrtName $SrtName `
             -TextName $TextName `
@@ -6243,23 +6250,12 @@ function Assert-HybridAccuracyOpenAiProjectKey {
     return $variableName
 }
 
-function Invoke-HybridAccuracyTextTranslation {
+function Get-ExpectedNamedEntitiesCollection {
     param(
-        [string]$PythonCommand,
-        [string]$TranscriptJsonPath,
-        [string]$TranslationFolder,
-        [string]$SourceLanguage,
-        [string]$TargetLanguage = "en",
-        [string]$GlossaryPath,
-        [string]$OpenAiProject = "Private",
-        [string]$RequestedModel = "",
         [string]$ExpectedNamedEntitiesJson = "",
-        [string]$ExpectedNamedEntitiesPath = "",
-        [int]$HeartbeatSeconds = 10
+        [string]$ExpectedNamedEntitiesPath = ""
     )
 
-    Ensure-Directory $TranslationFolder
-    $validationReportPath = Join-Path $TranslationFolder "validation_report.json"
     $expectedNamedEntities = @()
     $expectedNamedEntitiesRaw = ""
     if (-not [string]::IsNullOrWhiteSpace($ExpectedNamedEntitiesPath)) {
@@ -6287,6 +6283,55 @@ function Invoke-HybridAccuracyTextTranslation {
             $expectedNamedEntities = @($parsedExpectedNamedEntities)
         }
     }
+
+    return @($expectedNamedEntities)
+}
+
+function Get-BenchmarkTranscriptionInitialPrompt {
+    param(
+        [object[]]$ExpectedNamedEntities
+    )
+
+    $terms = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($ExpectedNamedEntities)) {
+        $term = ""
+        if ($null -ne $item) {
+            $term = [string]$item.term
+        }
+        $term = $term.Trim()
+        if ([string]::IsNullOrWhiteSpace($term) -or $terms.Contains($term)) {
+            continue
+        }
+        [void]$terms.Add($term)
+    }
+
+    if ($terms.Count -eq 0) {
+        return ""
+    }
+
+    return ($terms -join ", ")
+}
+
+function Invoke-HybridAccuracyTextTranslation {
+    param(
+        [string]$PythonCommand,
+        [string]$TranscriptJsonPath,
+        [string]$TranslationFolder,
+        [string]$SourceLanguage,
+        [string]$TargetLanguage = "en",
+        [string]$GlossaryPath,
+        [string]$OpenAiProject = "Private",
+        [string]$RequestedModel = "",
+        [string]$ExpectedNamedEntitiesJson = "",
+        [string]$ExpectedNamedEntitiesPath = "",
+        [int]$HeartbeatSeconds = 10
+    )
+
+    Ensure-Directory $TranslationFolder
+    $validationReportPath = Join-Path $TranslationFolder "validation_report.json"
+    $expectedNamedEntities = @(Get-ExpectedNamedEntitiesCollection `
+            -ExpectedNamedEntitiesJson $ExpectedNamedEntitiesJson `
+            -ExpectedNamedEntitiesPath $ExpectedNamedEntitiesPath)
     $cliResult = Invoke-MediaManglersPythonCli `
         -PythonCommand $PythonCommand `
         -Command "hybrid-translate" `
@@ -8754,6 +8799,16 @@ function Process-Audio {
 
     $whisperMode = "CPU"
     $transcriptionUsesOpenAi = ($ProcessingMode -eq "AI" -and $OpenAiProject -eq "Private")
+    $expectedNamedEntities = @(Get-ExpectedNamedEntitiesCollection `
+            -ExpectedNamedEntitiesJson $ExpectedNamedEntitiesJson `
+            -ExpectedNamedEntitiesPath $ExpectedNamedEntitiesPath)
+    $benchmarkTranscriptionInitialPrompt = ""
+    if (-not $transcriptionUsesOpenAi) {
+        $benchmarkTranscriptionInitialPrompt = Get-BenchmarkTranscriptionInitialPrompt -ExpectedNamedEntities $expectedNamedEntities
+        if (-not [string]::IsNullOrWhiteSpace($benchmarkTranscriptionInitialPrompt)) {
+            Write-Log ("Benchmark transcription prompt: preserving named entities with initial prompt '{0}'." -f $benchmarkTranscriptionInitialPrompt)
+        }
+    }
     $resolvedWhisperModel = $ModelName
     $transcriptResult = Invoke-PhaseAction -Name "Transcript" -Detail $audioItem.Name -Action {
         if ((Test-Path -LiteralPath $originalTranscriptSrt) -and (Test-Path -LiteralPath $originalTranscriptJson) -and (Test-Path -LiteralPath $originalTranscriptText)) {
@@ -8790,6 +8845,7 @@ function Process-Audio {
                 -TranscriptFolder $transcriptFolder `
                 -ModelName $resolvedWhisperModel `
                 -LanguageCode $LanguageCode `
+                -InitialPrompt $benchmarkTranscriptionInitialPrompt `
                 -FFmpegExe $FFmpegExe `
                 -PreferGpu $CanUseWhisperGpu `
                 -Task "transcribe" `

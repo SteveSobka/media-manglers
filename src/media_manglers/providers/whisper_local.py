@@ -231,6 +231,7 @@ def _run_transcription(
     language_code: str,
     task_name: str,
     prefer_gpu: bool,
+    initial_prompt: str = "",
     progress_callback: Callable[[str, str, str, dict[str, Any] | None], None] | None = None,
 ) -> tuple[dict[str, Any], str, bool, str]:
     import whisper
@@ -265,13 +266,15 @@ def _run_transcription(
                 {"requested_device": requested_device},
             )
         _log(f"[PY] Starting {task_name} on {device_name}...")
-        result = model.transcribe(
-            audio_path,
-            language=language_code or None,
-            task=task_name,
-            verbose=False,
-            fp16=fp16,
-        )
+        transcribe_kwargs: dict[str, Any] = {
+            "language": language_code or None,
+            "task": task_name,
+            "verbose": False,
+            "fp16": fp16,
+        }
+        if str(initial_prompt or "").strip():
+            transcribe_kwargs["initial_prompt"] = str(initial_prompt).strip()
+        result = model.transcribe(audio_path, **transcribe_kwargs)
         return result, fp16
 
     if prefer_gpu and torch is not None and torch.cuda.is_available():
@@ -308,6 +311,7 @@ def transcribe_from_request(payload: dict[str, Any]) -> dict[str, Any]:
     ffmpeg_dir = str(payload.get("ffmpeg_dir") or "")
     prefer_gpu = bool(payload.get("prefer_gpu", False))
     task_name = str(payload.get("task_name") or "transcribe")
+    initial_prompt = str(payload.get("initial_prompt") or "")
     json_name = str(payload.get("json_name") or "transcript.json")
     srt_name = str(payload.get("srt_name") or "transcript.srt")
     text_name = str(payload.get("text_name") or "transcript.txt")
@@ -405,6 +409,7 @@ def transcribe_from_request(payload: dict[str, Any]) -> dict[str, Any]:
             language_code=language_code,
             task_name=task_name,
             prefer_gpu=prefer_gpu,
+            initial_prompt=initial_prompt,
             progress_callback=set_progress,
         )
         if gpu_error:

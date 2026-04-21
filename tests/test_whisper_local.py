@@ -50,6 +50,8 @@ class _FakeCpuTorchModule:
 
 
 class _FakeModel:
+    last_initial_prompt: str | None = None
+
     def __init__(self, device_name: str) -> None:
         self._device_name = device_name
 
@@ -61,7 +63,9 @@ class _FakeModel:
         task: str,
         verbose: bool,
         fp16: bool,
+        initial_prompt: str | None = None,
     ) -> dict[str, object]:
+        _FakeModel.last_initial_prompt = initial_prompt
         if self._device_name == "cuda":
             raise RuntimeError("simulated CUDA failure")
         return {
@@ -171,6 +175,39 @@ class WhisperLocalProviderTests(unittest.TestCase):
             self.assertTrue((output_dir / "transcript.json").exists())
             self.assertTrue((output_dir / "transcript.srt").exists())
             self.assertTrue((output_dir / "transcript.txt").exists())
+
+    def test_transcribe_from_request_forwards_initial_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            audio_path = temp_root / "input.mp3"
+            output_dir = temp_root / "output"
+            audio_path.write_bytes(b"fake-audio")
+            _FakeModel.last_initial_prompt = None
+
+            payload = {
+                "audio_path": str(audio_path),
+                "output_dir": str(output_dir),
+                "model_name": "medium",
+                "language_code": "de",
+                "prefer_gpu": False,
+                "task_name": "transcribe",
+                "initial_prompt": "Brooklands",
+                "heartbeat_interval_seconds": 15,
+            }
+
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "whisper": _FakeWhisperModule(),
+                    "torch": _FakeCpuTorchModule(),
+                },
+                clear=False,
+            ):
+                result = whisper_local.transcribe_from_request(payload)
+
+            self.assertEqual(result["device"], "cpu")
+            self.assertEqual(_FakeModel.last_initial_prompt, "Brooklands")
+            self.assertTrue((output_dir / "transcript.json").exists())
 
 
 if __name__ == "__main__":
