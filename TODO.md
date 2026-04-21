@@ -12,10 +12,6 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #30: Run the technical terminology shadow benchmark set under the merged framework
-  Status: open follow-up
-  Current note: The shadow-set manifest is now tracked on `main`, but the first real execution pass for Crew Chief / SimHub / settings vocabulary coverage is still pending.
-
 - [ ] Issue #31: Investigate hybrid-private-medium-gpt-5-mini unavailability on Rig1 Private project
   Status: open follow-up
   Current note: The benchmark pilot attempted the lane and preserved the failure honestly instead of silently substituting a different model. This now needs environment/model-availability follow-up, not benchmark-runner changes.
@@ -25,6 +21,10 @@ Rules:
   Current note: `Audio Mangler` is the merged primary benchmark surface for recurring language quality work. A later pass should add a smaller recurring Video parity subset without letting video/frame overhead dominate the language benchmark.
 
 ## Repo-Only Active Work
+
+- [ ] Investigate source-side SimHub named-entity misses surfaced by the technical terminology shadow suite
+  Status: repo-only follow-up
+  Current note: The completed Rig1 shadow-suite run preserved source-side `SimHub` misses on `en-simhub-KKW6hsjhi1I` / `local-medium-gpu`, `fr-simhub-8nK6WdZiOx4` / `local-medium-gpu`, and `fr-simhub-8nK6WdZiOx4` / `hybrid-private-medium-gpt-4o-mini`. Hybrid translation validation still accepted and preserved `SimHub`, so the follow-up is about source-transcript recall/segmentation rather than translation corruption.
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
   Status: repo-only follow-up
@@ -39,6 +39,10 @@ Rules:
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
 ## Recently Completed
+
+- [x] Issue #30: Run the technical terminology shadow benchmark set under the merged framework
+  Status: completed on 2026-04-21 and closed on GitHub
+  Current note: The Rig1 shadow-suite run completed at `C:\DATA\TEMP\CODEX\mm-technical-terminology-shadow-20260421` on the approved Audio-only lane set `local-medium-gpu` plus `hybrid-private-medium-gpt-4o-mini` across `de-crew-chief-jfySUBLx8Ps`, `en-simhub-KKW6hsjhi1I`, `fr-simhub-Iyh4XIyc_-Q`, and `fr-simhub-8nK6WdZiOx4`. Final regenerated summary outputs reported `accepted=5`, `warning=3`, `rejected=0`, `deferred=0`; detected languages matched expected `de/en/fr/fr`; the English control stayed on the no-op copy path with zero OpenAI text cost on both lanes; `Crew Chief` stayed clean; all non-English Hybrid rows validated `accepted` with zero failed segments and zero contamination/mojibake/compression/entity-violation counts; and the remaining warnings stayed source-side, with `SimHub` missed in `en-simhub-KKW6hsjhi1I` on `local-medium-gpu` plus `fr-simhub-8nK6WdZiOx4` on both approved lanes.
 
 - [x] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: completed on 2026-04-21 and closed on GitHub

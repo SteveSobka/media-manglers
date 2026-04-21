@@ -47,8 +47,13 @@ Current benchmark status
 - Latest Brooklands source-transcript follow-up:
   docs\benchmarks\2026-04-20-brooklands-source-transcript-recall-fix.md
 - Latest canonical long benchmark status:
-  defined in manifests; full long-suite rerun not yet completed under the new
-  benchmark-reporting framework
+  completed on Rig1 on 2026-04-21 under the merged benchmark-reporting
+  framework; see TODO.md and issue #29 for the local-only evidence root and
+  preserved summary
+- Latest technical terminology shadow status:
+  completed on Rig1 on 2026-04-21 under the merged benchmark-reporting
+  framework; see TODO.md and issue #30 for the local-only evidence root and
+  per-row findings
 
 Current lane guidance
 ---------------------
