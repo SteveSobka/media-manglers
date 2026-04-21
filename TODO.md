@@ -12,10 +12,6 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
-  Status: open follow-up
-  Current note: The canonical long suite is now defined in tracked manifests on `main`, but the full long-suite execution was intentionally deferred during the framework landing pass.
-
 - [ ] Issue #30: Run the technical terminology shadow benchmark set under the merged framework
   Status: open follow-up
   Current note: The shadow-set manifest is now tracked on `main`, but the first real execution pass for Crew Chief / SimHub / settings vocabulary coverage is still pending.
@@ -43,6 +39,10 @@ Rules:
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
 ## Recently Completed
+
+- [x] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
+  Status: completed on 2026-04-21 and closed on GitHub
+  Current note: The canonical long Rig1 suite completed at `C:\DATA\TEMP\CODEX\mm-canonical-long-suite-20260421` on the approved Audio-only lane set `local-medium-gpu` plus `hybrid-private-medium-gpt-4o-mini` across `en-nascar-Pc-sv-w4yeA`, `de-nuerburgring-GzcP3gciS6A`, `fr-targa-florio-CYaZsZuc3AE`, and `it-ferrari-f40-s_1I8ClUinQ`. Final regenerated summary outputs under `summary\` reported `accepted=8`, `warning=0`, `rejected=0`, `deferred=0`; detected languages matched expected `en/de/fr/it`; the English control stayed on the no-op copy path with zero OpenAI text cost; German `Nurburgring` and French `Targa Florio` entity checks stayed clean; and the only notable wrinkle was the French Hybrid row preserving a `PARTIAL_SUCCESS` / `validation partial` package with one failed translated segment while the benchmark rollup still marked that row `accepted`.
 
 - [x] Issue #38: Investigate local-large-gpu adaptive runtime budget for Brooklands benchmark runs
   Status: merged to main, released as `v0.7.7`, and closed on 2026-04-21
