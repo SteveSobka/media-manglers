@@ -28,6 +28,9 @@ _RUNTIME_PROFILES: dict[str, dict[str, dict[str, float]]] = {
 }
 
 _LONG_RUN_PROMPT_SECONDS = 45.0 * 60.0
+_SHORT_GPU_LARGE_CALIBRATION_TRIGGER_SECONDS = 5.0 * 60.0
+_SHORT_GPU_LARGE_GUARDRAIL_RTF = 1.35
+_SHORT_GPU_LARGE_MIN_SAMPLE_SECONDS = 45.0
 
 
 def _coerce_non_negative_float(value: Any) -> float:
@@ -106,7 +109,9 @@ def recommend_calibration(
             "reason": "source duration was unavailable",
         }
 
-    if duration < 15.0 * 60.0:
+    short_gpu_large_guardrail = gpu_capable and model_family == "large" and duration >= _SHORT_GPU_LARGE_CALIBRATION_TRIGGER_SECONDS
+
+    if duration < 15.0 * 60.0 and not short_gpu_large_guardrail:
         return {
             "recommended": False,
             "sample_seconds": 0,
@@ -114,18 +119,24 @@ def recommend_calibration(
         }
 
     should_force = (not gpu_capable) and model_family == "large" and duration >= 10.0 * 60.0
-    if not should_force and estimated < 30.0 * 60.0:
+    if not should_force and not short_gpu_large_guardrail and estimated < 30.0 * 60.0:
         return {
             "recommended": False,
             "sample_seconds": 0,
             "reason": "the heuristic estimate is not long enough to justify a separate calibration sample",
         }
 
-    sample_seconds = int(round(min(60.0, max(30.0, duration * 0.02))))
+    min_sample_seconds = _SHORT_GPU_LARGE_MIN_SAMPLE_SECONDS if short_gpu_large_guardrail else 30.0
+    sample_seconds = int(round(min(60.0, max(min_sample_seconds, duration * 0.02))))
+    reason = (
+        "large GPU runs on this source length benefit from a short machine-local calibration sample"
+        if short_gpu_large_guardrail
+        else "long local runs benefit from a short machine-local calibration sample"
+    )
     return {
         "recommended": True,
         "sample_seconds": sample_seconds,
-        "reason": "long local runs benefit from a short machine-local calibration sample",
+        "reason": reason,
     }
 
 
@@ -175,6 +186,12 @@ def build_runtime_plan(
             calibration_status = "used short-sample calibration"
         elif calibration_reason:
             calibration_status = calibration_reason
+
+    if not calibration_used and gpu_capable and profile["model_family"] == "large" and duration >= _SHORT_GPU_LARGE_CALIBRATION_TRIGGER_SECONDS:
+        estimate_seconds = max(
+            estimate_seconds,
+            startup_seconds + (duration * _SHORT_GPU_LARGE_GUARDRAIL_RTF),
+        )
 
     calibration_recommendation = recommend_calibration(
         source_duration_seconds=duration,

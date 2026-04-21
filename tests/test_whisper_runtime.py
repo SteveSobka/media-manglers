@@ -10,6 +10,34 @@ from media_manglers.core.whisper_runtime import build_runtime_plan
 
 
 class WhisperRuntimePlanTests(unittest.TestCase):
+    def test_short_large_gpu_run_gets_guardrail_budget_and_calibration(self) -> None:
+        plan = build_runtime_plan(
+            source_duration_seconds=322.421,
+            model_name="large",
+            gpu_capable=True,
+            heartbeat_seconds=15,
+        )
+
+        self.assertTrue(plan["calibration_recommended"])
+        self.assertEqual(plan["calibration_sample_seconds"], 45)
+        self.assertGreaterEqual(plan["estimated_runtime_seconds"], 480)
+        self.assertGreaterEqual(plan["resolved_timeout_seconds"], 660)
+
+    def test_short_medium_gpu_run_still_skips_calibration(self) -> None:
+        plan = build_runtime_plan(
+            source_duration_seconds=322.421,
+            model_name="medium",
+            gpu_capable=True,
+            heartbeat_seconds=15,
+        )
+
+        self.assertFalse(plan["calibration_recommended"])
+        self.assertEqual(plan["calibration_sample_seconds"], 0)
+        self.assertEqual(
+            plan["calibration_recommendation_reason"],
+            "source media is short enough that a calibration pass would add unnecessary overhead",
+        )
+
     def test_longer_media_gets_a_higher_adaptive_timeout(self) -> None:
         short_plan = build_runtime_plan(
             source_duration_seconds=15 * 60,

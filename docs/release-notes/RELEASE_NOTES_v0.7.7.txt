@@ -1,0 +1,73 @@
+Release Notes - v0.7.7
+
+Date: 2026-04-21
+
+Scope
+
+- repository/app version: 0.7.7
+- release type: focused Local Whisper runtime-planning follow-up
+- validation surface: Rig1
+
+What changed
+
+- Tuned Local Whisper runtime planning for short `large` GPU runs on Rig1.
+- Added a conservative short-run heuristic guardrail for `large` GPU planning
+  so still-progressing CUDA transcription is less likely to be killed too early
+  before calibration data exists.
+- Widened runtime calibration recommendation for short `large` GPU runs and
+  raised the calibration sample floor for that case to `45s`.
+- Mirrored the same short-run guardrail/calibration behavior in the PowerShell
+  fallback planner path used by the wrappers.
+- Added targeted planner tests for the short `large` GPU case while preserving
+  the existing short `medium` GPU behavior.
+
+Why this matters
+
+- The preserved Rig1 Brooklands `local-large-gpu` comparison did not fail
+  because of first-output/bootstrap deadlines, stall-watchdog expiry,
+  GPU-to-CPU fallback, or CUDA/device-selection failure.
+- It failed because the adaptive runtime budget was too optimistic for a
+  `5m 22s` source on this machine, so the run was terminated while CUDA
+  transcription was still reporting progress.
+- This patch keeps the fix narrow: it adjusts runtime planning for the
+  affected `large` GPU case without broadening into new benchmark suites,
+  Video parity work, or unrelated Whisper behavior changes.
+
+Validation focus
+
+- issue #38 evidence reviewed first from preserved Rig1 roots
+- preserved failure root:
+  - `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420`
+- bounded post-tuning rerun root:
+  - `C:\DATA\TEMP\CODEX\mm-local-large-gpu-budget-tune-20260421`
+- validated lane:
+  - `local-large-gpu`
+- validated source:
+  - `de-brooklands-hNaUbuWL8MI`
+- rerun result:
+  - calibration sample completed
+  - transcription completed on `[GPU]` / `cuda`
+  - no GPU-to-CPU fallback
+  - no watchdog failure
+  - usable transcript artifacts were produced
+  - literal `Brooklands` was preserved
+  - benchmark row regenerated as `accepted`
+- DevBox CPU validation is not a blocker for v0.7.7
+
+Recommendation after this patch
+
+- `local-large-gpu` is now viable on Rig1 for this Brooklands control.
+- Keep it available but non-default for recurring Brooklands-sensitive Rig1
+  work, because `local-medium-gpu` already preserves `Brooklands` and remains
+  much faster on this control.
+
+Known follow-ups after this patch
+
+- run the canonical long benchmark suite (#29)
+- run the technical terminology shadow benchmark set (#30)
+- investigate `hybrid-private-medium-gpt-5-mini` availability on Rig1 Private
+  project (#31)
+- expand benchmark parity coverage to Video Mangler after the Audio-first
+  baseline stabilizes (#32)
+- keep the repo-only separate-box CUDA validation note open unless Rig1-only
+  evidence is later accepted as sufficient broader sign-off
