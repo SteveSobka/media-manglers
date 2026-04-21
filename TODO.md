@@ -14,7 +14,7 @@ Rules:
 
 - [ ] Issue #38: Investigate local-large-gpu adaptive runtime budget for Brooklands benchmark runs
   Status: open follow-up
-  Current note: The focused issue-34 comparison root at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420` showed that `local-large-gpu` did not finish cleanly on the Brooklands control, but that failure was runtime-budget / lane-viability work rather than the source-transcript recall defect that PR `#39` fixed and GitHub release `v0.7.6` shipped. This follow-up should determine whether the large lane needs runtime-plan tuning, watchdog adjustment, or a narrower recommendation boundary on Rig1.
+  Current note: Investigation after the `v0.7.6` release confirmed that the preserved Brooklands large-lane attempt at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420` failed because the adaptive runtime budget for `local-large-gpu` expired while CUDA transcription was still reporting progress, not because of first-output/bootstrap failure, stall-watchdog expiry, or GPU-to-CPU fallback. The current planner used the `large` GPU heuristic (`rtf 0.90`, `startup 45s`) to estimate `5m 36s` and enforce an `8m 36s` runtime budget on a `5m 22s` source; the run stayed on CUDA, produced review audio, but never emitted usable transcript artifacts before the budget kill. Current recommendation: keep `local-large-gpu` non-default / not recommended for Brooklands-sensitive Rig1 work until a separate tuning pass decides whether to raise the GPU-large runtime heuristic, widen calibration for shorter large-GPU runs, or keep the lane outside the recurring recommendation set.
 
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up
