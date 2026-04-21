@@ -12,10 +12,6 @@ Rules:
 
 ## Active Workstreams
 
-- [ ] Issue #38: Investigate local-large-gpu adaptive runtime budget for Brooklands benchmark runs
-  Status: open follow-up, fixed on branch and awaiting PR review
-  Current note: The preserved failure at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-20260420` was confirmed as adaptive runtime-budget underestimation while CUDA transcription was still reporting progress, not first-output/bootstrap failure, stall-watchdog expiry, or GPU-to-CPU fallback. The current branch `wip/0.7.7-local-large-gpu-runtime-budget-2026-04-21` now widens short-run calibration for `large` GPU transcription and adds a conservative short-run guardrail budget before calibration data exists. The bounded Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-local-large-gpu-budget-tune-20260421` completed successfully on CUDA, produced usable transcript artifacts, and preserved literal `Brooklands`. Current recommendation: land the planner fix, then keep `local-large-gpu` available but non-default for recurring Brooklands-sensitive Rig1 work because `local-medium-gpu` already preserves `Brooklands` and remains much faster on this control.
-
 - [ ] Issue #29: Run the canonical long benchmark suite under the merged benchmark framework
   Status: open follow-up
   Current note: The canonical long suite is now defined in tracked manifests on `main`, but the full long-suite execution was intentionally deferred during the framework landing pass.
@@ -48,9 +44,13 @@ Rules:
 
 ## Recently Completed
 
+- [x] Issue #38: Investigate local-large-gpu adaptive runtime budget for Brooklands benchmark runs
+  Status: merged to main, released as `v0.7.7`, and closed on 2026-04-21
+  Current note: PR `#40` merged the focused Local Whisper planner fix into `main`, and GitHub release `v0.7.7` is now the current release surface. The preserved Brooklands `local-large-gpu` failure was confirmed as adaptive runtime-budget underestimation while CUDA transcription was still reporting progress, not first-output/bootstrap failure, stall-watchdog expiry, or GPU-to-CPU fallback. The merged fix widens short-run calibration for `large` GPU runs, adds a conservative short-run guardrail before calibration data exists, mirrors that behavior in the PowerShell fallback planner path, and adds targeted planner tests. The bounded Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-local-large-gpu-budget-tune-20260421` completed on `[GPU]` / `cuda`, produced usable transcript artifacts, preserved literal `Brooklands`, and regenerated as `accepted`. Current recommendation after release: keep `local-large-gpu` available but non-default for recurring Brooklands-sensitive Rig1 work because `local-medium-gpu` already preserves `Brooklands` and remains much faster on this control.
+
 - [x] Issue #34: Investigate Brooklands source-transcript recall weakness in local benchmark evidence
   Status: merged to main, released as `v0.7.6`, and closed on 2026-04-20
-  Current note: PR `#39` merged the focused source-transcript recall fix into `main`, and GitHub release `v0.7.6` is now the current release surface. The fix stays narrow and benchmark-scoped: `Audio Mangler.ps1` now converts benchmark `expected_named_entities` into a Local Whisper `initial_prompt`, and the shared Local Whisper helper in `python-core` forwards that prompt at decode time without post-correcting transcript artifacts. The focused Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-fix-20260420` restored literal `Brooklands` on both `local-medium-gpu` and `local-medium-cpu`, kept the Hybrid control lane `accepted`, and left `brooklands_to_brooklyn_flag=False`. Issue `#38` remains the separate open follow-up for the `local-large-gpu` runtime-budget caveat, and DevBox CPU was explicitly not treated as a blocker for this patch.
+  Current note: PR `#39` merged the focused source-transcript recall fix into `main`, and GitHub release `v0.7.6` is now the current release surface. The fix stays narrow and benchmark-scoped: `Audio Mangler.ps1` now converts benchmark `expected_named_entities` into a Local Whisper `initial_prompt`, and the shared Local Whisper helper in `python-core` forwards that prompt at decode time without post-correcting transcript artifacts. The focused Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-brooklands-source-recall-fix-20260420` restored literal `Brooklands` on both `local-medium-gpu` and `local-medium-cpu`, kept the Hybrid control lane `accepted`, and left `brooklands_to_brooklyn_flag=False`. The later `local-large-gpu` runtime-budget caveat was separately resolved by PR `#40` and release `v0.7.7`, and DevBox CPU was explicitly not treated as a blocker for this patch.
 
 - [x] Issue #36: Avoid unnecessary OpenAI translation cost for English-to-English AI/Hybrid runs
   Status: merged to main, released as `v0.7.5`, and closed on 2026-04-20

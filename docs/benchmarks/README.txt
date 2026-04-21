@@ -77,7 +77,9 @@ Important caveats
   but the current Rig1 Private project could not use that model.
 - The focused issue-34 comparison run also showed that `local-large-gpu` did
   not finish within the current adaptive runtime budget on this source. That is
-  now tracked separately in issue `#38`, so it is not yet a settled
-  Brooklands-sensitive recommendation on Rig1.
+  was later resolved by `v0.7.7`, so `local-large-gpu` is now viable on
+  Rig1 for the focused Brooklands control. It still remains a non-default
+  recommendation because `local-medium-gpu` already preserves `Brooklands`
+  and remains much faster on Rig1.
 - The technical terminology shadow set exists because racing-history clips alone
   will not catch SimHub / Crew Chief / UI vocabulary regressions.
