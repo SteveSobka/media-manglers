@@ -2333,7 +2333,9 @@ function Get-LocalWhisperCalibrationRecommendation {
         }
     }
 
-    if ($duration -lt 900.0) {
+    $shortGpuLargeGuardrail = ($CanUseWhisperGpu -and $modelFamily -eq "large" -and $duration -ge 300.0)
+
+    if ($duration -lt 900.0 -and -not $shortGpuLargeGuardrail) {
         return [PSCustomObject]@{
             Recommended   = $false
             SampleSeconds = 0
@@ -2342,7 +2344,7 @@ function Get-LocalWhisperCalibrationRecommendation {
     }
 
     $shouldForce = (-not $CanUseWhisperGpu -and $modelFamily -eq "large" -and $duration -ge 600.0)
-    if (-not $shouldForce -and $estimate -lt 1800.0) {
+    if (-not $shouldForce -and -not $shortGpuLargeGuardrail -and $estimate -lt 1800.0) {
         return [PSCustomObject]@{
             Recommended   = $false
             SampleSeconds = 0
@@ -2350,10 +2352,18 @@ function Get-LocalWhisperCalibrationRecommendation {
         }
     }
 
+    $sampleFloor = if ($shortGpuLargeGuardrail) { 45.0 } else { 30.0 }
+    $reason = if ($shortGpuLargeGuardrail) {
+        "large GPU runs on this source length benefit from a short machine-local calibration sample"
+    }
+    else {
+        "long local runs benefit from a short machine-local calibration sample"
+    }
+
     return [PSCustomObject]@{
         Recommended   = $true
-        SampleSeconds = [int][math]::Round([math]::Min(60.0, [math]::Max(30.0, $duration * 0.02)))
-        Reason        = "long local runs benefit from a short machine-local calibration sample"
+        SampleSeconds = [int][math]::Round([math]::Min(60.0, [math]::Max($sampleFloor, $duration * 0.02)))
+        Reason        = $reason
     }
 }
 
@@ -2429,6 +2439,10 @@ function Get-LocalWhisperAdaptiveRuntimePlanFallback {
         elseif ($CalibrationData.PSObject.Properties["Reason"] -and -not [string]::IsNullOrWhiteSpace([string]$CalibrationData.Reason)) {
             $effectiveCalibrationStatus = [string]$CalibrationData.Reason
         }
+    }
+
+    if (-not $calibrationUsed -and $CanUseWhisperGpu -and $profile.ModelFamily -eq "large" -and $duration -ge 300.0) {
+        $estimate = [math]::Max($estimate, $startupSeconds + ($duration * 1.35))
     }
 
     $recommendation = Get-LocalWhisperCalibrationRecommendation `
