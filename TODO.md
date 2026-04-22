@@ -20,11 +20,11 @@ Rules:
   Status: open follow-up
   Current note: `Audio Mangler` is the merged primary benchmark surface for recurring language quality work. A later pass should add a smaller recurring Video parity subset without letting video/frame overhead dominate the language benchmark.
 
-## Repo-Only Active Work
+- [ ] Issue #41: Investigate source-side SimHub recall/classification variance from the technical terminology shadow suite
+  Status: open follow-up
+  Current note: The bounded Rig1 rerun at `C:\DATA\TEMP\CODEX\mm-simhub-source-miss-followup-20260421` reported `accepted=1`, `warning=3`, `rejected=0`, `deferred=0`. `fr-simhub-8nK6WdZiOx4` still warned on both approved lanes with source-side `cimeb` and no literal `SimHub`, while the Hybrid English translation still validated `accepted` and preserved literal `SimHub`, which keeps that source classified as a source-transcript recall miss with translation recovery. The English control stayed unstable across lanes and across passes: the rerun accepted `en-simhub-KKW6hsjhi1I` on `local-medium-gpu` with multiple literal `SimHub` hits, but `hybrid-private-medium-gpt-4o-mini` regressed to source-side `Simub` / `sim up` forms and a warning, which points to segmentation or decode variance plus a checker classification gap because current `SimHub` expectations do not list close-form `bad_forms`.
 
-- [ ] Investigate source-side SimHub named-entity misses surfaced by the technical terminology shadow suite
-  Status: repo-only follow-up
-  Current note: The completed Rig1 shadow-suite run preserved source-side `SimHub` misses on `en-simhub-KKW6hsjhi1I` / `local-medium-gpu`, `fr-simhub-8nK6WdZiOx4` / `local-medium-gpu`, and `fr-simhub-8nK6WdZiOx4` / `hybrid-private-medium-gpt-4o-mini`. Hybrid translation validation still accepted and preserved `SimHub`, so the follow-up is about source-transcript recall/segmentation rather than translation corruption.
+## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
   Status: repo-only follow-up
