@@ -20,10 +20,6 @@ Rules:
   Status: open follow-up
   Current note: `Audio Mangler` is the merged primary benchmark surface for recurring language quality work. A later pass should add a smaller recurring Video parity subset without letting video/frame overhead dominate the language benchmark.
 
-- [ ] Issue #41: Investigate source-side SimHub recall/classification variance from the technical terminology shadow suite
-  Status: open follow-up
-  Current note: The narrow reporting follow-up is now complete in repo: `tools\benchmarks\manifests\technical-terminology-shadow.json` now lists SimHub close forms `Simub`, `sim up`, and `cimeb`, and `tools\benchmarks\benchmark_report.py` now classifies those forms as source/translation substitutions only when literal `SimHub` is absent so mixed transcripts with literal `SimHub` do not become false warning rows. Regenerated reports against the preserved `#30` root `C:\DATA\TEMP\CODEX\mm-technical-terminology-shadow-20260421` and the bounded rerun root `C:\DATA\TEMP\CODEX\mm-simhub-source-miss-followup-20260421` kept the rollup counts unchanged (`accepted=5`, `warning=3`, `rejected=0`, `deferred=0` for `#30`; `accepted=1`, `warning=3`, `rejected=0`, `deferred=0` for the rerun) while reclassifying the affected SimHub warning rows from plain missing to close-form substitution. `fr-simhub-8nK6WdZiOx4` still reads as a source-transcript recall miss with translation recovery, and the English control still reads as segmentation or decode variance, so runtime/source follow-up remains open even though the checker-classification gap is now resolved.
-
 ## Repo-Only Active Work
 
 - [ ] Add durable regression coverage for Windows PowerShell 5.1 non-ASCII OpenAI transcript content
@@ -39,6 +35,10 @@ Rules:
   Current note: `v0.7.2` keeps the current JSON-backed Hybrid accuracy data format but re-frames it as optional `Protected Terms Profile` selection with generic/default mode plus a seeded sim-racing profile. The next scoped follow-up should help operators author or manage future profiles without turning this hotfix into a full profile-generator app.
 
 ## Recently Completed
+
+- [x] Issue #41: Investigate source-side SimHub recall/classification variance from the technical terminology shadow suite
+  Status: documentation closeout completed on 2026-04-22 and closed on GitHub
+  Current note: The narrow reporting follow-up is complete in repo: `tools\benchmarks\manifests\technical-terminology-shadow.json` now lists SimHub close forms `Simub`, `sim up`, and `cimeb`, and `tools\benchmarks\benchmark_report.py` now classifies those forms as source/translation substitutions only when literal `SimHub` is absent so mixed transcripts with literal `SimHub` do not become false warning rows. Regenerated reports against the preserved `#30` root `C:\DATA\TEMP\CODEX\mm-technical-terminology-shadow-20260421` and the bounded rerun root `C:\DATA\TEMP\CODEX\mm-simhub-source-miss-followup-20260421` kept the rollup counts unchanged while reclassifying the affected SimHub warning rows from plain missing to close-form substitution. A pre-closure source-identity check for `fr-simhub-8nK6WdZiOx4` stayed consistent across manifest and preserved evidence metadata: source ID `fr-simhub-8nK6WdZiOx4`, source title `SIMHUB Le meilleur Dashboard pour le Rallye`, source URL `https://www.youtube.com/watch?v=8nK6WdZiOx4`, and preserved cached-input paths recorded in the French local logs under `download-20260421-154707-0183e1b0\SIMHUB_Le_meilleur_Dashboard_pour_le_Rallye [8nK6WdZiOx4].webm` and `download-20260421-171608-93d95227\SIMHUB_Le_meilleur_Dashboard_pour_le_Rallye [8nK6WdZiOx4].webm` even though the current `input-cache` folders are now empty. That check raised no credible wrong-source, no-narration, or source-selection concern: the preserved review audio is identical across both roots and both approved lanes, the source transcript content is narrated French tutorial speech, `fr-simhub-8nK6WdZiOx4` remains a documented current Local Whisper source-transcript recall limitation with translation recovery, and `en-simhub-KKW6hsjhi1I` remains documented decode/segmentation variance on identical preserved audio rather than a stable source-specific miss.
 
 - [x] Issue #30: Run the technical terminology shadow benchmark set under the merged framework
   Status: completed on 2026-04-21 and closed on GitHub
