@@ -14,7 +14,7 @@ Rules:
 
 - [ ] Issue #31: Investigate hybrid-private-medium-gpt-5-mini unavailability on Rig1 Private project
   Status: open follow-up
-  Current note: The benchmark pilot attempted the lane and preserved the failure honestly instead of silently substituting a different model. This now needs environment/model-availability follow-up, not benchmark-runner changes.
+  Current note: The benchmark pilot failure is now supplemented by the no-media Rig1 provider probe at `C:\DATA\TEMP\CODEX\mm-issue31-private-model-probe-20260422`. Phase A showed the current Private project exposes all approved Private translation models in `/v1/models`, including both `gpt-5-mini` and `gpt-5-mini-2025-08-07`, and the current Hybrid resolver accepts both explicit requests. Phase B then sent tiny text-only `/v1/chat/completions` requests for both model IDs, and both still failed with `Model unavailable for selected OpenAI project.` (`model_unavailable`, HTTP 400). Current evidence points to provider/API-surface rejection after visibility on the Rig1 Private project rather than benchmark-runner drift or a simple alias-only mismatch, so keep the issue open and do not change lane policy yet.
 
 - [ ] Issue #32: Expand benchmark parity coverage to Video Mangler after the Audio-first baseline stabilizes
   Status: open follow-up
