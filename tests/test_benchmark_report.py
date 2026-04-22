@@ -111,6 +111,36 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(result["named_entity_translation_missing_count"], 0)
         self.assertEqual(result["checks"][0]["translation_issue"], "")
 
+    def test_build_named_entity_checks_keeps_close_forms_non_blocking_when_literal_term_exists(self) -> None:
+        source_entry = {
+            "source_id": "en-simhub",
+            "expected_named_entities": [
+                {
+                    "term": "SimHub",
+                    "category": "product",
+                    "expected_in_source": True,
+                    "expected_in_translation": True,
+                    "bad_forms": ["Simub", "sim up", "cimeb"],
+                }
+            ],
+        }
+
+        result = benchmark_report.build_named_entity_checks(
+            source_entry,
+            source_text="SimHub is open now, but later the transcript drifts to Simub.",
+            translation_text="Open SimHub first, even if another segment says sim up.",
+        )
+
+        self.assertEqual(result["named_entity_issue_count"], 0)
+        self.assertEqual(result["named_entity_source_substitution_count"], 1)
+        self.assertEqual(result["named_entity_translation_substitution_count"], 1)
+        self.assertEqual(result["named_entity_source_missing_count"], 0)
+        self.assertEqual(result["named_entity_translation_missing_count"], 0)
+        self.assertEqual(result["checks"][0]["source_bad_form_matches"], ["Simub"])
+        self.assertEqual(result["checks"][0]["translation_bad_form_matches"], ["sim up"])
+        self.assertEqual(result["checks"][0]["source_issue"], "")
+        self.assertEqual(result["checks"][0]["translation_issue"], "")
+
     def test_collect_results_marks_english_copy_as_translation_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

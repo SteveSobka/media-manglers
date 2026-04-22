@@ -223,21 +223,21 @@ def build_named_entity_checks(
         source_issue = ""
         translation_issue = ""
 
-        if expected_in_source and source_bad_form_matches:
-            source_issue = "substituted variant in source transcript" if not source_present else "bad form in source transcript"
+        # Treat close-form matches as substitutions only when the expected term
+        # is absent. This lets manifests record noisy variants without turning
+        # mixed transcripts into false benchmark warnings.
+        if expected_in_source and source_bad_form_matches and not source_present:
+            source_issue = "substituted variant in source transcript"
             issues.append(source_issue)
         elif expected_in_source and not source_present:
             source_issue = "missing from source transcript"
             issues.append(source_issue)
 
-        if translation_available and expected_in_translation and translation_bad_form_matches:
-            translation_issue = "bad form in English translation" if translation_present else "substituted variant in English translation"
+        if translation_available and expected_in_translation and translation_bad_form_matches and not translation_present:
+            translation_issue = "substituted variant in English translation"
             issues.append(translation_issue)
         elif translation_available and expected_in_translation and not translation_present:
             translation_issue = "missing from English translation"
-            issues.append(translation_issue)
-        elif translation_available and translation_bad_form_matches:
-            translation_issue = "bad form in English translation"
             issues.append(translation_issue)
 
         if term.casefold() == "brooklands" and any(value.casefold().startswith("brooklyn") for value in source_bad_form_matches):

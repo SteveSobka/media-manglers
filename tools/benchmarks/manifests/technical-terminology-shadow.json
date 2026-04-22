@@ -46,7 +46,7 @@
           "category": "product",
           "expected_in_source": true,
           "expected_in_translation": true,
-          "bad_forms": []
+          "bad_forms": ["Simub", "sim up", "cimeb"]
         }
       ]
     },
@@ -68,7 +68,7 @@
           "category": "product",
           "expected_in_source": true,
           "expected_in_translation": true,
-          "bad_forms": []
+          "bad_forms": ["Simub", "sim up", "cimeb"]
         }
       ]
     },
@@ -90,7 +90,7 @@
           "category": "product",
           "expected_in_source": true,
           "expected_in_translation": true,
-          "bad_forms": []
+          "bad_forms": ["Simub", "sim up", "cimeb"]
         }
       ]
     }
