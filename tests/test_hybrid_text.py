@@ -497,7 +497,7 @@ class HybridTextTests(unittest.TestCase):
                 transport=transport,
             )
 
-    def test_translate_chat_completion_omits_response_format_for_gpt_5_mini(self) -> None:
+    def test_translate_chat_completion_omits_response_format_and_temperature_for_gpt_5_mini(self) -> None:
         transport = CapturingOpenAiTransport()
 
         transport.translate_chat_completion(
@@ -508,9 +508,9 @@ class HybridTextTests(unittest.TestCase):
         payload = transport.requests[-1]["payload"]
         self.assertIsInstance(payload, dict)
         self.assertNotIn("response_format", payload)
-        self.assertEqual(payload["temperature"], 0)
+        self.assertNotIn("temperature", payload)
 
-    def test_translate_chat_completion_omits_response_format_for_versioned_gpt_5_mini(self) -> None:
+    def test_translate_chat_completion_omits_response_format_and_temperature_for_versioned_gpt_5_mini(self) -> None:
         transport = CapturingOpenAiTransport()
 
         transport.translate_chat_completion(
@@ -521,7 +521,7 @@ class HybridTextTests(unittest.TestCase):
         payload = transport.requests[-1]["payload"]
         self.assertIsInstance(payload, dict)
         self.assertNotIn("response_format", payload)
-        self.assertEqual(payload["temperature"], 0)
+        self.assertNotIn("temperature", payload)
 
     def test_translate_chat_completion_keeps_response_format_for_gpt_4o_mini(self) -> None:
         transport = CapturingOpenAiTransport()

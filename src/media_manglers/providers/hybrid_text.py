@@ -214,9 +214,10 @@ class OpenAiChatCompletionsTransport:
     ) -> JsonObject:
         payload: JsonObject = {
             "model": model,
-            "temperature": 0,
             "messages": messages,
         }
+        if _hybrid_model_uses_temperature(model):
+            payload["temperature"] = 0
         if _hybrid_model_uses_response_format(model):
             payload["response_format"] = {"type": "json_object"}
         response_payload = self._json_request(
@@ -239,6 +240,10 @@ class OpenAiChatCompletionsTransport:
 
 
 def _hybrid_model_uses_response_format(model: str) -> bool:
+    return str(model or "").strip().lower() not in HYBRID_JSON_PROMPT_ONLY_MODEL_IDS
+
+
+def _hybrid_model_uses_temperature(model: str) -> bool:
     return str(model or "").strip().lower() not in HYBRID_JSON_PROMPT_ONLY_MODEL_IDS
 
 
