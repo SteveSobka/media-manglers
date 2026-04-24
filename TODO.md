@@ -13,8 +13,8 @@ Rules:
 ## Active Workstreams
 
 - [ ] Issue #32: Expand benchmark parity coverage to Video Mangler after the Audio-first baseline stabilizes
-  Status: open follow-up
-  Current note: `Audio Mangler` is the merged primary benchmark surface for recurring language quality work. A later pass should add a smaller recurring Video parity subset without letting video/frame overhead dominate the language benchmark.
+  Status: open follow-up; Video parity pilot blocked before transcription
+  Current note: `Audio Mangler` remains the merged primary benchmark surface for recurring language quality work. The first bounded Video parity pilot at `C:\DATA\TEMP\CODEX\mm-issue32-video-parity-pilot-20260424` used only the approved single-video Brooklands source `de-brooklands-hNaUbuWL8MI` and a local-only temporary Video lane manifest for `video-local-medium-gpu` plus `video-hybrid-private-medium-gpt-4o-mini`. The corrected two-lane run produced benchmark summaries but both rows were `rejected` before package creation because `yt-dlp download (video)` exited `1`; no transcription, translation, provider call, media parity judgment, tracked manifest change, lane-policy change, release work, VERSION bump, Area51 work, playlist use, revoked source use, or broad matrix run occurred. Next narrow pass should isolate the Video remote-download/source-availability path or choose another approved single-video source before deciding whether to promote a recurring Video benchmark subset.
 
 ## Repo-Only Active Work
 
