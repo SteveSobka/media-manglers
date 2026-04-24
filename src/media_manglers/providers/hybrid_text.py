@@ -22,6 +22,10 @@ HYBRID_PRIVACY_CLASS = "audio local / text uploaded"
 HYBRID_DEFAULT_TARGET_LANGUAGE = "en"
 HYBRID_DEFAULT_BATCH_SIZE = 4
 HYBRID_DEFAULT_CONTEXT_SEGMENTS = 1
+HYBRID_JSON_PROMPT_ONLY_MODEL_IDS = {
+    "gpt-5-mini",
+    "gpt-5-mini-2025-08-07",
+}
 HYBRID_MODEL_CONFIG: dict[str, dict[str, Any]] = {
     "Private": {
         "default": "gpt-4o-mini-2024-07-18",
@@ -211,9 +215,10 @@ class OpenAiChatCompletionsTransport:
         payload: JsonObject = {
             "model": model,
             "temperature": 0,
-            "response_format": {"type": "json_object"},
             "messages": messages,
         }
+        if _hybrid_model_uses_response_format(model):
+            payload["response_format"] = {"type": "json_object"}
         response_payload = self._json_request(
             method="POST",
             endpoint="/chat/completions",
@@ -231,6 +236,10 @@ class OpenAiChatCompletionsTransport:
             "usage": usage,
             "model": str(response_payload.get("model") or model).strip(),
         }
+
+
+def _hybrid_model_uses_response_format(model: str) -> bool:
+    return str(model or "").strip().lower() not in HYBRID_JSON_PROMPT_ONLY_MODEL_IDS
 
 
 def _http_error_to_transport_error(status_code: int, response_body: str) -> HybridTransportError:

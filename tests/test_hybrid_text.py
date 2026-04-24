@@ -46,6 +46,39 @@ class FakeTransport:
         return response
 
 
+class CapturingOpenAiTransport(hybrid_text.OpenAiChatCompletionsTransport):
+    def __init__(self) -> None:
+        super().__init__(api_key="test-key", api_base_url="https://example.invalid/v1")
+        self.requests: list[dict[str, object]] = []
+
+    def _json_request(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        self.requests.append(
+            {
+                "method": method,
+                "endpoint": endpoint,
+                "payload": payload,
+            }
+        )
+        requested_model = str((payload or {}).get("model") or "").strip()
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"translations":{"1":"translated"}}',
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "model": requested_model,
+        }
+
+
 class HybridTextTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[1]
@@ -463,6 +496,58 @@ class HybridTextTests(unittest.TestCase):
                 requested_model="gpt-4.1-mini-2025-04-14",
                 transport=transport,
             )
+
+    def test_translate_chat_completion_omits_response_format_for_gpt_5_mini(self) -> None:
+        transport = CapturingOpenAiTransport()
+
+        transport.translate_chat_completion(
+            model="gpt-5-mini",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        payload = transport.requests[-1]["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertNotIn("response_format", payload)
+        self.assertEqual(payload["temperature"], 0)
+
+    def test_translate_chat_completion_omits_response_format_for_versioned_gpt_5_mini(self) -> None:
+        transport = CapturingOpenAiTransport()
+
+        transport.translate_chat_completion(
+            model="gpt-5-mini-2025-08-07",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        payload = transport.requests[-1]["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertNotIn("response_format", payload)
+        self.assertEqual(payload["temperature"], 0)
+
+    def test_translate_chat_completion_keeps_response_format_for_gpt_4o_mini(self) -> None:
+        transport = CapturingOpenAiTransport()
+
+        transport.translate_chat_completion(
+            model="gpt-4o-mini-2024-07-18",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        payload = transport.requests[-1]["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["temperature"], 0)
+
+    def test_translate_chat_completion_keeps_response_format_for_gpt_4_1_mini(self) -> None:
+        transport = CapturingOpenAiTransport()
+
+        transport.translate_chat_completion(
+            model="gpt-4.1-mini-2025-04-14",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        payload = transport.requests[-1]["payload"]
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["temperature"], 0)
 
     def test_get_api_key_for_project_uses_exact_project_variable(self) -> None:
         env = {
